@@ -6,6 +6,7 @@ import io
 import FinanceDataReader as fdr
 import warnings
 
+# 경고 메시지 무시
 warnings.filterwarnings('ignore')
 
 # -----------------------------------------------------------------------------
@@ -15,37 +16,50 @@ st.set_page_config(page_title="멀티 마켓 모멘텀 전략", page_icon="📈"
 
 # 시장별 설정 매핑
 MARKET_CONFIG = {
-    "KOSPI 200":  {"listing": "KOSPI",  "benchmark": "KS200", "currency": "KRW"},
-    "KOSDAQ 150": {"listing": "KOSDAQ", "benchmark": "KQ150", "currency": "KRW"},
-    "NASDAQ 100": {"listing": "NASDAQ", "benchmark": "IXIC",  "currency": "USD"},
-    "S&P 500":    {"listing": "S&P500", "benchmark": "US500", "currency": "USD"}
+    "KOSPI 200":  {"listing_source": "KRX",  "market_filter": "KOSPI",  "benchmark": "KS200", "currency": "KRW"},
+    "KOSDAQ 150": {"listing_source": "KRX",  "market_filter": "KOSDAQ", "benchmark": "KQ150", "currency": "KRW"},
+    "NASDAQ 100": {"listing_source": "NASDAQ", "market_filter": None,    "benchmark": "IXIC",  "currency": "USD"},
+    "S&P 500":    {"listing_source": "S&P500", "market_filter": None,    "benchmark": "US500", "currency": "USD"}
 }
 
 @st.cache_data(ttl=3600*24) # 24시간 캐싱
 def get_market_data(market_name, start_year, sample_size):
     """
     선택한 시장의 시가총액 상위 종목 데이터를 다운로드합니다.
+    [수정사항] 한국 시장의 경우 KRX 데이터를 사용하여 시가총액 정렬 정확도를 높였습니다.
     """
     config = MARKET_CONFIG[market_name]
-    listing_code = config['listing']
+    source = config['listing_source']
     
     # 1. 상장 종목 리스트 가져오기
     try:
-        df_list = fdr.StockListing(listing_code)
+        df_list = fdr.StockListing(source)
         
+        # 한국 시장 필터링 (KRX 전체에서 KOSPI/KOSDAQ 분리)
+        if source == 'KRX':
+            if config['market_filter'] == 'KOSPI':
+                df_list = df_list[df_list['Market'] == 'KOSPI']
+            elif config['market_filter'] == 'KOSDAQ':
+                df_list = df_list[df_list['Market'] == 'KOSDAQ']
+                
         # 컬럼명 통일 (미국 주식은 Symbol, 한국은 Code)
         if 'Code' not in df_list.columns and 'Symbol' in df_list.columns:
             df_list['Code'] = df_list['Symbol']
             
-        # 시가총액 순 정렬 (데이터가 있는 경우)
+        # 시가총액 데이터 전처리 (문자열 -> 숫자 변환 및 정렬)
         if 'Marcap' in df_list.columns:
+            # 에러 방지를 위해 강제 형변환
+            df_list['Marcap'] = pd.to_numeric(df_list['Marcap'], errors='coerce')
             df_list = df_list.sort_values(by='Marcap', ascending=False)
-            
-        # 상위 N개 선정
-        target_df = df_list.head(sample_size)
+        
+        # 상위 N개 선정 (데이터가 빈 껍데기일 확률을 줄이기 위해 넉넉히 가져옴)
+        # 사용자가 요청한 sample_size보다 20% 더 가져와서 데이터 없는 종목 대비
+        fetch_size = int(sample_size * 1.2)
+        target_df = df_list.head(fetch_size)
+        
         tickers = target_df['Code'].tolist()
         
-        # 이름 매핑 (Name 컬럼이 없으면 티커를 이름으로 사용)
+        # 이름 매핑
         if 'Name' in target_df.columns:
             code_map = target_df.set_index('Code')['Name'].to_dict()
         else:
@@ -56,23 +70,37 @@ def get_market_data(market_name, start_year, sample_size):
     
     # 2. 주가 데이터 다운로드
     all_prices = []
-    fetch_year = start_year - 2
+    # 모멘텀 계산(최대 12개월)을 위해 시작년도보다 2년 전 데이터부터 요청
+    fetch_year = start_year - 2 
     
-    # Streamlit 진행률 표시바
+    # UI 진행률 표시
     progress_bar = st.progress(0)
     status_text = st.empty()
     
+    valid_tickers = []
+    
     for i, ticker in enumerate(tickers):
         try:
-            # 진행상황 업데이트 (너무 빈번한 업데이트 방지)
-            if i % 5 == 0 or i == len(tickers) - 1:
-                status_text.text(f"[{market_name}] 데이터 다운로드 중.. ({i+1}/{len(tickers)}) - {code_map.get(ticker, ticker)}")
+            # 진행상황 업데이트
+            if i % 10 == 0 or i == len(tickers) - 1:
+                status_text.text(f"[{market_name}] 데이터 수신 중.. ({i+1}/{len(tickers)}) - {code_map.get(ticker, ticker)}")
                 progress_bar.progress((i + 1) / len(tickers))
             
             # 데이터 다운로드
             df = fdr.DataReader(ticker, str(fetch_year))['Close']
+            
+            # 데이터가 너무 적으면 스킵 (최소 1년치 데이터 필요)
+            if len(df) < 200: 
+                continue
+                
             df.name = ticker
             all_prices.append(df)
+            valid_tickers.append(ticker)
+            
+            # 사용자가 원하는 sample_size만큼 데이터가 모이면 조기 종료
+            if len(all_prices) >= sample_size:
+                break
+                
         except:
             continue
             
@@ -80,8 +108,9 @@ def get_market_data(market_name, start_year, sample_size):
     progress_bar.empty()
     
     if not all_prices:
-        return pd.DataFrame(), {}, "가격 데이터를 가져올 수 없습니다."
+        return pd.DataFrame(), {}, "유효한 가격 데이터를 가져올 수 없습니다. (종목 리스트 오류 가능성)"
 
+    # 데이터 병합 및 결측치 처리
     price_df = pd.concat(all_prices, axis=1).fillna(method='ffill')
     return price_df, code_map, None
 
@@ -94,13 +123,12 @@ st.markdown("선택한 시장의 대형주 중 **모멘텀(추세)이 강한 종
 with st.sidebar:
     st.header("⚙️ 전략 설정")
     
-    # [NEW] 시장 선택 옵션
     target_market = st.selectbox("투자 시장 선택", list(MARKET_CONFIG.keys()))
     
     start_year = st.number_input("시작 연도", value=2015, min_value=2000, max_value=2024)
     
-    sample_size = st.slider("투자 유니버스 (시총 상위 N개)", 50, 300, 100, step=50,
-                            help="미국 시장은 데이터가 많아 다운로드에 시간이 더 걸릴 수 있습니다.")
+    sample_size = st.slider("투자 유니버스 (시총 상위 N개)", 50, 300, 150, step=50,
+                            help="상위 N개 종목 중에서 모멘텀을 비교합니다.")
     
     top_n = st.number_input("보유 종목 수 (Top N)", value=10, min_value=1)
     
@@ -124,7 +152,7 @@ with st.sidebar:
 # 3. 메인 로직
 # -----------------------------------------------------------------------------
 if run_btn:
-    with st.spinner(f"[{target_market}] 데이터를 분석하고 있습니다... (미국 시장은 조금 더 걸릴 수 있습니다)"):
+    with st.spinner(f"[{target_market}] 데이터를 분석하고 있습니다... (미국 시장은 시간이 더 소요될 수 있습니다)"):
         
         # 1. 데이터 로드 (시장 선택 적용)
         df_price, code_map, err_msg = get_market_data(target_market, start_year, sample_size)
@@ -151,6 +179,10 @@ if run_btn:
         
         rebalance_dates = sorted(list(set([d for d in rebalance_dates if start_dt <= d <= end_dt])))
         
+        if len(rebalance_dates) < 2:
+            st.warning("리밸런싱 기간이 너무 짧습니다. 시작 연도를 조정해주세요.")
+            st.stop()
+
         portfolio_returns = []
         history_records = []
         
@@ -158,10 +190,11 @@ if run_btn:
             curr_date = rebalance_dates[i]
             next_date = rebalance_dates[i+1]
             
+            # 모멘텀 계산 시점 (주말/휴일 고려하여 searchsorted 사용)
             past_date_target = curr_date - pd.DateOffset(months=momentum_window)
             
             try:
-                # 과거 시점 찾기 (가장 가까운 날짜)
+                # 과거 시점 찾기 (가장 가까운 과거 데이터)
                 idx_loc = df_price.index.searchsorted(past_date_target)
                 if idx_loc >= len(df_price): continue
                 past_date_real = df_price.index[idx_loc]
@@ -187,8 +220,10 @@ if run_btn:
                         'Momentum': top_series[stock]
                     })
                 
+                # 다음 리밸런싱까지의 수익률 계산
                 price_period = df_price[top_stocks].loc[curr_date:next_date]
                 if not price_period.empty:
+                    # 일별 수익률 평균 (동일 비중 가정)
                     period_ret = price_period.pct_change().fillna(0).mean(axis=1)
                     portfolio_returns.append(period_ret)
                     
@@ -206,7 +241,10 @@ if run_btn:
             mdd = drawdown.min()
             
             total_days = (cum_returns.index[-1] - cum_returns.index[0]).days
-            cagr = cum_returns.iloc[-1]**(365/total_days) - 1
+            if total_days > 0:
+                cagr = cum_returns.iloc[-1]**(365/total_days) - 1
+            else:
+                cagr = 0
             
             # 벤치마크 데이터 로드 (동적 적용)
             bm_ticker = MARKET_CONFIG[target_market]['benchmark']
@@ -342,4 +380,4 @@ if run_btn:
                         mime="application/vnd.ms-excel"
                     )
         else:
-            st.warning("수익률을 계산할 수 없습니다. 데이터 기간이 너무 짧거나 종목 수가 부족할 수 있습니다.")
+            st.warning("수익률을 계산할 수 없습니다. (모멘텀 기간을 12개월에서 6개월로 줄여보세요.)")

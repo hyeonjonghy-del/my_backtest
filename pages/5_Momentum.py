@@ -10,97 +10,97 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # -----------------------------------------------------------------------------
-# 1. 페이지 설정 및 시장 설정값
+# 1. 페이지 설정
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="멀티 마켓 모멘텀 전략", page_icon="📈", layout="wide")
+st.set_page_config(page_title="통합 모멘텀 전략 (Final)", page_icon="📈", layout="wide")
 
-# 시장별 설정 매핑
-MARKET_CONFIG = {
-    "KOSPI 200":  {"listing_source": "KRX",  "market_filter": "KOSPI",  "benchmark": "KS200", "currency": "KRW"},
-    "KOSDAQ 150": {"listing_source": "KRX",  "market_filter": "KOSDAQ", "benchmark": "KQ150", "currency": "KRW"},
-    "NASDAQ 100": {"listing_source": "NASDAQ", "market_filter": None,    "benchmark": "IXIC",  "currency": "USD"},
-    "S&P 500":    {"listing_source": "S&P500", "market_filter": None,    "benchmark": "US500", "currency": "USD"}
-}
-
-@st.cache_data(ttl=3600*24) # 24시간 캐싱
-def get_market_data(market_name, start_year, sample_size):
+# -----------------------------------------------------------------------------
+# 2. 데이터 수집 함수 (한국 시장은 원본 방식 그대로 복귀)
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=3600*24)
+def get_stock_list_safe(market_name, sample_size):
     """
-    선택한 시장의 시가총액 상위 종목 데이터를 다운로드합니다.
-    [수정사항] 한국 시장의 경우 KRX 데이터를 사용하여 시가총액 정렬 정확도를 높였습니다.
+    시장별로 가장 확실한 방법으로 종목 리스트를 가져옵니다.
+    한국 시장은 fdr.StockListing('KOSPI') 등 전용 함수를 사용합니다.
     """
-    config = MARKET_CONFIG[market_name]
-    source = config['listing_source']
-    
-    # 1. 상장 종목 리스트 가져오기
     try:
-        df_list = fdr.StockListing(source)
-        
-        # 한국 시장 필터링 (KRX 전체에서 KOSPI/KOSDAQ 분리)
-        if source == 'KRX':
-            if config['market_filter'] == 'KOSPI':
-                df_list = df_list[df_list['Market'] == 'KOSPI']
-            elif config['market_filter'] == 'KOSDAQ':
-                df_list = df_list[df_list['Market'] == 'KOSDAQ']
-                
-        # 컬럼명 통일 (미국 주식은 Symbol, 한국은 Code)
+        # 1. 시장별 리스트 가져오기
+        if market_name == "KOSPI 200":
+            # [복구] 원본 파일과 동일한 방식
+            df_list = fdr.StockListing('KOSPI')
+        elif market_name == "KOSDAQ 150":
+            # [복구] 원본 파일과 동일한 방식
+            df_list = fdr.StockListing('KOSDAQ')
+        elif market_name == "S&P 500":
+            df_list = fdr.StockListing('S&P500')
+        elif market_name == "NASDAQ 100":
+            df_list = fdr.StockListing('NASDAQ')
+            
+        # 2. 컬럼명 통일 (Code/Symbol)
         if 'Code' not in df_list.columns and 'Symbol' in df_list.columns:
             df_list['Code'] = df_list['Symbol']
             
-        # 시가총액 데이터 전처리 (문자열 -> 숫자 변환 및 정렬)
+        # 3. 시가총액(Marcap) 정렬 - 데이터가 있는 경우만
         if 'Marcap' in df_list.columns:
-            # 에러 방지를 위해 강제 형변환
-            df_list['Marcap'] = pd.to_numeric(df_list['Marcap'], errors='coerce')
+            # 안전장치: 문자열로 된 숫자가 있을 경우 변환 (미국 주식 등 대비)
+            if df_list['Marcap'].dtype == 'object':
+                df_list['Marcap'] = df_list['Marcap'].astype(str).str.replace(',', '').replace('nan', '0')
+                df_list['Marcap'] = pd.to_numeric(df_list['Marcap'], errors='coerce')
+            
             df_list = df_list.sort_values(by='Marcap', ascending=False)
         
-        # 상위 N개 선정 (데이터가 빈 껍데기일 확률을 줄이기 위해 넉넉히 가져옴)
-        # 사용자가 요청한 sample_size보다 20% 더 가져와서 데이터 없는 종목 대비
-        fetch_size = int(sample_size * 1.2)
-        target_df = df_list.head(fetch_size)
-        
+        # 4. 상위 N개 종목 코드 추출
+        # 데이터 공백을 대비해 요청 수량보다 조금 더 가져옴 (1.2배)
+        target_df = df_list.head(int(sample_size * 1.2))
         tickers = target_df['Code'].tolist()
         
-        # 이름 매핑
+        # 종목명 매핑
         if 'Name' in target_df.columns:
             code_map = target_df.set_index('Code')['Name'].to_dict()
         else:
             code_map = {t: t for t in tickers}
             
+        return tickers, code_map, None
+
     except Exception as e:
-        return pd.DataFrame(), {}, f"리스트 다운로드 실패: {str(e)}"
-    
-    # 2. 주가 데이터 다운로드
+        return [], {}, f"리스트 로딩 실패: {str(e)}"
+
+@st.cache_data(ttl=3600*24)
+def get_price_data(tickers, code_map, start_year, target_n):
+    """
+    주가 데이터를 다운로드합니다.
+    """
     all_prices = []
-    # 모멘텀 계산(최대 12개월)을 위해 시작년도보다 2년 전 데이터부터 요청
-    fetch_year = start_year - 2 
+    # 모멘텀 계산을 위해 시작년도 2년 전부터 데이터 요청
+    fetch_year = start_year - 2
     
-    # UI 진행률 표시
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    valid_tickers = []
+    valid_count = 0
     
     for i, ticker in enumerate(tickers):
+        # 진행상황 UI 업데이트 (속도 저하 방지를 위해 10번마다)
+        if i % 10 == 0:
+            name = code_map.get(ticker, ticker)
+            status_text.text(f"데이터 수신 중.. ({valid_count}/{target_n}) - {name}")
+            progress_bar.progress((i + 1) / len(tickers))
+        
         try:
-            # 진행상황 업데이트
-            if i % 10 == 0 or i == len(tickers) - 1:
-                status_text.text(f"[{market_name}] 데이터 수신 중.. ({i+1}/{len(tickers)}) - {code_map.get(ticker, ticker)}")
-                progress_bar.progress((i + 1) / len(tickers))
-            
-            # 데이터 다운로드
+            # 데이터 요청
             df = fdr.DataReader(ticker, str(fetch_year))['Close']
             
-            # 데이터가 너무 적으면 스킵 (최소 1년치 데이터 필요)
-            if len(df) < 200: 
+            # 유효성 검사: 데이터가 너무 짧거나, 값이 변하지 않는(거래정지) 경우 제외
+            if len(df) < 200 or df.nunique() <= 1:
                 continue
                 
             df.name = ticker
             all_prices.append(df)
-            valid_tickers.append(ticker)
+            valid_count += 1
             
-            # 사용자가 원하는 sample_size만큼 데이터가 모이면 조기 종료
-            if len(all_prices) >= sample_size:
+            # 사용자가 원하는 개수만큼 모이면 중단 (속도 최적화)
+            if valid_count >= target_n:
                 break
-                
         except:
             continue
             
@@ -108,65 +108,70 @@ def get_market_data(market_name, start_year, sample_size):
     progress_bar.empty()
     
     if not all_prices:
-        return pd.DataFrame(), {}, "유효한 가격 데이터를 가져올 수 없습니다. (종목 리스트 오류 가능성)"
-
-    # 데이터 병합 및 결측치 처리
+        return pd.DataFrame(), "수집된 주가 데이터가 없습니다."
+        
+    # 데이터 병합 (ffill로 결측치 보완)
     price_df = pd.concat(all_prices, axis=1).fillna(method='ffill')
-    return price_df, code_map, None
+    return price_df, None
 
 # -----------------------------------------------------------------------------
-# 2. 사이드바 UI
+# 3. 사이드바 UI
 # -----------------------------------------------------------------------------
 st.title("🌏 글로벌 상대 모멘텀 전략")
-st.markdown("선택한 시장의 대형주 중 **모멘텀(추세)이 강한 종목**으로 포트폴리오를 운용하는 전략입니다.")
+st.markdown("한국(KOSPI, KOSDAQ) 및 미국(S&P, NASDAQ) 시장 지원")
 
 with st.sidebar:
     st.header("⚙️ 전략 설정")
     
-    target_market = st.selectbox("투자 시장 선택", list(MARKET_CONFIG.keys()))
+    # 시장 선택
+    market_options = ["KOSPI 200", "KOSDAQ 150", "S&P 500", "NASDAQ 100"]
+    target_market = st.selectbox("투자 시장", market_options)
+    
+    # 벤치마크 매핑
+    bm_map = {
+        "KOSPI 200": "KS200", "KOSDAQ 150": "KQ150", 
+        "S&P 500": "US500", "NASDAQ 100": "IXIC"
+    }
     
     start_year = st.number_input("시작 연도", value=2015, min_value=2000, max_value=2024)
+    sample_size = st.slider("투자 유니버스 (상위 N개)", 50, 300, 150, step=50)
+    top_n = st.number_input("보유 종목 수", value=10, min_value=1)
     
-    sample_size = st.slider("투자 유니버스 (시총 상위 N개)", 50, 300, 150, step=50,
-                            help="상위 N개 종목 중에서 모멘텀을 비교합니다.")
+    rebal_term = st.selectbox("리밸런싱 주기", ["1개월", "3개월 (분기)", "6개월 (반기)", "12개월 (연간)"], index=1)
+    rebal_month_map = {"1개월": 1, "3개월 (분기)": 3, "6개월 (반기)": 6, "12개월 (연간)": 12}
+    rebalance_step = rebal_month_map[rebal_term]
     
-    top_n = st.number_input("보유 종목 수 (Top N)", value=10, min_value=1)
-    
-    rebalance_map = {
-        "1개월 (월간)": 1,
-        "3개월 (분기)": 3,
-        "6개월 (반기)": 6,
-        "12개월 (연간)": 12
-    }
-    rebal_label = st.selectbox("리밸런싱 주기", list(rebalance_map.keys()), index=1)
-    rebalance_step = rebalance_map[rebal_label]
-    
-    momentum_window = st.number_input("모멘텀 기간 (개월)", value=12, help="과거 몇 개월 수익률을 비교할까요?")
+    momentum_window = st.number_input("모멘텀 기간 (개월)", value=12)
 
     st.markdown("---")
-    export_excel_option = st.checkbox("📥 엑셀 다운로드 기능 활성화", value=True)
+    export_excel = st.checkbox("📥 엑셀 다운로드", value=True)
     
     run_btn = st.button("🚀 전략 실행", type="primary")
 
 # -----------------------------------------------------------------------------
-# 3. 메인 로직
+# 4. 메인 로직
 # -----------------------------------------------------------------------------
 if run_btn:
-    with st.spinner(f"[{target_market}] 데이터를 분석하고 있습니다... (미국 시장은 시간이 더 소요될 수 있습니다)"):
+    with st.spinner(f"[{target_market}] 데이터를 불러오는 중입니다..."):
         
-        # 1. 데이터 로드 (시장 선택 적용)
-        df_price, code_map, err_msg = get_market_data(target_market, start_year, sample_size)
-        
-        if df_price.empty:
-            st.error(f"오류 발생: {err_msg}")
+        # 1. 종목 리스트 확보
+        raw_tickers, code_map, err = get_stock_list_safe(target_market, sample_size)
+        if err:
+            st.error(err)
+            st.stop()
+            
+        # 2. 주가 데이터 확보
+        df_price, err = get_price_data(raw_tickers, code_map, start_year, sample_size)
+        if err:
+            st.error(err)
             st.stop()
 
-        # 2. 백테스트 시뮬레이션
+        # 3. 백테스트 수행
         start_dt = pd.to_datetime(f'{start_year}-01-01')
         if start_dt < df_price.index[0]: start_dt = df_price.index[0]
         end_dt = df_price.index[-1]
         
-        # 리밸런싱 날짜 계산
+        # 리밸런싱 날짜 생성
         all_days = df_price.index
         target_months = list(range(1, 13, rebalance_step))
         rebalance_dates = []
@@ -180,7 +185,7 @@ if run_btn:
         rebalance_dates = sorted(list(set([d for d in rebalance_dates if start_dt <= d <= end_dt])))
         
         if len(rebalance_dates) < 2:
-            st.warning("리밸런싱 기간이 너무 짧습니다. 시작 연도를 조정해주세요.")
+            st.warning("데이터 기간이 짧아 전략을 실행할 수 없습니다. (시작 연도를 조정하세요)")
             st.stop()
 
         portfolio_returns = []
@@ -189,195 +194,128 @@ if run_btn:
         for i in range(len(rebalance_dates) - 1):
             curr_date = rebalance_dates[i]
             next_date = rebalance_dates[i+1]
-            
-            # 모멘텀 계산 시점 (주말/휴일 고려하여 searchsorted 사용)
             past_date_target = curr_date - pd.DateOffset(months=momentum_window)
             
             try:
-                # 과거 시점 찾기 (가장 가까운 과거 데이터)
+                # 과거 기준일 찾기
                 idx_loc = df_price.index.searchsorted(past_date_target)
                 if idx_loc >= len(df_price): continue
                 past_date_real = df_price.index[idx_loc]
                 
-                # asof를 사용하여 해당 날짜 혹은 직전 날짜 데이터 안전하게 가져오기
-                price_curr = df_price.asof(curr_date)
-                price_past = df_price.asof(past_date_real)
+                # asof를 사용하여 주말/휴일 문제 없이 데이터 조회
+                p_curr = df_price.asof(curr_date)
+                p_past = df_price.asof(past_date_real)
                 
-                # 모멘텀 스코어 계산
-                mom_score = (price_curr - price_past) / price_past
-                mom_score = mom_score.replace([np.inf, -np.inf], np.nan).dropna()
+                # 모멘텀 계산
+                mom = (p_curr - p_past) / p_past
+                mom = mom.replace([np.inf, -np.inf], np.nan).dropna()
                 
-                if mom_score.empty: continue
+                if mom.empty: continue
 
-                top_series = mom_score.nlargest(top_n)
+                # 상위 N개 선정
+                top_series = mom.nlargest(top_n)
                 top_stocks = top_series.index.tolist()
                 
-                for stock in top_stocks:
+                # 기록
+                for s in top_stocks:
                     history_records.append({
                         'Date': curr_date.strftime('%Y-%m-%d'),
-                        'Code': stock,
-                        'Name': code_map.get(stock, stock),
-                        'Momentum': top_series[stock]
+                        'Code': s,
+                        'Name': code_map.get(s, s),
+                        'Momentum': top_series[s]
                     })
                 
-                # 다음 리밸런싱까지의 수익률 계산
-                price_period = df_price[top_stocks].loc[curr_date:next_date]
-                if not price_period.empty:
-                    # 일별 수익률 평균 (동일 비중 가정)
-                    period_ret = price_period.pct_change().fillna(0).mean(axis=1)
+                # 수익률 계산 (다음 리밸런싱 날짜까지)
+                period_price = df_price[top_stocks].loc[curr_date:next_date]
+                if not period_price.empty:
+                    period_ret = period_price.pct_change().fillna(0).mean(axis=1)
                     portfolio_returns.append(period_ret)
                     
-            except Exception as e:
-                continue
-                
-        # 결과 처리
+            except: continue
+        
+        # 4. 결과 출력
         if portfolio_returns:
-            full_returns = pd.concat(portfolio_returns)
-            full_returns = full_returns[~full_returns.index.duplicated(keep='first')]
+            full_ret = pd.concat(portfolio_returns)
+            full_ret = full_ret[~full_ret.index.duplicated(keep='first')]
             
-            cum_returns = (1 + full_returns).cumprod()
-            running_max = cum_returns.cummax()
-            drawdown = (cum_returns / running_max) - 1
-            mdd = drawdown.min()
+            cum_ret = (1 + full_ret).cumprod()
+            dd = (cum_ret / cum_ret.cummax()) - 1
+            mdd = dd.min()
             
-            total_days = (cum_returns.index[-1] - cum_returns.index[0]).days
-            if total_days > 0:
-                cagr = cum_returns.iloc[-1]**(365/total_days) - 1
-            else:
-                cagr = 0
+            days = (cum_ret.index[-1] - cum_ret.index[0]).days
+            cagr = cum_ret.iloc[-1]**(365/days) - 1 if days > 0 else 0
             
-            # 벤치마크 데이터 로드 (동적 적용)
-            bm_ticker = MARKET_CONFIG[target_market]['benchmark']
+            # 벤치마크 로드
             try:
-                bm_data = fdr.DataReader(bm_ticker, start=full_returns.index[0], end=full_returns.index[-1])['Close']
-                bm_ret = bm_data.pct_change().fillna(0)
-                # 인덱스 교집합만 사용하여 비교
-                common_idx = full_returns.index.intersection(bm_ret.index)
+                bm_ticker = bm_map[target_market]
+                bm_df = fdr.DataReader(bm_ticker, start=full_ret.index[0], end=full_ret.index[-1])['Close']
+                bm_ret = bm_df.pct_change().fillna(0)
+                common_idx = full_ret.index.intersection(bm_ret.index)
                 bm_cum = (1 + bm_ret.loc[common_idx]).cumprod()
-                # 시작점을 1로 맞춤 (비교 용이성)
-                if not bm_cum.empty:
-                    bm_cum = bm_cum / bm_cum.iloc[0]
-            except:
-                bm_cum = None
-
-            # ----------------------------------
-            # 데이터 준비 (엑셀 및 탭 표시용)
-            # ----------------------------------
-            monthly_ret = full_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
-            monthly_table = monthly_ret.groupby([monthly_ret.index.year, monthly_ret.index.month]).sum().unstack()
-            monthly_table.columns = [f"{c}월" for c in monthly_table.columns]
+                if not bm_cum.empty: bm_cum = bm_cum / bm_cum.iloc[0]
+            except: bm_cum = None
             
             # 현재 추천 종목
-            latest_date = df_price.index[-1]
-            past_target = latest_date - pd.DateOffset(months=momentum_window)
-            
-            idx_loc = df_price.index.searchsorted(past_target)
-            past_real = df_price.index[min(idx_loc, len(df_price)-1)]
-            
-            p_curr = df_price.iloc[-1]
-            p_past = df_price.loc[past_real]
-            
-            curr_mom = (p_curr - p_past) / p_past
-            curr_mom = curr_mom.replace([np.inf, -np.inf], np.nan).dropna()
+            last_date = df_price.index[-1]
+            last_past = df_price.index[min(df_price.index.searchsorted(last_date - pd.DateOffset(months=momentum_window)), len(df_price)-1)]
+            curr_mom = ((df_price.iloc[-1] - df_price.loc[last_past]) / df_price.loc[last_past]).dropna()
             curr_top = curr_mom.nlargest(top_n)
             
-            picks_data = []
-            currency_symbol = "USD" if "USD" in MARKET_CONFIG[target_market]['currency'] else "KRW"
-            
-            for code, score in curr_top.items():
-                picks_data.append({
-                    '종목명': code_map.get(code, code),
-                    '종목코드': code,
-                    '1년 수익률': score,
-                    '현재가': p_curr[code]
+            curr_data = []
+            is_usd = "USD" in ("USD" if target_market in ["S&P 500", "NASDAQ 100"] else "KRW")
+            for c, v in curr_top.items():
+                curr_data.append({
+                    'Code': c, 
+                    'Name': code_map.get(c, c), 
+                    'Return_1Y': v, 
+                    'Price': df_price.iloc[-1][c]
                 })
-            df_picks = pd.DataFrame(picks_data)
-            df_history = pd.DataFrame(history_records)
+            df_picks = pd.DataFrame(curr_data)
+            df_hist = pd.DataFrame(history_records)
+            
+            # 월별 수익률 표
+            m_ret = full_ret.resample('M').apply(lambda x: (1 + x).prod() - 1)
+            m_table = m_ret.groupby([m_ret.index.year, m_ret.index.month]).sum().unstack()
+            m_table.columns = [f"{x}월" for x in m_table.columns]
 
-            # ----------------------------------
-            # 결과 화면 출력
-            # ----------------------------------
-            col1, col2, col3 = st.columns(3)
-            col1.metric("총 수익률", f"{(cum_returns.iloc[-1]-1)*100:.2f}%")
-            col2.metric("연평균 수익률 (CAGR)", f"{cagr*100:.2f}%")
-            col3.metric("최대 낙폭 (MDD)", f"{mdd*100:.2f}%", delta_color="inverse")
+            # --- 화면 표시 ---
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Return", f"{(cum_ret.iloc[-1]-1)*100:.2f}%")
+            c2.metric("CAGR", f"{cagr*100:.2f}%")
+            c3.metric("MDD", f"{mdd*100:.2f}%", delta_color="inverse")
             
-            tab1, tab2, tab3, tab4 = st.tabs(["📊 성과 차트", "🏆 현재 추천 종목", "📅 월별 수익률", "📝 매매 기록"])
+            t1, t2, t3, t4 = st.tabs(["Chart", "Current Picks", "Monthly", "History"])
             
-            with tab1:
-                fig, ax = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={'height_ratios': [2, 1]})
-                
-                # 수익률 곡선
-                ax[0].plot(cum_returns.index, cum_returns, label=f'Momentum ({target_market})', color='#FF4B4B')
-                if bm_cum is not None:
-                    ax[0].plot(bm_cum.index, bm_cum, label=f'Benchmark ({bm_ticker})', color='gray', linestyle='--', alpha=0.6)
-                
-                ax[0].set_title(f"{target_market} Strategy vs Benchmark")
-                ax[0].set_yscale('log')
-                ax[0].legend()
-                ax[0].grid(True, alpha=0.3)
-                
-                # 낙폭 곡선
-                ax[1].fill_between(drawdown.index, drawdown*100, 0, color='#1F77B4', alpha=0.3)
-                ax[1].plot(drawdown.index, drawdown*100, color='#1F77B4', linewidth=1)
-                ax[1].set_title("Drawdown Risk (%)")
-                ax[1].grid(True, alpha=0.3)
-                
+            with t1:
+                fig, ax = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={'height_ratios':[2,1]})
+                ax[0].plot(cum_ret.index, cum_ret, label='Strategy', color='red')
+                if bm_cum is not None: ax[0].plot(bm_cum.index, bm_cum, label='Benchmark', color='gray', linestyle='--')
+                ax[0].set_yscale('log'); ax[0].legend(); ax[0].grid(alpha=0.3)
+                ax[1].plot(dd.index, dd*100, color='blue'); ax[1].fill_between(dd.index, dd*100, 0, color='blue', alpha=0.3)
+                ax[1].grid(alpha=0.3); ax[1].set_title('Drawdown (%)')
                 st.pyplot(fig)
                 
-            with tab2:
-                st.subheader(f"📢 [{target_market}] 오늘 기준 Top {top_n}")
-                st.info(f"기준일: {latest_date.strftime('%Y-%m-%d')}")
+            with t2:
+                st.subheader(f"Current Top {top_n} ({last_date.strftime('%Y-%m-%d')})")
+                disp = df_picks.copy()
+                disp['Return_1Y'] = disp['Return_1Y'].apply(lambda x: f"{x*100:.2f}%")
+                disp['Price'] = disp['Price'].apply(lambda x: f"{x:,.2f}" if is_usd else f"{x:,.0f}")
+                st.table(disp)
                 
-                # 화면 표시용 포맷팅
-                df_picks_display = df_picks.copy()
-                df_picks_display['1년 수익률'] = df_picks_display['1년 수익률'].apply(lambda x: f"{x*100:.2f}%")
-                df_picks_display['현재가'] = df_picks_display['현재가'].apply(lambda x: f"{x:,.2f}" if currency_symbol == "USD" else f"{x:,.0f}")
-                st.table(df_picks_display)
+            with t3:
+                st.dataframe(m_table.style.background_gradient(cmap='RdYlGn', axis=None).format("{:.2%}"))
+            
+            with t4:
+                st.dataframe(df_hist)
                 
-            with tab3:
-                st.subheader("📅 월별 수익률 Heatmap")
-                st.dataframe(monthly_table.style.background_gradient(cmap='RdYlGn', axis=None).format("{:.2%}"))
+            # 엑셀 다운로드
+            if export_excel:
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine='xlsxwriter') as w:
+                    df_hist.to_excel(w, sheet_name='History', index=False)
+                    m_table.to_excel(w, sheet_name='Monthly')
+                    df_picks.to_excel(w, sheet_name='Picks', index=False)
+                st.download_button("Download Excel", buf.getvalue(), "Momentum_Result.xlsx", "application/vnd.ms-excel")
                 
-            with tab4:
-                st.subheader("📝 과거 리밸런싱 내역")
-                st.dataframe(df_history)
-
-            # ----------------------------------
-            # 엑셀 다운로드 로직
-            # ----------------------------------
-            if export_excel_option:
-                st.markdown("---")
-                st.subheader("💾 분석 결과 저장")
-                
-                with st.spinner("엑셀 파일을 생성 중입니다..."):
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                        # 1. 매매 이력
-                        df_history.to_excel(writer, sheet_name='Trade_History', index=False)
-                        # 2. 월별 성과
-                        monthly_table.to_excel(writer, sheet_name='Monthly_Returns')
-                        # 3. 현재 매수 종목
-                        df_picks.to_excel(writer, sheet_name='Current_Picks', index=False)
-                        
-                        # 엑셀 포맷팅
-                        workbook = writer.book
-                        format_pct = workbook.add_format({'num_format': '0.00%'})
-                        format_money = workbook.add_format({'num_format': '#,##0.00' if currency_symbol=="USD" else '#,##0'})
-                        
-                        # Current_Picks 시트 포맷
-                        worksheet_picks = writer.sheets['Current_Picks']
-                        worksheet_picks.set_column('C:C', 12, format_pct) # 수익률
-                        worksheet_picks.set_column('D:D', 15, format_money) # 가격
-
-                    st.success("파일 생성 완료!")
-                    
-                    file_name_clean = target_market.replace(" ", "")
-                    st.download_button(
-                        label="📥 엑셀 파일 다운로드 (Excel)",
-                        data=buffer.getvalue(),
-                        file_name=f"{file_name_clean}_Momentum_Result.xlsx",
-                        mime="application/vnd.ms-excel"
-                    )
         else:
-            st.warning("수익률을 계산할 수 없습니다. (모멘텀 기간을 12개월에서 6개월로 줄여보세요.)")
+            st.error("결과를 계산할 수 없습니다. (모멘텀 기간을 줄이거나, 투자 유니버스를 늘려보세요)")

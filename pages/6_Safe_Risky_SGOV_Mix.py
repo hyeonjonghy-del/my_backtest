@@ -50,6 +50,7 @@ def load_data(safe, risky, rate, cash, start):
     tickers = [safe, risky, rate]
     data = yf.download(tickers, start=start, progress=False, auto_adjust=True)
     
+    # yfinance 데이터 구조 처리
     if isinstance(data.columns, pd.MultiIndex):
         if 'Close' in data.columns.levels[0]:
              df = data['Close'].copy()
@@ -60,7 +61,7 @@ def load_data(safe, risky, rate, cash, start):
     
     df = df.dropna()
     
-    # SGOV 별도 처리
+    # SGOV 별도 처리 (상장일 이슈 대응)
     try:
         cash_data = yf.download(cash, start=start, progress=False, auto_adjust=True)
         if isinstance(cash_data.columns, pd.MultiIndex):
@@ -80,8 +81,8 @@ def load_data(safe, risky, rate, cash, start):
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
 # -----------------------------------------------------------------------------
-if st.button("🚀 오늘의 매매 신호 확인하기", type="primary", use_container_width=True):
-    with st.spinner('미국 시장 데이터를 분석 중입니다...'):
+if st.button("🚀 전략 실행 (신호 + 백테스트)", type="primary", use_container_width=True):
+    with st.spinner('시장 데이터 분석 및 시뮬레이션 중...'):
         
         # 1. 데이터 준비
         try:
@@ -102,7 +103,6 @@ if st.button("🚀 오늘의 매매 신호 확인하기", type="primary", use_co
         prev_row = df.iloc[-2]
         last_date = df.index[-1].strftime('%Y-%m-%d')
         
-        # 상태 판단 로직
         is_bull = last_row[ticker_safe] > last_row[stock_ma_col]
         is_hike = last_row[rate_ticker] > last_row[rate_ma_col]
         
@@ -110,11 +110,11 @@ if st.button("🚀 오늘의 매매 신호 확인하기", type="primary", use_co
         was_hike = prev_row[rate_ticker] > prev_row[rate_ma_col]
 
         # ---------------------------------------------------------------------
-        # [핵심] 오늘의 행동 지침 (Action Plan) - UI 개선
+        # [Part 1] 오늘의 행동 지침 (Action Plan)
         # ---------------------------------------------------------------------
-        st.write("") # 여백
+        st.subheader(f"🔔 오늘의 행동 지침 ({last_date} 기준)")
         
-        # 목표 포지션 메시지 설정
+        # 목표 포지션 설정
         if is_bull:
             if use_rate_filter and is_hike:
                 target_name = "📉 혼합 포지션 (Risk Control)"
@@ -129,126 +129,159 @@ if st.button("🚀 오늘의 매매 신호 확인하기", type="primary", use_co
             detail_msg = f"- {ticker_safe}: 100%"
             cur_state = "bear"
 
-        # 이전 상태 판단
+        # 이전 상태 설정
         if was_bull:
             if use_rate_filter and was_hike: prev_state = "bull_mix"
             else: prev_state = "bull_full"
         else:
             prev_state = "bear"
             
-        # ------------------- 결과 출력 -------------------
-        
-        # [상황 1] 매매 필요 없음 (유지)
+        # 결과 박스 출력
         if cur_state == prev_state:
             st.success(f"☕ **오늘은 아무것도 할 필요 없습니다.**", icon="✅")
             st.markdown(f"""
-                <div style='padding: 20px; background-color: #f0fdf4; border-radius: 10px; border: 1px solid #bbf7d0;'>
-                    <h3 style='color: #166534; margin:0;'>현재 포지션 유지: {target_name}</h3>
-                    <p style='color: #374151; margin-top: 10px;'>
-                        어제와 시장 상황이 동일합니다. 계좌를 열지 않고 편안하게 주무셔도 됩니다.<br>
-                        <b>보유 종목:</b> <br>
+                <div style='padding: 15px; background-color: #f0fdf4; border-radius: 10px; border: 1px solid #bbf7d0; margin-bottom: 20px;'>
+                    <h4 style='color: #166534; margin:0;'>현재 포지션 유지: {target_name}</h4>
+                    <p style='color: #374151; margin-top: 5px; margin-bottom: 0;'>
+                        <b>보유 목표:</b><br>
                         {detail_msg.replace('\n', '<br>')}
                     </p>
                 </div>
             """, unsafe_allow_html=True)
-            
-        # [상황 2] 매매 필요 (변경)
         else:
             st.error(f"🚨 **매매 신호 발생! 포지션을 변경하세요.**", icon="⚠️")
             st.markdown(f"""
-                <div style='padding: 20px; background-color: #fef2f2; border-radius: 10px; border: 1px solid #fecaca;'>
-                    <h3 style='color: #991b1b; margin:0;'>목표 포지션: {target_name}</h3>
-                    <p style='color: #374151; margin-top: 10px;'>
-                        시장 추세가 변경되었습니다. 오늘 밤 장 시작 시 아래와 같이 리밸런싱 하세요.<br>
-                        <b>변경 목표:</b> <br>
+                <div style='padding: 15px; background-color: #fef2f2; border-radius: 10px; border: 1px solid #fecaca; margin-bottom: 20px;'>
+                    <h4 style='color: #991b1b; margin:0;'>변경 목표: {target_name}</h4>
+                    <p style='color: #374151; margin-top: 5px; margin-bottom: 0;'>
+                        <b>리밸런싱 목표:</b><br>
                         {detail_msg.replace('\n', '<br>')}
                     </p>
                 </div>
             """, unsafe_allow_html=True)
 
-        st.divider()
+        with st.expander("📋 판단 근거 (상세 데이터 보기)", expanded=False):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("기준 날짜", last_date)
+            trend_diff = last_row[ticker_safe] - last_row[stock_ma_col]
+            c2.metric(f"추세 ({ticker_safe})", 
+                      f"{'상승장 📈' if is_bull else '하락장 📉'}",
+                      f"{trend_diff:.2f}")
+            rate_diff = last_row[rate_ticker] - last_row[rate_ma_col]
+            c3.metric(f"리스크 ({rate_ticker})", 
+                      f"{'위험 ⚠️' if is_hike else '안전 🆗'}",
+                      f"{rate_diff:.4f}")
 
-        # 근거 데이터 표시
-        c1, c2, c3 = st.columns(3)
-        c1.metric("기준 날짜", last_date)
-        c1.caption("미국 현지 종가 기준")
-        
-        trend_diff = last_row[ticker_safe] - last_row[stock_ma_col]
-        c2.metric(f"추세 ({ticker_safe})", 
-                  f"{'상승장 📈' if is_bull else '하락장 📉'}",
-                  f"{trend_diff:.2f} (Price-MA)")
-        
-        rate_diff = last_row[rate_ticker] - last_row[rate_ma_col]
-        c3.metric(f"리스크 ({rate_ticker})", 
-                  f"{'위험 ⚠️' if is_hike else '안전 🆗'}",
-                  f"{rate_diff:.4f} (Rate-MA)")
-
-        st.divider()
+        st.markdown("---")
 
         # ---------------------------------------------------------------------
-        # 백테스트 차트 (하단 배치)
+        # [Part 2] 백테스트 결과 차트
         # ---------------------------------------------------------------------
-        with st.expander("📊 과거 시뮬레이션 결과 보기 (Click)"):
+        st.subheader("📊 전체 기간 시뮬레이션 (백테스트)")
+        
+        # 백테스트 신호 생성 (하루 Shift)
+        df['Stock_Signal'] = 0
+        df.loc[df[ticker_safe] > df[stock_ma_col], 'Stock_Signal'] = 1
+        df['Rate_Hike'] = 0
+        df.loc[df[rate_ticker] > df[rate_ma_col], 'Rate_Hike'] = 1
+        
+        # 오늘 신호보고 내일 매매 -> shift(1)
+        df['Stock_Signal'] = df['Stock_Signal'].shift(1)
+        df['Rate_Hike'] = df['Rate_Hike'].shift(1)
+        
+        # 수익률 계산
+        daily_ret = df.pct_change()
+        if cash_ticker in daily_ret.columns:
+            daily_ret[cash_ticker] = daily_ret[cash_ticker].fillna(0)
             
-            # 백테스트 로직 (검증용)
-            df['Stock_Signal'] = 0
-            df.loc[df[ticker_safe] > df[stock_ma_col], 'Stock_Signal'] = 1
-            df['Rate_Hike'] = 0
-            df.loc[df[rate_ticker] > df[rate_ma_col], 'Rate_Hike'] = 1
-            
-            # 하루 shift
-            df['Stock_Signal'] = df['Stock_Signal'].shift(1)
-            df['Rate_Hike'] = df['Rate_Hike'].shift(1)
-            
-            daily_ret = df.pct_change()
-            if cash_ticker in daily_ret.columns:
-                daily_ret[cash_ticker] = daily_ret[cash_ticker].fillna(0)
+        strategy_rets = []
+        
+        # 빠른 연산을 위해 Numpy 변환
+        np_stock_sig = df['Stock_Signal'].values
+        np_rate_hike = df['Rate_Hike'].values
+        np_risky_ret = daily_ret[ticker_risky].fillna(0).values
+        np_safe_ret = daily_ret[ticker_safe].fillna(0).values
+        np_cash_ret = daily_ret[cash_ticker].values
+        
+        for i in range(len(df)):
+            if i == 0: 
+                strategy_rets.append(0.0)
+                continue
                 
-            strategy_rets = []
-            
-            # Numpy 변환 가속
-            np_stock_sig = df['Stock_Signal'].values
-            np_rate_hike = df['Rate_Hike'].values
-            np_risky_ret = daily_ret[ticker_risky].fillna(0).values
-            np_safe_ret = daily_ret[ticker_safe].fillna(0).values
-            np_cash_ret = daily_ret[cash_ticker].values
-            
-            for i in range(len(df)):
-                if i == 0: 
-                    strategy_rets.append(0.0)
-                    continue
+            if np_stock_sig[i] == 1: # Bull Market
+                if use_rate_filter and np_rate_hike[i] == 1: # Risk Control (Mix)
+                    ret = (np_risky_ret[i] * exposure_ratio) + (np_cash_ret[i] * (1-exposure_ratio))
+                    strategy_rets.append(ret)
+                else: # Full Bull
+                    strategy_rets.append(np_risky_ret[i])
+            else: # Bear Market
+                strategy_rets.append(np_safe_ret[i])
                     
-                if np_stock_sig[i] == 1: # Bull
-                    if use_rate_filter and np_rate_hike[i] == 1: # Mix
-                        ret = (np_risky_ret[i] * exposure_ratio) + (np_cash_ret[i] * (1-exposure_ratio))
-                        strategy_rets.append(ret)
-                    else: # Full Bull
-                        strategy_rets.append(np_risky_ret[i])
-                else: # Bear
-                    strategy_rets.append(np_safe_ret[i])
-                    
-            df['Strategy_Ret'] = strategy_rets
-            df['My_Asset'] = (1 + df['Strategy_Ret']).cumprod()
-            df['Hold_Safe'] = (1 + daily_ret[ticker_safe]).cumprod()
-            
-            # 성과 지표
-            final_return = df['My_Asset'].iloc[-1]
-            cagr = final_return ** (252 / len(df)) - 1
-            
-            k1, k2 = st.columns(2)
-            k1.metric("총 수익배수", f"{final_return:.2f}배")
-            k2.metric("연평균 수익률 (CAGR)", f"{cagr*100:.2f}%")
+        df['Strategy_Ret'] = strategy_rets
+        
+        # 지표 계산
+        df['My_Asset'] = (1 + df['Strategy_Ret']).cumprod()
+        df['Hold_Safe'] = (1 + daily_ret[ticker_safe]).cumprod()
+        
+        # MDD 계산
+        df['Peak'] = df['My_Asset'].cummax()
+        df['MDD'] = (df['My_Asset'] - df['Peak']) / df['Peak'] * 100
+        
+        # 성과 요약
+        final_return = df['My_Asset'].iloc[-1]
+        cagr = final_return ** (252 / len(df)) - 1
+        mdd_min = df['MDD'].min()
+        
+        k1, k2, k3 = st.columns(3)
+        k1.metric("최종 자산 배수", f"{final_return:.2f}배")
+        k2.metric("연평균 수익률 (CAGR)", f"{cagr*100:.2f}%")
+        k3.metric("최대 낙폭 (Max MDD)", f"{mdd_min:.2f}%")
 
-            # 차트
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(df.index, df['My_Asset'], label='Strategy', color='red')
-            ax.plot(df.index, df['Hold_Safe'], label=f'{ticker_safe} Buy&Hold', color='gray', alpha=0.5, linestyle='--')
-            ax.set_yscale('log')
-            ax.legend()
-            st.pyplot(fig)
+        # [차트 그리기] 좌: 수익률, 우: MDD
+        fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # (1) 수익률 차트 (로그)
+        axes[0].plot(df.index, df['My_Asset'], label='Strategy', color='red', linewidth=1.5)
+        axes[0].plot(df.index, df['Hold_Safe'], label=f'{ticker_safe} Hold', color='black', alpha=0.3, linestyle='--')
+        axes[0].set_title('Asset Growth (Log Scale)')
+        axes[0].set_yscale('log')
+        axes[0].legend()
+        axes[0].grid(True, which='both', alpha=0.3)
+        
+        # (2) MDD 차트
+        axes[1].plot(df.index, df['MDD'], label='Drawdown', color='blue', linewidth=1)
+        axes[1].fill_between(df.index, df['MDD'], 0, color='blue', alpha=0.1)
+        axes[1].set_title('Drawdown Risk (MDD)')
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
+        
+        st.pyplot(fig)
+        
+        # ---------------------------------------------------------------------
+        # 엑셀 다운로드 (월별 데이터 포함)
+        # ---------------------------------------------------------------------
+        # 월별 수익률 계산
+        try:
+            # Pandas 2.0+ 대응 ('ME' 사용, 구버전은 'M'으로 대체될 수 있음)
+            monthly_ret = df['Strategy_Ret'].resample('ME').apply(lambda x: (1 + x).prod() - 1)
+        except:
+            monthly_ret = df['Strategy_Ret'].resample('M').apply(lambda x: (1 + x).prod() - 1)
+
+        monthly_table = monthly_ret.groupby([monthly_ret.index.year, monthly_ret.index.month]).sum().unstack()
+        monthly_table.columns = [f"{c}월" for c in monthly_table.columns]
+        
+        # 연도별 수익률 (Year Total)
+        try:
+            yearly_ret = df['Strategy_Ret'].resample('YE').apply(lambda x: (1 + x).prod() - 1)
+        except:
+            yearly_ret = df['Strategy_Ret'].resample('Y').apply(lambda x: (1 + x).prod() - 1)
             
-            # 엑셀 다운로드
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, sheet_name='Result')
-            st.download_button("📥 백테스트 결과 엑셀 다운로드", output.getvalue(), "Backtest_Result.xlsx")
+        yearly_ret.index = yearly_ret.index.year
+        monthly_table['Year_Total'] = yearly_ret
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, sheet_name='Daily_Data')
+            monthly_table.to_excel(writer, sheet_name='Monthly_Returns')
+            
+        st.download_button("📥 백테스트 결과 엑셀 다운로드", output.getvalue(), "Backtest_Result.xlsx")

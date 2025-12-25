@@ -9,36 +9,44 @@ import FinanceDataReader as fdr
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 및 캐싱 함수
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="S&P 500 모멘텀 전략", page_icon="🇺🇸")
+st.set_page_config(page_title="미국 주식 모멘텀 전략", page_icon="🇺🇸")
 
 @st.cache_data(ttl=3600*24) # 24시간 동안 데이터 캐싱
-def get_sp500_data(start_year, sample_size):
+def get_stock_data(market_type, start_year, sample_size):
     """
-    S&P 500 종목의 데이터를 다운로드합니다.
-    Streamlit 캐시를 사용하여 속도를 최적화합니다.
+    선택한 시장(S&P 500 또는 NASDAQ 100)의 종목 데이터를 다운로드합니다.
     """
-    # 1. S&P 500 종목 리스트 가져오기
+    # 1. 종목 리스트 가져오기
     try:
-        df_list = fdr.StockListing('S&P500')
+        if market_type == "S&P 500":
+            df_list = fdr.StockListing('S&P500')
+        elif market_type == "NASDAQ 100":
+            df_list = fdr.StockListing('NASDAQ-100')
+        else:
+            df_list = fdr.StockListing('S&P500') # 기본값
+            
     except Exception as e:
         st.error(f"종목 리스트를 가져오는 중 오류가 발생했습니다: {e}")
         return pd.DataFrame(), {}
         
-    # 컬럼명 통일 (Symbol -> Code, Security -> Name)
-    # S&P500 리스팅은 보통 'Symbol', 'Security' 등의 컬럼을 가짐
-    mapper = {'Symbol': 'Code', 'Security': 'Name'}
+    # 컬럼명 통일 (데이터 소스마다 컬럼명이 다를 수 있음)
+    # S&P500: Symbol, Security / NASDAQ-100: Symbol, Company 등
+    mapper = {
+        'Symbol': 'Code', 'Ticker': 'Code', 
+        'Security': 'Name', 'Company': 'Name', 'Name': 'Name'
+    }
     df_list = df_list.rename(columns=mapper)
     
-    # 필수 컬럼 확인 ('Code'가 없으면 진행 불가)
+    # 필수 컬럼 확인
     if 'Code' not in df_list.columns:
-        st.error("데이터 소스에서 종목 코드를 찾을 수 없습니다.")
+        st.error(f"{market_type} 데이터 소스에서 종목 코드를 찾을 수 없습니다. (컬럼: {df_list.columns})")
         return pd.DataFrame(), {}
         
-    # 'Name' 컬럼이 없는 경우 Code로 대체
     if 'Name' not in df_list.columns:
         df_list['Name'] = df_list['Code']
 
-    # 상위 N개 선정 (S&P500은 이미 대형주이므로 리스트 순서대로 가져옴)
+    # 상위 N개 선정
+    # (NASDAQ-100은 보통 100개 내외이므로 sample_size가 크면 전체를 다 가져옵니다)
     target_df = df_list.head(sample_size)
     tickers = target_df['Code'].tolist()
     code_map = target_df.set_index('Code')['Name'].to_dict()
@@ -50,10 +58,12 @@ def get_sp500_data(start_year, sample_size):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
+    total_tickers = len(tickers)
+    
     for i, ticker in enumerate(tickers):
         try:
-            status_text.text(f"데이터 다운로드 중.. ({i+1}/{len(tickers)}) - {code_map.get(ticker, ticker)}")
-            progress_bar.progress((i + 1) / len(tickers))
+            status_text.text(f"[{market_type}] 데이터 다운로드 중.. ({i+1}/{total_tickers}) - {code_map.get(ticker, ticker)}")
+            progress_bar.progress((i + 1) / total_tickers)
             
             # 미국 주식 데이터 다운로드
             df = fdr.DataReader(ticker, str(fetch_year))['Close']
@@ -74,17 +84,27 @@ def get_sp500_data(start_year, sample_size):
 # -----------------------------------------------------------------------------
 # 2. 사이드바 UI
 # -----------------------------------------------------------------------------
-st.title("🇺🇸 S&P 500 상대 모멘텀 전략")
-st.markdown("S&P 500 종목 중 **최근 수익률이 좋은 종목**으로 포트폴리오를 교체하는 전략입니다.")
+st.title("🇺🇸 미국 주식 상대 모멘텀 전략")
+st.markdown("S&P 500 또는 NASDAQ 100 종목 중 **최근 수익률이 좋은 종목**으로 교체하는 전략입니다.")
 
 with st.sidebar:
     st.header("⚙️ 전략 설정")
     
-    start_year = st.number_input("시작 연도", value=2015, min_value=2000, max_value=2024)
+    # 시장 선택 옵션 추가
+    market_option = st.radio("투자 대상 (Market)", ["S&P 500", "NASDAQ 100"])
     
-    # S&P 500은 약 500개 종목이므로 최대값을 505로 설정
-    sample_size = st.slider("투자 유니버스 (종목 수)", 50, 505, 100, step=50,
-                            help="S&P 500 리스트 상위 N개 종목을 사용합니다. 전체를 보려면 505로 설정하세요.")
+    start_year = st.number_input("시작 연도", value=2015, min_value=2000, max_value=2025)
+    
+    # 시장에 따른 슬라이더 최대값 조정
+    if market_option == "S&P 500":
+        max_stocks = 505
+        default_stocks = 100
+    else:
+        max_stocks = 105
+        default_stocks = 100
+        
+    sample_size = st.slider("투자 유니버스 (종목 수)", 10, max_stocks, default_stocks, step=10,
+                            help=f"{market_option} 리스트 상위 N개 종목을 사용합니다.")
     
     top_n = st.number_input("보유 종목 수 (Top N)", value=10, min_value=1)
     
@@ -108,9 +128,9 @@ with st.sidebar:
 # 3. 메인 로직
 # -----------------------------------------------------------------------------
 if run_btn:
-    with st.spinner("데이터를 분석하고 있습니다... (미국 주식 데이터는 시간이 조금 더 걸릴 수 있습니다)"):
-        # 1. 데이터 로드
-        df_price, code_map = get_sp500_data(start_year, sample_size)
+    with st.spinner(f"[{market_option}] 데이터를 분석하고 있습니다..."):
+        # 1. 데이터 로드 (변경된 함수 사용)
+        df_price, code_map = get_stock_data(market_option, start_year, sample_size)
         
         if df_price.empty:
             st.error("데이터를 가져오지 못했습니다. 잠시 후 다시 시도하거나 종목 수를 줄여보세요.")
@@ -187,14 +207,20 @@ if run_btn:
             total_days = (cum_returns.index[-1] - cum_returns.index[0]).days
             cagr = cum_returns.iloc[-1]**(365/total_days) - 1
             
-            # 벤치마크 (S&P 500 Index)
+            # 벤치마크 (S&P 500 vs NASDAQ 100 지수)
             try:
-                # FDR에서 S&P 500 지수 심볼: 'US500' 또는 'SPX' (데이터 소스에 따라 다름, 여기선 US500 시도)
-                kospi_bm = fdr.DataReader('US500', start=full_returns.index[0], end=full_returns.index[-1])['Close']
-                bm_ret = kospi_bm.pct_change().fillna(0)
+                # 선택된 시장에 따라 벤치마크 변경
+                if market_option == "NASDAQ 100":
+                    bm_ticker = 'NDX' # NASDAQ 100 Index (or QQQ for ETF)
+                    bm_label = 'NASDAQ 100 Index'
+                else:
+                    bm_ticker = 'US500' # S&P 500
+                    bm_label = 'S&P 500 Index'
+                    
+                bm_data = fdr.DataReader(bm_ticker, start=full_returns.index[0], end=full_returns.index[-1])['Close']
+                bm_ret = bm_data.pct_change().fillna(0)
                 bm_cum = (1 + bm_ret).cumprod()
                 bm_cum = bm_cum / bm_cum.iloc[0]
-                bm_label = 'S&P 500 Index'
             except:
                 bm_cum = None
                 bm_label = 'Benchmark'
@@ -203,7 +229,7 @@ if run_btn:
             # 데이터 준비 (엑셀 및 탭 표시용)
             # ----------------------------------
             # 1. 월별 수익률 테이블
-            monthly_ret = full_returns.resample('ME').apply(lambda x: (1 + x).prod() - 1)
+            monthly_ret = full_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
             monthly_table = monthly_ret.groupby([monthly_ret.index.year, monthly_ret.index.month]).sum().unstack()
             monthly_table.columns = [f"{c}월" for c in monthly_table.columns]
             
@@ -244,10 +270,10 @@ if run_btn:
             
             with tab1:
                 fig, ax = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [2, 1]})
-                ax[0].plot(cum_returns.index, cum_returns, label='Momentum Strategy', color='blue') # 미국은 보통 상승이 초록/파랑이지만 가독성 위해 블루
+                ax[0].plot(cum_returns.index, cum_returns, label=f'{market_option} Momentum', color='blue')
                 if bm_cum is not None:
                     ax[0].plot(bm_cum.index, bm_cum, label=bm_label, color='gray', linestyle='--', alpha=0.7)
-                ax[0].set_title("Strategy Growth (Log Scale)")
+                ax[0].set_title(f"{market_option} Strategy Growth (Log Scale)")
                 ax[0].set_yscale('log')
                 ax[0].legend()
                 ax[0].grid(alpha=0.3)
@@ -260,10 +286,8 @@ if run_btn:
                 
             with tab2:
                 st.subheader(f"📢 오늘 기준 추천 종목 (Top {top_n})")
-                # 화면 표시용 포맷팅
                 df_picks_display = df_picks.copy()
                 df_picks_display['1년 수익률'] = df_picks_display['1년 수익률'].apply(lambda x: f"{x*100:.2f}%")
-                # 달러($) 포맷 적용
                 df_picks_display['현재가'] = df_picks_display['현재가'].apply(lambda x: f"${x:,.2f}")
                 st.table(df_picks_display)
                 
@@ -291,7 +315,7 @@ if run_btn:
                         
                         workbook = writer.book
                         format_pct = workbook.add_format({'num_format': '0.00%'})
-                        format_money = workbook.add_format({'num_format': '$#,##0.00'}) # 달러 포맷
+                        format_money = workbook.add_format({'num_format': '$#,##0.00'})
                         
                         worksheet_picks = writer.sheets['Current_Picks']
                         worksheet_picks.set_column('C:C', 12, format_pct)
@@ -301,7 +325,7 @@ if run_btn:
                     st.download_button(
                         label="📥 엑셀 파일 다운로드 (Excel)",
                         data=buffer.getvalue(),
-                        file_name=f"SP500_Momentum_{start_year}_Result.xlsx",
+                        file_name=f"{market_option.replace(' ', '')}_Momentum_{start_year}_Result.xlsx",
                         mime="application/vnd.ms-excel"
                     )
         else:

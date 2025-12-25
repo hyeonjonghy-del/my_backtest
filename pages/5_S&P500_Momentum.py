@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import datetime
 import io
 import FinanceDataReader as fdr
+import requests
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 및 캐싱 함수
@@ -13,18 +14,31 @@ st.set_page_config(page_title="미국 주식 모멘텀 전략", page_icon="🇺�
 
 @st.cache_data(ttl=3600*24)
 def get_nasdaq100_list():
-    """위키피디아에서 NASDAQ-100 종목 리스트를 가져옵니다."""
+    """
+    위키피디아에서 NASDAQ-100 리스트를 가져옵니다.
+    봇 차단을 피하기 위해 User-Agent 헤더를 사용합니다.
+    """
     url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
+    
+    # 봇 차단 방지용 헤더 (브라우저인 척 속임)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
     try:
-        # lxml 라이브러리가 필요합니다. (requirements.txt에 lxml 추가)
-        dfs = pd.read_html(url, attrs={"id": "constituents"})
+        response = requests.get(url, headers=headers)
+        # 'Ticker'라는 단어가 포함된 테이블을 찾습니다.
+        dfs = pd.read_html(response.text, match='Ticker')
+        
         if dfs:
             df = dfs[0]
             # 컬럼 이름 통일 (Ticker -> Code, Company -> Name)
             df = df.rename(columns={'Ticker': 'Code', 'Company': 'Name'})
             return df[['Code', 'Name']]
     except Exception as e:
+        st.error(f"NASDAQ-100 리스트 가져오기 실패: {e}")
         return pd.DataFrame()
+        
     return pd.DataFrame()
 
 @st.cache_data(ttl=3600*24) 
@@ -34,10 +48,17 @@ def get_stock_data(market_type, start_year, sample_size):
     # 1. 종목 리스트 가져오기
     try:
         if market_type == "NASDAQ 100":
-            df_list = get_nasdaq100_list() # 위키피디아 크롤링 함수 사용
+            df_list = get_nasdaq100_list()
             if df_list.empty:
-                st.error("NASDAQ 100 리스트를 가져오는데 실패했습니다.")
-                return pd.DataFrame(), {}
+                st.warning("위키피디아 접속 실패. 백업 데이터를 사용합니다.")
+                # 만약 크롤링이 실패하면 주요 기술주 20개로 대체 (비상용)
+                fallback_data = {
+                    'Code': ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AVGO', 'PEP', 'COST', 
+                             'CSCO', 'TMUS', 'ADBE', 'TXN', 'NFLX', 'AMD', 'QCOM', 'INTC', 'HON', 'AMGN'],
+                    'Name': ['Apple', 'Microsoft', 'Nvidia', 'Amazon', 'Alphabet', 'Meta', 'Tesla', 'Broadcom', 'PepsiCo', 'Costco',
+                             'Cisco', 'T-Mobile', 'Adobe', 'Texas Instruments', 'Netflix', 'AMD', 'Qualcomm', 'Intel', 'Honeywell', 'Amgen']
+                }
+                df_list = pd.DataFrame(fallback_data)
         else:
             # S&P 500은 라이브러리 내장 기능 사용
             df_list = fdr.StockListing('S&P500')
@@ -51,7 +72,6 @@ def get_stock_data(market_type, start_year, sample_size):
     df_list = df_list.rename(columns=mapper)
     
     if 'Code' not in df_list.columns:
-        # Name 컬럼이 없으면 Code로 대체
         df_list['Name'] = df_list['Code'] if 'Code' in df_list.columns else ''
         
     # 상위 N개 선정
@@ -192,7 +212,9 @@ if run_btn:
             running_max = cum_returns.cummax()
             drawdown = (cum_returns / running_max) - 1
             mdd = drawdown.min()
-            cagr = cum_returns.iloc[-1]**(365/((cum_returns.index[-1] - cum_returns.index[0]).days)) - 1
+            
+            total_days = (cum_returns.index[-1] - cum_returns.index[0]).days
+            cagr = cum_returns.iloc[-1]**(365/total_days) - 1
             
             # 벤치마크 (QQQ 또는 SPY)
             try:
@@ -220,7 +242,10 @@ if run_btn:
                     ax[0].plot(bm_cum.index, bm_cum, label=bm_label, color='gray', linestyle='--', alpha=0.5)
                 ax[0].set_yscale('log')
                 ax[0].legend()
+                ax[0].grid(alpha=0.3)
                 ax[1].fill_between(drawdown.index, drawdown*100, 0, color='red', alpha=0.2)
+                ax[1].set_title("Drawdown")
+                ax[1].grid(alpha=0.3)
                 st.pyplot(fig)
                 
             with tab2:
@@ -242,5 +267,6 @@ if run_btn:
             if export_excel_option:
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                    pd.DataFrame(history_records).to_excel(writer, sheet_name='History')
-                st.download_button("📥 엑셀 다운로드", buffer, "backtest.xlsx")
+                    pd.DataFrame(history_records).to_excel(writer, sheet_name='History', index=False)
+                    pd.DataFrame(recs).to_excel(writer, sheet_name='Current_Picks', index=False)
+                st.download_button("📥 엑셀 다운로드", buffer, f"{market_option}_backtest.xlsx")

@@ -263,34 +263,31 @@ if run_btn:
             with tab3:
                 st.dataframe(pd.DataFrame(history_records))
             
-            # 엑셀 다운로드 (기능 추가됨)
+            # 엑셀 다운로드 (수정됨: 월별+연별 통합)
             if export_excel_option:
                 buffer = io.BytesIO()
                 
-                # 월별/연별 수익률 계산
+                # 1. 월별 수익률 계산 및 피벗 변환
                 monthly_ret = full_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
-                yearly_ret = full_returns.resample('A').apply(lambda x: (1 + x).prod() - 1)
-                
-                # 월별 수익률을 Pivot Table 형태로 변환 (행: 연도, 열: 월)
                 m_df = monthly_ret.to_frame('Return')
                 m_df['Year'] = m_df.index.year
                 m_df['Month'] = m_df.index.month
                 monthly_pivot = m_df.pivot(index='Year', columns='Month', values='Return')
                 
-                # 연별 수익률 DataFrame 변환
-                y_df = yearly_ret.to_frame('Annual Return')
-                y_df.index = y_df.index.year
-                y_df.index.name = 'Year'
+                # 2. 연별 수익률 계산 및 인덱스 조정
+                yearly_ret = full_returns.resample('A').apply(lambda x: (1 + x).prod() - 1)
+                y_df = yearly_ret.to_frame('Annual Return') # 컬럼명 지정
+                y_df.index = y_df.index.year # 인덱스를 연도(숫자)로 맞춰줌
+                
+                # 3. 데이터 병합 (월별 데이터 + 우측에 연별 데이터 붙이기)
+                final_sheet_df = pd.concat([monthly_pivot, y_df], axis=1)
 
+                # 4. 엑셀 저장
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     pd.DataFrame(history_records).to_excel(writer, sheet_name='History', index=False)
                     pd.DataFrame(recs).to_excel(writer, sheet_name='Current_Picks', index=False)
                     
-                    # 새로운 시트 추가
-                    monthly_pivot.to_excel(writer, sheet_name='Monthly_Returns')
-                    y_df.to_excel(writer, sheet_name='Yearly_Returns')
-                    
-                    # (선택 사항) 엑셀 서식 지정 기능은 코드가 복잡해지므로 생략하나, 
-                    # 필요하다면 xlsxwriter의 workbook 객체를 통해 % 서식을 적용할 수 있습니다.
+                    # 통합된 데이터프레임을 저장 (별도 Yearly 시트 없음)
+                    final_sheet_df.to_excel(writer, sheet_name='Monthly_Returns')
                     
                 st.download_button("📥 엑셀 다운로드", buffer, f"{market_option}_backtest.xlsx")

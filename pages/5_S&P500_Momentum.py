@@ -134,6 +134,11 @@ with st.sidebar:
     rebalance_step = rebalance_map[rebal_label]
     
     momentum_window = st.number_input("모멘텀 기간 (개월)", value=12)
+    
+    # [수정됨] 세금 적용 옵션 추가
+    st.markdown("---")
+    st.markdown("**세금 설정**")
+    apply_tax = st.checkbox("세금 22% 적용 (연 수익 실현 시)", value=False, help="매년 말 수익이 났을 경우 22% 세금을 차감하고 재투자한다고 가정합니다.")
 
     st.markdown("---")
     export_excel_option = st.checkbox("📥 엑셀 다운로드 기능 활성화", value=True)
@@ -208,7 +213,53 @@ if run_btn:
             full_returns = pd.concat(portfolio_returns)
             full_returns = full_returns[~full_returns.index.duplicated(keep='first')]
             
-            cum_returns = (1 + full_returns).cumprod()
+            # [수정됨] 세금 계산 로직
+            if apply_tax:
+                running_capital = 1.0
+                year_start_capital = 1.0
+                final_series_list = []
+                
+                # 연도별로 데이터를 나누어 처리
+                grouped = full_returns.groupby(full_returns.index.year)
+                
+                for year, daily_rets in grouped:
+                    # 해당 연도의 누적 수익률 계산 (연초 대비)
+                    year_cum = (1 + daily_rets).cumprod()
+                    # 현재 자산 가치에 반영
+                    year_nav_series = year_cum * running_capital
+                    
+                    # 연말 자산 가치
+                    end_capital_gross = year_nav_series.iloc[-1]
+                    
+                    # 연간 수익 계산
+                    profit = end_capital_gross - year_start_capital
+                    
+                    tax = 0
+                    if profit > 0:
+                        tax = profit * 0.22 # 이익금의 22% 세금
+                    
+                    # 세후 자산 가치 (연말 평가액 차감)
+                    net_end_capital = end_capital_gross - tax
+                    
+                    # 차트 및 데이터에 세금 차감 반영 (해당 연도 마지막 날 자산 가치 수정)
+                    if tax > 0:
+                        year_nav_series.iloc[-1] = net_end_capital
+                        
+                    final_series_list.append(year_nav_series)
+                    
+                    # 다음 해 시작 자산 업데이트 (세후 금액으로 재투자)
+                    running_capital = net_end_capital
+                    year_start_capital = net_end_capital 
+                
+                # 세후 누적 자산 곡선 생성
+                cum_returns = pd.concat(final_series_list)
+                # 세금 반영된 일별 수익률 재계산 (MDD 및 통계 정확도 위해)
+                full_returns = cum_returns.pct_change().fillna(0)
+                
+            else:
+                # 세금 미적용 (기존 로직)
+                cum_returns = (1 + full_returns).cumprod()
+            
             running_max = cum_returns.cummax()
             drawdown = (cum_returns / running_max) - 1
             mdd = drawdown.min()
@@ -230,8 +281,11 @@ if run_btn:
             # 결과 출력
             col1, col2, col3 = st.columns(3)
             col1.metric("총 수익률", f"{(cum_returns.iloc[-1]-1)*100:.2f}%")
-            col2.metric("CAGR", f"{cagr*100:.2f}%")
+            col2.metric("CAGR (연평균)", f"{cagr*100:.2f}%")
             col3.metric("MDD", f"{mdd*100:.2f}%", delta_color="inverse")
+            
+            if apply_tax:
+                st.caption("ℹ️ 세금 22%가 적용된 결과입니다. (매년 말 이익 발생 시 차감)")
             
             tab1, tab2, tab3 = st.tabs(["📊 차트", "🏆 추천 종목", "📝 매매 기록"])
             
@@ -243,6 +297,8 @@ if run_btn:
                 ax[0].set_yscale('log')
                 ax[0].legend()
                 ax[0].grid(alpha=0.3)
+                ax[0].set_title("Equity Curve (Log Scale)")
+                
                 ax[1].fill_between(drawdown.index, drawdown*100, 0, color='red', alpha=0.2)
                 ax[1].set_title("Drawdown")
                 ax[1].grid(alpha=0.3)
@@ -287,7 +343,7 @@ if run_btn:
                     pd.DataFrame(history_records).to_excel(writer, sheet_name='History', index=False)
                     pd.DataFrame(recs).to_excel(writer, sheet_name='Current_Picks', index=False)
                     
-                    # 통합된 데이터프레임을 저장 (별도 Yearly 시트 없음)
+                    # 통합된 데이터프레임을 저장
                     final_sheet_df.to_excel(writer, sheet_name='Monthly_Returns')
                     
                 st.download_button("📥 엑셀 다운로드", buffer, f"{market_option}_backtest.xlsx")

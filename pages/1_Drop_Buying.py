@@ -16,8 +16,8 @@ st.sidebar.header("1. 종목 및 기간 설정")
 ticker_base = st.sidebar.text_input("기준 종목 (Base)", value="QQQ")
 ticker_leveraged = st.sidebar.text_input("투자 종목 (Leveraged)", value="TQQQ")
 
-# [수정됨] 시작일을 2026년 1월 1일로 변경
-start_date = st.sidebar.date_input("시작일", value=datetime.date(2026, 1, 1))
+# [수정됨] 시작일을 2016년 1월 1일로 변경
+start_date = st.sidebar.date_input("시작일", value=datetime.date(2016, 1, 1))
 end_date = st.sidebar.date_input("종료일", value=datetime.date.today())
 
 st.sidebar.header("2. 하락폭 기준 (지수 대비)")

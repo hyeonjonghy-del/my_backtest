@@ -135,7 +135,7 @@ with st.sidebar:
     
     momentum_window = st.number_input("모멘텀 기간 (개월)", value=12)
     
-    # [수정됨] 세금 적용 옵션 추가
+    # 세금 적용 옵션
     st.markdown("---")
     st.markdown("**세금 설정**")
     apply_tax = st.checkbox("세금 22% 적용 (연 수익 실현 시)", value=False, help="매년 말 수익이 났을 경우 22% 세금을 차감하고 재투자한다고 가정합니다.")
@@ -213,7 +213,7 @@ if run_btn:
             full_returns = pd.concat(portfolio_returns)
             full_returns = full_returns[~full_returns.index.duplicated(keep='first')]
             
-            # [수정됨] 세금 계산 로직
+            # 세금 계산 로직
             if apply_tax:
                 running_capital = 1.0
                 year_start_capital = 1.0
@@ -223,43 +223,30 @@ if run_btn:
                 grouped = full_returns.groupby(full_returns.index.year)
                 
                 for year, daily_rets in grouped:
-                    # 해당 연도의 누적 수익률 계산 (연초 대비)
                     year_cum = (1 + daily_rets).cumprod()
-                    # 현재 자산 가치에 반영
                     year_nav_series = year_cum * running_capital
-                    
-                    # 연말 자산 가치
                     end_capital_gross = year_nav_series.iloc[-1]
                     
-                    # 연간 수익 계산
                     profit = end_capital_gross - year_start_capital
-                    
                     tax = 0
                     if profit > 0:
-                        tax = profit * 0.22 # 이익금의 22% 세금
+                        tax = profit * 0.22 
                     
-                    # 세후 자산 가치 (연말 평가액 차감)
                     net_end_capital = end_capital_gross - tax
-                    
-                    # 차트 및 데이터에 세금 차감 반영 (해당 연도 마지막 날 자산 가치 수정)
                     if tax > 0:
                         year_nav_series.iloc[-1] = net_end_capital
                         
                     final_series_list.append(year_nav_series)
-                    
-                    # 다음 해 시작 자산 업데이트 (세후 금액으로 재투자)
                     running_capital = net_end_capital
                     year_start_capital = net_end_capital 
                 
-                # 세후 누적 자산 곡선 생성
                 cum_returns = pd.concat(final_series_list)
-                # 세금 반영된 일별 수익률 재계산 (MDD 및 통계 정확도 위해)
                 full_returns = cum_returns.pct_change().fillna(0)
                 
             else:
-                # 세금 미적용 (기존 로직)
                 cum_returns = (1 + full_returns).cumprod()
             
+            # 전략 MDD 계산
             running_max = cum_returns.cummax()
             drawdown = (cum_returns / running_max) - 1
             mdd = drawdown.min()
@@ -268,12 +255,19 @@ if run_btn:
             cagr = cum_returns.iloc[-1]**(365/total_days) - 1
             
             # 벤치마크 (QQQ 또는 SPY)
+            bm_cum = None
+            bm_drawdown = None
             try:
                 bm_ticker = 'QQQ' if market_option == "NASDAQ 100" else 'US500'
                 bm_label = 'NASDAQ 100 (QQQ)' if market_option == "NASDAQ 100" else 'S&P 500'
                 bm_data = fdr.DataReader(bm_ticker, start=full_returns.index[0], end=full_returns.index[-1])['Close']
                 bm_cum = (1 + bm_data.pct_change().fillna(0)).cumprod()
                 bm_cum = bm_cum / bm_cum.iloc[0]
+                
+                # [추가] 벤치마크 MDD 계산
+                bm_running_max = bm_cum.cummax()
+                bm_drawdown = (bm_cum / bm_running_max) - 1
+                
             except:
                 bm_cum = None
                 bm_label = 'Benchmark'
@@ -287,13 +281,8 @@ if run_btn:
             if apply_tax:
                 st.caption("ℹ️ 세금 22%가 적용된 결과입니다. (매년 말 이익 발생 시 차감)")
             
-            # -----------------------------------------------------------------
-            # [추가됨] 월별 수익률 테이블 계산
-            # -----------------------------------------------------------------
-            # 1. 월별 수익률 계산 (resample 'M'은 마지막 날짜 기준이므로 현재 진행중인 달도 포함됨)
+            # 월별 수익률 계산 (월별 탭용)
             monthly_ret = full_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
-            
-            # 2. Pivot Table 생성 (행: 연도, 열: 월)
             m_df = monthly_ret.to_frame('Return')
             m_df['Year'] = m_df.index.year
             m_df['Month'] = m_df.index.month
@@ -301,11 +290,8 @@ if run_btn:
             monthly_pivot = m_df.pivot(index='Year', columns='Month', values='Return')
             monthly_pivot.columns = [f"{c}월" for c in monthly_pivot.columns]
             
-            # 3. 연도별 Total 계산 및 병합
             yearly_ret = full_returns.resample('A').apply(lambda x: (1 + x).prod() - 1)
             yearly_ret.index = yearly_ret.index.year
-            
-            # 데이터프레임 병합
             monthly_pivot['Year Total'] = yearly_ret
 
             # -----------------------------------------------------------------
@@ -315,6 +301,8 @@ if run_btn:
             
             with tab1:
                 fig, ax = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [2, 1]})
+                
+                # (1) 수익률 차트
                 ax[0].plot(cum_returns.index, cum_returns, label=f'{market_option} Strategy')
                 if bm_cum is not None:
                     ax[0].plot(bm_cum.index, bm_cum, label=bm_label, color='gray', linestyle='--', alpha=0.5)
@@ -323,13 +311,21 @@ if run_btn:
                 ax[0].grid(alpha=0.3)
                 ax[0].set_title("Equity Curve (Log Scale)")
                 
-                ax[1].fill_between(drawdown.index, drawdown*100, 0, color='red', alpha=0.2)
-                ax[1].set_title("Drawdown")
+                # (2) MDD 차트 (벤치마크 비교 추가)
+                ax[1].fill_between(drawdown.index, drawdown*100, 0, color='red', alpha=0.2, label='Strategy MDD')
+                ax[1].plot(drawdown.index, drawdown*100, color='red', alpha=0.6, linewidth=1)
+                
+                if bm_drawdown is not None:
+                    ax[1].plot(bm_drawdown.index, bm_drawdown*100, label=f'{bm_label} MDD', color='gray', linestyle='--', alpha=0.5)
+                
+                ax[1].set_title("Drawdown (%)")
+                ax[1].legend(loc='lower left')
                 ax[1].grid(alpha=0.3)
+                
+                plt.tight_layout()
                 st.pyplot(fig)
                 
             with tab2:
-                # 현재 추천 종목
                 latest = df_price.iloc[-1]
                 past = df_price.loc[df_price.index[df_price.index.get_indexer([df_price.index[-1] - pd.DateOffset(months=momentum_window)], method='nearest')[0]]]
                 curr_mom = (latest - past) / past
@@ -341,7 +337,6 @@ if run_btn:
                 st.table(pd.DataFrame(recs))
                 
             with tab3:
-                # [수정] 매매 기록 표시 개선 (인덱스 제거 및 포맷팅)
                 trade_log_df = pd.DataFrame(history_records)
                 if not trade_log_df.empty:
                     trade_log_df['Momentum'] = trade_log_df['Momentum'].map('{:.2%}'.format)
@@ -358,15 +353,12 @@ if run_btn:
                     height=600
                 )
             
-            # 엑셀 다운로드 (계산된 monthly_pivot 활용)
+            # 엑셀 다운로드
             if export_excel_option:
                 buffer = io.BytesIO()
-                
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     pd.DataFrame(history_records).to_excel(writer, sheet_name='History', index=False)
                     pd.DataFrame(recs).to_excel(writer, sheet_name='Current_Picks', index=False)
-                    
-                    # 이미 계산된 월별 수익률 테이블 저장
                     monthly_pivot.to_excel(writer, sheet_name='Monthly_Returns')
                     
                 st.download_button("📥 엑셀 다운로드", buffer, f"{market_option}_backtest.xlsx")

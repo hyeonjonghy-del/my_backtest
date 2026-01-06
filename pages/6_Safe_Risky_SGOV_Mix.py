@@ -179,7 +179,7 @@ if st.button("🚀 전략 실행 (신호 + 백테스트)", type="primary", use_c
         st.markdown("---")
 
         # ---------------------------------------------------------------------
-        # [Part 2] 백테스트 결과
+        # [Part 2] 백테스트 결과 및 지표 계산
         # ---------------------------------------------------------------------
         st.subheader("📊 전체 기간 시뮬레이션 (백테스트)")
         
@@ -282,7 +282,7 @@ if st.button("🚀 전략 실행 (신호 + 백테스트)", type="primary", use_c
             
             # (2) MDD 차트 (비교 기능 추가)
             axes[0, 1].plot(df.index, df['MDD'], label='Strategy MDD', color='blue', linewidth=1)
-            axes[0, 1].plot(df.index, df['MDD_Safe'], label=f'{ticker_safe} MDD', color='gray', linestyle='--', alpha=0.5, linewidth=1) # 안전자산 MDD 추가
+            axes[0, 1].plot(df.index, df['MDD_Safe'], label=f'{ticker_safe} MDD', color='gray', linestyle='--', alpha=0.5, linewidth=1) 
             axes[0, 1].fill_between(df.index, df['MDD'], 0, color='blue', alpha=0.1)
             axes[0, 1].set_title(f'2. Drawdown Risk (Strategy vs {ticker_safe})')
             axes[0, 1].legend(loc='lower left')
@@ -320,22 +320,28 @@ if st.button("🚀 전략 실행 (신호 + 백테스트)", type="primary", use_c
             trade_logs = df[df['Signal_Change'].abs() == 1].copy()
             
             if not trade_logs.empty:
-                # 출력용 데이터프레임 정리
-                trade_display = pd.DataFrame()
-                trade_display['날짜'] = trade_logs.index.strftime('%Y-%m-%d')
-                trade_display['구분'] = trade_logs['Signal_Change'].apply(lambda x: '🔴 공격자산 매수' if x == 1 else '🔵 방어자산 매수')
-                trade_display[f'{ticker_safe} 가격'] = trade_logs[ticker_safe].map('{:,.2f}'.format)
-                trade_display[f'{stock_ma_col}'] = trade_logs[stock_ma_col].map('{:,.2f}'.format)
+                # [수정] 원본 DataFrame에서 직접 컬럼 생성 (인덱스 불일치 방지)
+                trade_logs['날짜'] = trade_logs.index.strftime('%Y-%m-%d')
+                trade_logs['구분'] = trade_logs['Signal_Change'].apply(
+                    lambda x: '🔴 공격자산(UPRO) 매수' if x == 1 else '🔵 방어자산(SPY) 매수'
+                )
                 
-                # 인덱스 리셋 및 출력
-                st.dataframe(trade_display.set_index('날짜'), use_container_width=True)
+                # 가격 포맷팅 (문자열로 변환)
+                trade_logs[f'{ticker_safe} 가격'] = trade_logs[ticker_safe].apply(lambda x: f"{x:,.2f}")
+                trade_logs[f'{stock_ma_col}'] = trade_logs[stock_ma_col].apply(lambda x: f"{x:,.2f}")
+                
+                # 출력할 컬럼만 선택해서 새로운 DataFrame 생성
+                columns_to_show = ['날짜', '구분', f'{ticker_safe} 가격', f'{stock_ma_col}']
+                trade_display = trade_logs[columns_to_show].set_index('날짜')
+                
+                # 출력
+                st.dataframe(trade_display, use_container_width=True)
             else:
                 st.info("기간 내 매매 신호 발생 이력이 없습니다.")
 
         # === TAB 3: 월별 수익률 ===
         with tab3:
             st.markdown("##### 📅 월별/연도별 수익률 Heatmap")
-            # 스타일링: 양수는 빨강, 음수는 파랑 (Streamlit 지원 포맷 활용)
             st.dataframe(
                 monthly_table.style.format("{:.2%}")
                 .background_gradient(cmap='RdYlGn', axis=None, vmin=-0.1, vmax=0.1),
@@ -344,8 +350,9 @@ if st.button("🚀 전략 실행 (신호 + 백테스트)", type="primary", use_c
             )
 
         # ---------------------------------------------------------------------
-        # 엑셀 다운로드 (기존 유지)
+        # 엑셀 다운로드 (공통)
         # ---------------------------------------------------------------------
+        st.markdown("---")
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Daily_Data')

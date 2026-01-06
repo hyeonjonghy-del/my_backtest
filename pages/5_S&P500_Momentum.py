@@ -10,7 +10,7 @@ import requests
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 및 캐싱 함수
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="미국 주식 모멘텀 전략", page_icon="🇺🇸")
+st.set_page_config(page_title="미국 주식 모멘텀 전략", page_icon="🇺🇸", layout="wide")
 
 @st.cache_data(ttl=3600*24)
 def get_nasdaq100_list():
@@ -287,7 +287,31 @@ if run_btn:
             if apply_tax:
                 st.caption("ℹ️ 세금 22%가 적용된 결과입니다. (매년 말 이익 발생 시 차감)")
             
-            tab1, tab2, tab3 = st.tabs(["📊 차트", "🏆 추천 종목", "📝 매매 기록"])
+            # -----------------------------------------------------------------
+            # [추가됨] 월별 수익률 테이블 계산
+            # -----------------------------------------------------------------
+            # 1. 월별 수익률 계산 (resample 'M'은 마지막 날짜 기준이므로 현재 진행중인 달도 포함됨)
+            monthly_ret = full_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
+            
+            # 2. Pivot Table 생성 (행: 연도, 열: 월)
+            m_df = monthly_ret.to_frame('Return')
+            m_df['Year'] = m_df.index.year
+            m_df['Month'] = m_df.index.month
+            
+            monthly_pivot = m_df.pivot(index='Year', columns='Month', values='Return')
+            monthly_pivot.columns = [f"{c}월" for c in monthly_pivot.columns]
+            
+            # 3. 연도별 Total 계산 및 병합
+            yearly_ret = full_returns.resample('A').apply(lambda x: (1 + x).prod() - 1)
+            yearly_ret.index = yearly_ret.index.year
+            
+            # 데이터프레임 병합
+            monthly_pivot['Year Total'] = yearly_ret
+
+            # -----------------------------------------------------------------
+            # 탭 구성 (Tab)
+            # -----------------------------------------------------------------
+            tab1, tab2, tab3, tab4 = st.tabs(["📊 차트", "🏆 추천 종목", "📝 매매 기록", "📅 월별 수익률"])
             
             with tab1:
                 fig, ax = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [2, 1]})
@@ -317,33 +341,32 @@ if run_btn:
                 st.table(pd.DataFrame(recs))
                 
             with tab3:
-                st.dataframe(pd.DataFrame(history_records))
+                # [수정] 매매 기록 표시 개선 (인덱스 제거 및 포맷팅)
+                trade_log_df = pd.DataFrame(history_records)
+                if not trade_log_df.empty:
+                    trade_log_df['Momentum'] = trade_log_df['Momentum'].map('{:.2%}'.format)
+                    st.dataframe(trade_log_df, use_container_width=True)
+                else:
+                    st.info("매매 기록이 없습니다.")
             
-            # 엑셀 다운로드 (수정됨: 월별+연별 통합)
+            with tab4:
+                st.markdown("##### 📅 월별/연도별 수익률 Heatmap")
+                st.dataframe(
+                    monthly_pivot.style.format("{:.2%}")
+                    .background_gradient(cmap='RdYlGn', axis=None, vmin=-0.1, vmax=0.1),
+                    use_container_width=True,
+                    height=600
+                )
+            
+            # 엑셀 다운로드 (계산된 monthly_pivot 활용)
             if export_excel_option:
                 buffer = io.BytesIO()
                 
-                # 1. 월별 수익률 계산 및 피벗 변환
-                monthly_ret = full_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
-                m_df = monthly_ret.to_frame('Return')
-                m_df['Year'] = m_df.index.year
-                m_df['Month'] = m_df.index.month
-                monthly_pivot = m_df.pivot(index='Year', columns='Month', values='Return')
-                
-                # 2. 연별 수익률 계산 및 인덱스 조정
-                yearly_ret = full_returns.resample('A').apply(lambda x: (1 + x).prod() - 1)
-                y_df = yearly_ret.to_frame('Annual Return') # 컬럼명 지정
-                y_df.index = y_df.index.year # 인덱스를 연도(숫자)로 맞춰줌
-                
-                # 3. 데이터 병합 (월별 데이터 + 우측에 연별 데이터 붙이기)
-                final_sheet_df = pd.concat([monthly_pivot, y_df], axis=1)
-
-                # 4. 엑셀 저장
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     pd.DataFrame(history_records).to_excel(writer, sheet_name='History', index=False)
                     pd.DataFrame(recs).to_excel(writer, sheet_name='Current_Picks', index=False)
                     
-                    # 통합된 데이터프레임을 저장
-                    final_sheet_df.to_excel(writer, sheet_name='Monthly_Returns')
+                    # 이미 계산된 월별 수익률 테이블 저장
+                    monthly_pivot.to_excel(writer, sheet_name='Monthly_Returns')
                     
                 st.download_button("📥 엑셀 다운로드", buffer, f"{market_option}_backtest.xlsx")

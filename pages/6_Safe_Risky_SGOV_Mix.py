@@ -179,7 +179,7 @@ if st.button("🚀 전략 실행 (신호 + 백테스트)", type="primary", use_c
         st.markdown("---")
 
         # ---------------------------------------------------------------------
-        # [Part 2] 백테스트 결과 차트
+        # [Part 2] 백테스트 결과
         # ---------------------------------------------------------------------
         st.subheader("📊 전체 기간 시뮬레이션 (백테스트)")
         
@@ -227,9 +227,13 @@ if st.button("🚀 전략 실행 (신호 + 백테스트)", type="primary", use_c
         df['My_Asset'] = (1 + df['Strategy_Ret']).cumprod()
         df['Hold_Safe'] = (1 + daily_ret[ticker_safe]).cumprod()
         
-        # MDD 계산
+        # MDD 계산 (전략)
         df['Peak'] = df['My_Asset'].cummax()
         df['MDD'] = (df['My_Asset'] - df['Peak']) / df['Peak'] * 100
+
+        # MDD 계산 (안전 자산 비교용)
+        df['Peak_Safe'] = df['Hold_Safe'].cummax()
+        df['MDD_Safe'] = (df['Hold_Safe'] - df['Peak_Safe']) / df['Peak_Safe'] * 100
         
         # 성과 요약
         final_return = df['My_Asset'].iloc[-1]
@@ -242,58 +246,9 @@ if st.button("🚀 전략 실행 (신호 + 백테스트)", type="primary", use_c
         k3.metric("최대 낙폭 (Max MDD)", f"{mdd_min:.2f}%")
 
         # ---------------------------------------------------------------------
-        # [차트 그리기] 2행 2열 (총 4개 차트)
+        # [데이터 계산] 월별 수익률 테이블 (엑셀 및 탭 표시용 미리 계산)
         # ---------------------------------------------------------------------
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12)) # 사이즈 세로 확장
-        
-        # (1) 수익률 차트 (로그) - 좌측 상단
-        axes[0, 0].plot(df.index, df['My_Asset'], label='Strategy', color='red', linewidth=1.5)
-        axes[0, 0].plot(df.index, df['Hold_Safe'], label=f'{ticker_safe} Hold', color='black', alpha=0.3, linestyle='--')
-        axes[0, 0].set_title('1. Asset Growth (Log Scale)')
-        axes[0, 0].set_yscale('log')
-        axes[0, 0].legend(loc='upper left')
-        axes[0, 0].grid(True, which='both', alpha=0.3)
-        
-        # (2) MDD 차트 - 우측 상단
-        axes[0, 1].plot(df.index, df['MDD'], label='Drawdown', color='blue', linewidth=1)
-        axes[0, 1].fill_between(df.index, df['MDD'], 0, color='blue', alpha=0.1)
-        axes[0, 1].set_title('2. Drawdown Risk (MDD)')
-        axes[0, 1].legend(loc='lower left')
-        axes[0, 1].grid(True, alpha=0.3)
-        
-        # (3) 마켓 시그널 (가격 vs 이평선) + 매매 신호 화살표 - 좌측 하단
-        axes[1, 0].plot(df.index, df[ticker_safe], label='Price', color='black', linewidth=1, alpha=0.6)
-        axes[1, 0].plot(df.index, df[stock_ma_col], label=f'MA ({ma_window})', color='orange', linewidth=1.5, alpha=0.8)
-        
-        # 매매 신호 포착
-        df['Signal_Change'] = df['Stock_Signal'].diff()
-        buy_risky = df[df['Signal_Change'] == 1]
-        buy_safe = df[df['Signal_Change'] == -1]
-
-        # 화살표 그리기
-        axes[1, 0].plot(buy_risky.index, buy_risky[ticker_safe], '^', markersize=8, color='red', label='Buy Risky')
-        axes[1, 0].plot(buy_safe.index, buy_safe[ticker_safe], 'v', markersize=8, color='blue', label='Buy Safe')
-
-        axes[1, 0].set_title(f'3. Market Signal ({ticker_safe} vs MA)')
-        axes[1, 0].legend(loc='best')
-        axes[1, 0].grid(True, alpha=0.3)
-
-        # (4) 금리 차트 (금리 vs 이평선) - 우측 하단
-        axes[1, 1].plot(df.index, df[rate_ticker], label='Rate', color='purple', linewidth=1)
-        axes[1, 1].plot(df.index, df[rate_ma_col], label=f'MA ({rate_ma_window})', color='green', linewidth=1.5)
-        axes[1, 1].set_title(f'4. Interest Rate Risk ({rate_ticker} vs MA)')
-        axes[1, 1].legend(loc='upper left')
-        axes[1, 1].grid(True, alpha=0.3)
-
-        plt.tight_layout() # 차트 간격 자동 조절
-        st.pyplot(fig)
-        
-        # ---------------------------------------------------------------------
-        # 엑셀 다운로드 (월별 데이터 포함)
-        # ---------------------------------------------------------------------
-        # 월별 수익률 계산
         try:
-            # Pandas 2.0+ 대응
             monthly_ret = df['Strategy_Ret'].resample('ME').apply(lambda x: (1 + x).prod() - 1)
         except:
             monthly_ret = df['Strategy_Ret'].resample('M').apply(lambda x: (1 + x).prod() - 1)
@@ -301,15 +256,96 @@ if st.button("🚀 전략 실행 (신호 + 백테스트)", type="primary", use_c
         monthly_table = monthly_ret.groupby([monthly_ret.index.year, monthly_ret.index.month]).sum().unstack()
         monthly_table.columns = [f"{c}월" for c in monthly_table.columns]
         
-        # 연도별 수익률 (Year Total)
         try:
             yearly_ret = df['Strategy_Ret'].resample('YE').apply(lambda x: (1 + x).prod() - 1)
         except:
             yearly_ret = df['Strategy_Ret'].resample('Y').apply(lambda x: (1 + x).prod() - 1)
-            
         yearly_ret.index = yearly_ret.index.year
         monthly_table['Year_Total'] = yearly_ret
 
+        # ---------------------------------------------------------------------
+        # [UI 구성] 탭(Tab) 구조 적용
+        # ---------------------------------------------------------------------
+        tab1, tab2, tab3 = st.tabs(["📊 차트 분석", "📝 매매 기록", "📅 월별 수익률"])
+
+        # === TAB 1: 차트 분석 ===
+        with tab1:
+            fig, axes = plt.subplots(2, 2, figsize=(16, 12)) 
+            
+            # (1) 수익률 차트
+            axes[0, 0].plot(df.index, df['My_Asset'], label='Strategy', color='red', linewidth=1.5)
+            axes[0, 0].plot(df.index, df['Hold_Safe'], label=f'{ticker_safe} Hold', color='black', alpha=0.3, linestyle='--')
+            axes[0, 0].set_title('1. Asset Growth (Log Scale)')
+            axes[0, 0].set_yscale('log')
+            axes[0, 0].legend(loc='upper left')
+            axes[0, 0].grid(True, which='both', alpha=0.3)
+            
+            # (2) MDD 차트 (비교 기능 추가)
+            axes[0, 1].plot(df.index, df['MDD'], label='Strategy MDD', color='blue', linewidth=1)
+            axes[0, 1].plot(df.index, df['MDD_Safe'], label=f'{ticker_safe} MDD', color='gray', linestyle='--', alpha=0.5, linewidth=1) # 안전자산 MDD 추가
+            axes[0, 1].fill_between(df.index, df['MDD'], 0, color='blue', alpha=0.1)
+            axes[0, 1].set_title(f'2. Drawdown Risk (Strategy vs {ticker_safe})')
+            axes[0, 1].legend(loc='lower left')
+            axes[0, 1].grid(True, alpha=0.3)
+            
+            # (3) 마켓 시그널
+            axes[1, 0].plot(df.index, df[ticker_safe], label='Price', color='black', linewidth=1, alpha=0.6)
+            axes[1, 0].plot(df.index, df[stock_ma_col], label=f'MA ({ma_window})', color='orange', linewidth=1.5, alpha=0.8)
+            
+            df['Signal_Change'] = df['Stock_Signal'].diff()
+            buy_risky = df[df['Signal_Change'] == 1]
+            buy_safe = df[df['Signal_Change'] == -1]
+
+            axes[1, 0].plot(buy_risky.index, buy_risky[ticker_safe], '^', markersize=8, color='red', label='Buy Risky')
+            axes[1, 0].plot(buy_safe.index, buy_safe[ticker_safe], 'v', markersize=8, color='blue', label='Buy Safe')
+
+            axes[1, 0].set_title(f'3. Market Signal ({ticker_safe} vs MA)')
+            axes[1, 0].legend(loc='best')
+            axes[1, 0].grid(True, alpha=0.3)
+
+            # (4) 금리 차트
+            axes[1, 1].plot(df.index, df[rate_ticker], label='Rate', color='purple', linewidth=1)
+            axes[1, 1].plot(df.index, df[rate_ma_col], label=f'MA ({rate_ma_window})', color='green', linewidth=1.5)
+            axes[1, 1].set_title(f'4. Interest Rate Risk ({rate_ticker} vs MA)')
+            axes[1, 1].legend(loc='upper left')
+            axes[1, 1].grid(True, alpha=0.3)
+
+            plt.tight_layout()
+            st.pyplot(fig)
+
+        # === TAB 2: 매매 기록 ===
+        with tab2:
+            st.markdown("##### 📝 포지션 변경 이력")
+            # 매매 신호가 발생한 날짜만 필터링
+            trade_logs = df[df['Signal_Change'].abs() == 1].copy()
+            
+            if not trade_logs.empty:
+                # 출력용 데이터프레임 정리
+                trade_display = pd.DataFrame()
+                trade_display['날짜'] = trade_logs.index.strftime('%Y-%m-%d')
+                trade_display['구분'] = trade_logs['Signal_Change'].apply(lambda x: '🔴 공격자산 매수' if x == 1 else '🔵 방어자산 매수')
+                trade_display[f'{ticker_safe} 가격'] = trade_logs[ticker_safe].map('{:,.2f}'.format)
+                trade_display[f'{stock_ma_col}'] = trade_logs[stock_ma_col].map('{:,.2f}'.format)
+                
+                # 인덱스 리셋 및 출력
+                st.dataframe(trade_display.set_index('날짜'), use_container_width=True)
+            else:
+                st.info("기간 내 매매 신호 발생 이력이 없습니다.")
+
+        # === TAB 3: 월별 수익률 ===
+        with tab3:
+            st.markdown("##### 📅 월별/연도별 수익률 Heatmap")
+            # 스타일링: 양수는 빨강, 음수는 파랑 (Streamlit 지원 포맷 활용)
+            st.dataframe(
+                monthly_table.style.format("{:.2%}")
+                .background_gradient(cmap='RdYlGn', axis=None, vmin=-0.1, vmax=0.1),
+                use_container_width=True,
+                height=600
+            )
+
+        # ---------------------------------------------------------------------
+        # 엑셀 다운로드 (기존 유지)
+        # ---------------------------------------------------------------------
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Daily_Data')

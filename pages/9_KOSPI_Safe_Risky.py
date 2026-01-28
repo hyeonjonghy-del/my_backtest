@@ -40,12 +40,13 @@ K_TICKERS = {
     "KODEX KOFR금리": "423160.KS",       
 }
 
-# [캐시 갱신용 v3] 새로운 종목(SPY 등) 반영을 위해 함수명 변경
+# [캐시 갱신용 v4] 데이터 로딩 로직 강화
 @st.cache_data(ttl=3600*24)
-def load_k_data_v3():
+def load_k_data_v4():
     tickers = list(K_TICKERS.values())
     df = yf.download(tickers, start="2010-01-01", progress=False, auto_adjust=True)
     
+    # 멀티 인덱스 컬럼 처리
     if isinstance(df.columns, pd.MultiIndex):
         if 'Close' in df.columns.levels[0]:
              df = df['Close'].copy()
@@ -53,6 +54,9 @@ def load_k_data_v3():
              df = df.copy()
              if df.columns.nlevels > 1:
                  df.columns = df.columns.get_level_values(0)
+    
+    # [중요] 중복 인덱스 제거 (가끔 야후 데이터에 중복 날짜가 들어와 에러 유발)
+    df = df.loc[~df.index.duplicated(keep='first')]
     return df.sort_index()
 
 # -----------------------------------------------------------------------------
@@ -62,10 +66,14 @@ with st.sidebar:
     st.header("1. 자산 구성")
     
     st.subheader("⚔️ 공격 자산")
-    att1_name = st.selectbox("공격 1 (메인)", ["KODEX 200", "KODEX 코스닥150", "KODEX 레버리지", "KODEX 코스닥150레버리지", "TIGER 차이나전기차"], index=0)
+    # [수정] 공격 1: 레버리지 종목 제거
+    att1_options = ["KODEX 200", "KODEX 코스닥150", "TIGER 차이나전기차"]
+    att1_name = st.selectbox("공격 1 (메인/1배수)", att1_options, index=0)
     ticker_att1 = K_TICKERS.get(att1_name, "069500.KS")
     
-    att2_name = st.selectbox("공격 2 (서브)", ["KODEX 레버리지", "KODEX 200", "KODEX 코스닥150"], index=0)
+    # [수정] 공격 2: 코스닥 레버리지 포함
+    att2_options = ["KODEX 레버리지", "KODEX 코스닥150레버리지", "KODEX 200", "KODEX 코스닥150"]
+    att2_name = st.selectbox("공격 2 (서브/레버리지)", att2_options, index=0)
     ticker_att2 = K_TICKERS.get(att2_name, "122630.KS")
 
     st.subheader("⚖️ 비중 설정 (상승장)")
@@ -85,15 +93,14 @@ with st.sidebar:
         ("환율 (USD/KRW)", "코스피 지수 (KOSPI)", "미국 S&P500 (SPY)")
     )
     
-    # 신호별 티커 및 설명 설정
     if signal_type == "환율 (USD/KRW)":
         ticker_sig = "KRW=X"
         sig_desc = "환율이 이평선보다 **낮으면(안정)** 매수"
-        is_inverted = True # 환율은 낮아야 좋다
+        is_inverted = True 
     elif signal_type == "코스피 지수 (KOSPI)":
         ticker_sig = "^KS11"
         sig_desc = "지수가 이평선보다 **높으면(상승)** 매수"
-        is_inverted = False # 지수는 높아야 좋다
+        is_inverted = False 
     else:
         ticker_sig = "SPY"
         sig_desc = "미국장(SPY)이 이평선보다 **높으면** 매수"
@@ -103,7 +110,8 @@ with st.sidebar:
 
     st.markdown("---")
     st.header("3. 옵션")
-    initial_capital = st.number_input("투자금 (원)", value=50000000, step=1000000, format="%d")
+    # [수정] 기본 투자금 1억으로 변경
+    initial_capital = st.number_input("투자금 (원)", value=100000000, step=1000000, format="%d")
     fee_rate = st.number_input("매매 비용 (%)", value=0.02, step=0.01, format="%.2f") / 100.0
     tax_rate = st.number_input("세금 (%)", value=0.0, step=1.0, format="%.1f") / 100.0
     
@@ -115,9 +123,8 @@ with st.sidebar:
 # -----------------------------------------------------------------------------
 if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
     with st.spinner("데이터 로딩 및 분석 중..."):
-        full_df = load_k_data_v3()
+        full_df = load_k_data_v4()
     
-    # 데이터 유효성 체크
     use_tickers = [ticker_att1, ticker_att2, ticker_def, ticker_sig]
     missing = [t for t in use_tickers if t not in full_df.columns]
     if missing:
@@ -126,6 +133,7 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
         
     df_raw = full_df[use_tickers].fillna(method='ffill')
     
+    # 시작일 보정 (데이터가 있는 날짜부터)
     sim_start = pd.to_datetime(start_date)
     if sim_start < df_raw.index[0]: sim_start = df_raw.index[0]
     
@@ -169,10 +177,10 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
         state = ""
         is_bull = False
         
-        # 신호 해석 (역방향 vs 정방향)
-        if is_inverted: # 환율 (낮아야 좋음)
+        # 신호 해석
+        if is_inverted: # 환율
             if last_val < last_ma: is_bull = True
-        else: # 지수 (높아야 좋음)
+        else: # 지수
             if last_val > last_ma: is_bull = True
             
         if is_bull:
@@ -210,7 +218,10 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
         # 수익률 적용
         day_ret = 0
         for t, w in curr_w.items():
-            day_ret += df_ret[t].iloc[i] * w
+            # [중요] 해당 날짜에 수익률 데이터가 없으면(NaN) 0 처리
+            r = df_ret[t].iloc[i]
+            if pd.isna(r): r = 0
+            day_ret += r * w
         
         profit = equity * day_ret
         equity += profit
@@ -304,11 +315,11 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
         axes[2].plot(res_df.index, res_df['Signal_Val'], label='Signal Value', color=sig_color)
         axes[2].plot(res_df.index, res_df['Signal_MA'], label='MA Line', color='orange', linestyle='--')
         
-        # 위기 구간 칠하기 (방어 구간)
-        if is_inverted: # 환율: 높으면 위기
+        # 위기 구간 칠하기
+        if is_inverted: # 환율
             axes[2].fill_between(res_df.index, res_df['Signal_Val'], res_df['Signal_MA'], 
                                  where=(res_df['Signal_Val'] > res_df['Signal_MA']), color='red', alpha=0.3, label='Defensive Zone')
-        else: # 지수: 낮으면 위기
+        else: # 지수
             axes[2].fill_between(res_df.index, res_df['Signal_Val'], res_df['Signal_MA'], 
                                  where=(res_df['Signal_Val'] < res_df['Signal_MA']), color='red', alpha=0.3, label='Defensive Zone')
             

@@ -329,7 +329,6 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
     ac1, ac2 = st.columns([1, 2])
     
     with ac1:
-        # [수정됨] res_df 대신 dates[-1] 사용 (res_df는 아래에서 생성됨)
         st.info(f"**기준일:** {dates[-1].strftime('%Y-%m-%d')}")
         
         if mode_color == "green":
@@ -351,7 +350,7 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
     st.divider()
 
     # -------------------------------------------------------------------------
-    # 7. 성과 및 차트
+    # 7. 성과 및 차트 (수정된 부분: 탭 적용)
     # -------------------------------------------------------------------------
     res_df = pd.DataFrame({
         'Equity': equity_curve,
@@ -374,51 +373,14 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
     peak_b = res_df['Bench_Equity'].cummax()
     mdd_b = ((res_df['Bench_Equity'] - peak_b) / peak_b).min()
 
-    st.subheader(f"📊 성과 요약 (vs {ticker_risky_base})")
+    st.subheader(f"📊 전략 성과 리포트")
     m1, m2, m3 = st.columns(3)
     m1.metric("최종 자산", f"{final:,.0f} 원", delta=f"vs Bench: {final - final_b:,.0f}")
     m2.metric("CAGR", f"{cagr*100:.2f} %", delta=f"{(cagr-cagr_b)*100:.2f}%p")
     m3.metric("MDD", f"{mdd*100:.2f} %", delta=f"Bench MDD: {mdd_b*100:.2f}%")
 
-    # --- 차트 4종 세트 ---
-    st.subheader("📈 상세 분석")
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    
-    # 1. Equity
-    axes[0, 0].plot(res_df.index, res_df['Equity'], color='firebrick', label='My Strategy')
-    axes[0, 0].plot(res_df.index, res_df['Bench_Equity'], color='gray', linestyle='--', alpha=0.6, label=f'{ticker_risky_base}')
-    axes[0, 0].set_yscale('log'); axes[0, 0].set_title(f'1. Equity Curve (vs {ticker_risky_base})')
-    axes[0, 0].legend()
-    axes[0, 0].grid(True, which='both', alpha=0.3)
-    
-    # 2. Drawdown (Comparison)
-    dd = (res_df['Equity'] - peak) / peak
-    dd_b = (res_df['Bench_Equity'] - peak_b) / peak_b
-    axes[0, 1].plot(res_df.index, dd * 100, color='blue', label='Strategy MDD')
-    axes[0, 1].plot(res_df.index, dd_b * 100, color='gray', linestyle=':', alpha=0.5, label=f'{ticker_risky_base} MDD')
-    axes[0, 1].fill_between(res_df.index, dd * 100, 0, color='blue', alpha=0.1)
-    axes[0, 1].set_title('2. Drawdown Comparison (%)')
-    axes[0, 1].legend()
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    # 3. Market Trend
-    axes[1, 0].plot(res_df.index, res_df['Price'], color='black', alpha=0.6, label='Price')
-    axes[1, 0].plot(res_df.index, res_df['MA'], color='orange', linestyle='--', label='MA')
-    axes[1, 0].set_title(f'3. Market Trend ({ticker_risky_base})')
-    axes[1, 0].legend()
-    axes[1, 0].grid(True, alpha=0.3)
-    
-    # 4. Canary
-    axes[1, 1].plot(res_df.index, res_df['Canary_Score'], color='purple')
-    axes[1, 1].axhline(0, color='red', linestyle='--')
-    axes[1, 1].fill_between(res_df.index, res_df['Canary_Score'], 0, where=(res_df['Canary_Score'] < 0), color='red', alpha=0.2)
-    axes[1, 1].set_title(f'4. Risk Signal ({ticker_canary})')
-    axes[1, 1].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    st.pyplot(fig)
-    
-    # --- 엑셀 생성 (3개 시트) ---
+    # --- [데이터 준비] 매매 기록 & 월별 수익률 미리 계산 ---
+    # 1. 월별 수익률 데이터 생성
     m_eq = res_df['Equity'].resample('M').last()
     m_ret = m_eq.pct_change().fillna(0)
     m_df = pd.DataFrame(m_ret)
@@ -435,12 +397,72 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
             yearly_ret.append((yd.iloc[-1]/start_v) - 1)
         else:
             yearly_ret.append(0)
-    m_pivot['Total'] = yearly_ret
+    m_pivot['Total'] = yearly_ret # Total 열 추가
 
+    # 2. 매매 기록 데이터프레임
+    trade_df = pd.DataFrame(trade_logs)
+
+    # --- [탭 인터페이스] 구현 ---
+    tab1, tab2, tab3 = st.tabs(["📈 차트", "📝 매매 기록", "📅 월별 수익률"])
+
+    # [탭 1] 차트
+    with tab1:
+        st.markdown("##### Equity Curve & Analysis")
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # 1. Equity
+        axes[0, 0].plot(res_df.index, res_df['Equity'], color='firebrick', label='My Strategy')
+        axes[0, 0].plot(res_df.index, res_df['Bench_Equity'], color='gray', linestyle='--', alpha=0.6, label=f'{ticker_risky_base}')
+        axes[0, 0].set_yscale('log'); axes[0, 0].set_title(f'1. Equity Curve (vs {ticker_risky_base})')
+        axes[0, 0].legend()
+        axes[0, 0].grid(True, which='both', alpha=0.3)
+        
+        # 2. Drawdown (Comparison)
+        dd = (res_df['Equity'] - peak) / peak
+        dd_b = (res_df['Bench_Equity'] - peak_b) / peak_b
+        axes[0, 1].plot(res_df.index, dd * 100, color='blue', label='Strategy MDD')
+        axes[0, 1].plot(res_df.index, dd_b * 100, color='gray', linestyle=':', alpha=0.5, label=f'{ticker_risky_base} MDD')
+        axes[0, 1].fill_between(res_df.index, dd * 100, 0, color='blue', alpha=0.1)
+        axes[0, 1].set_title('2. Drawdown Comparison (%)')
+        axes[0, 1].legend()
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        # 3. Market Trend
+        axes[1, 0].plot(res_df.index, res_df['Price'], color='black', alpha=0.6, label='Price')
+        axes[1, 0].plot(res_df.index, res_df['MA'], color='orange', linestyle='--', label='MA')
+        axes[1, 0].set_title(f'3. Market Trend ({ticker_risky_base})')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+        
+        # 4. Canary
+        axes[1, 1].plot(res_df.index, res_df['Canary_Score'], color='purple')
+        axes[1, 1].axhline(0, color='red', linestyle='--')
+        axes[1, 1].fill_between(res_df.index, res_df['Canary_Score'], 0, where=(res_df['Canary_Score'] < 0), color='red', alpha=0.2)
+        axes[1, 1].set_title(f'4. Risk Signal ({ticker_canary})')
+        axes[1, 1].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        st.pyplot(fig)
+
+    # [탭 2] 매매 기록
+    with tab2:
+        st.markdown("##### 매매 로그 (Trade Logs)")
+        if not trade_df.empty:
+            st.dataframe(trade_df, use_container_width=True, height=500)
+        else:
+            st.info("매매 기록이 없습니다.")
+
+    # [탭 3] 월별 수익률
+    with tab3:
+        st.markdown("##### 월별 수익률 (Monthly Returns)")
+        # 퍼센트 포맷팅 적용하여 표시
+        st.dataframe(m_pivot.style.format("{:.2%}"), use_container_width=True, height=600)
+
+    # --- 엑셀 생성 (기존 로직 유지) ---
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         res_df.to_excel(writer, sheet_name='Daily_Data')
-        pd.DataFrame(trade_logs).to_excel(writer, sheet_name='Trade_Log', index=False)
+        trade_df.to_excel(writer, sheet_name='Trade_Log', index=False)
         m_pivot.to_excel(writer, sheet_name='Monthly_Returns')
         
         wb = writer.book
@@ -448,4 +470,5 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
         fmt = wb.add_format({'num_format': '0.00%'})
         ws.set_column(1, 13, 10, fmt)
 
+    st.divider()
     st.download_button("📥 통합 리포트 다운로드 (Excel)", output.getvalue(), "HAA_Final_Report.xlsx")

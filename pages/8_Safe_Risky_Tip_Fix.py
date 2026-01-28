@@ -61,6 +61,7 @@ with st.sidebar:
         "DIA (다우존스)": "DIA",
         "KODEX 200 (한국)": "069500.KS"
     }
+    # [변경] Default index 0 -> SPY
     r_base_choice = st.selectbox("공격 1 (1배수)", list(risky_base_options.keys()), index=0)
     ticker_risky_base = risky_base_options[r_base_choice]
     
@@ -72,7 +73,8 @@ with st.sidebar:
         "UWM (러셀2000 2배)": "UWM",
         "KODEX 레버리지 (한국)": "122630.KS"
     }
-    r_lev_choice = st.selectbox("공격 2 (레버리지)", list(risky_lev_options.keys()), index=0)
+    # [변경] Default index 1 -> UPRO (SSO가 0번이므로 UPRO는 1번)
+    r_lev_choice = st.selectbox("공격 2 (레버리지)", list(risky_lev_options.keys()), index=1)
     ticker_risky_lev = risky_lev_options[r_lev_choice]
 
     st.subheader("🛡️ 방어 자산")
@@ -350,7 +352,7 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
     st.divider()
 
     # -------------------------------------------------------------------------
-    # 7. 성과 및 차트 (수정된 부분: 탭 적용)
+    # 7. 성과 및 차트 (수정된 부분: 탭 적용 + Heatmap)
     # -------------------------------------------------------------------------
     res_df = pd.DataFrame({
         'Equity': equity_curve,
@@ -397,7 +399,7 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
             yearly_ret.append((yd.iloc[-1]/start_v) - 1)
         else:
             yearly_ret.append(0)
-    m_pivot['Total'] = yearly_ret # Total 열 추가
+    m_pivot['Total'] = yearly_ret
 
     # 2. 매매 기록 데이터프레임
     trade_df = pd.DataFrame(trade_logs)
@@ -452,11 +454,17 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
         else:
             st.info("매매 기록이 없습니다.")
 
-    # [탭 3] 월별 수익률
+    # [탭 3] 월별 수익률 (히트맵 적용)
     with tab3:
-        st.markdown("##### 월별 수익률 (Monthly Returns)")
-        # 퍼센트 포맷팅 적용하여 표시
-        st.dataframe(m_pivot.style.format("{:.2%}"), use_container_width=True, height=600)
+        st.markdown("##### 월별 수익률 Heatmap")
+        
+        # Heatmap 스타일링 적용 (Red-Yellow-Green Colormap)
+        # vmin, vmax를 설정하여 색상 그라데이션의 범위를 고정 (너무 큰 값에 의해 0 근처가 흰색이 되는 것 방지)
+        styler = m_pivot.style\
+            .background_gradient(cmap='RdYlGn', axis=None, vmin=-0.1, vmax=0.1)\
+            .format("{:.2%}", na_rep="")
+            
+        st.dataframe(styler, use_container_width=True, height=600)
 
     # --- 엑셀 생성 (기존 로직 유지) ---
     output = io.BytesIO()

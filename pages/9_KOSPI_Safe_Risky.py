@@ -11,15 +11,16 @@ import calendar
 # -----------------------------------------------------------------------------
 warnings.filterwarnings('ignore')
 plt.style.use('ggplot')
+# 한글 폰트 설정 제거 (깨짐 방지)
 plt.rcParams['axes.unicode_minus'] = False
 
 st.set_page_config(page_title="K-Momentum Multi-Signal", page_icon="🇰🇷", layout="wide")
 
-st.title("🇰🇷 한국형 멀티 시그널 전략 (K-Switch)")
+st.title("🇰🇷 K-Switch: Multi-Signal Strategy")
 st.markdown("""
-**전략 개요:**
-한국 시장은 박스권 성향이 강해 '언제 들어가고 빠지는가'가 수익률을 결정합니다.
-아래 **3가지 신호** 중 하나를 선택하여 어떤 기준이 내 성향(수익 vs 방어)에 맞는지 검증해 보세요.
+**Strategy Overview:**
+The Korean market has a strong 'box-range' tendency. Timing of entry/exit is crucial.
+Compare 3 different signals to find the best fit for your risk appetite.
 """)
 st.markdown("---")
 
@@ -27,26 +28,24 @@ st.markdown("---")
 # 2. 데이터 미리 받기
 # -----------------------------------------------------------------------------
 K_TICKERS = {
-    "KOSPI Index": "^KS11",              # [신호1] 코스피 지수
-    "USD/KRW": "KRW=X",                  # [신호2] 환율
-    "US S&P500": "SPY",                  # [신호3] 미국 대표 지수
+    "KOSPI Index": "^KS11",
+    "USD/KRW": "KRW=X",
+    "US S&P500": "SPY",
     "KODEX 200": "069500.KS",            
-    "KODEX 코스닥150": "229200.KS",      
-    "KODEX 레버리지": "122630.KS",       
-    "KODEX 코스닥150레버리지": "233740.KS", 
-    "TIGER 차이나전기차": "371460.KS",    
-    "KODEX 국고채10년": "152380.KS",     
-    "KODEX 단기채권": "153130.KS",       
-    "KODEX KOFR금리": "423160.KS",       
+    "KODEX KOSDAQ150": "229200.KS",      
+    "KODEX Leverage": "122630.KS",       
+    "KODEX KOSDAQ150 Leverage": "233740.KS", 
+    "TIGER China EV": "371460.KS",    
+    "KODEX KTB 10Y": "152380.KS",     
+    "KODEX Short-term Bond": "153130.KS",       
+    "KODEX KOFR": "423160.KS",       
 }
 
-# [캐시 갱신용 v4] 데이터 로딩 로직 강화
 @st.cache_data(ttl=3600*24)
 def load_k_data_v4():
     tickers = list(K_TICKERS.values())
     df = yf.download(tickers, start="2010-01-01", progress=False, auto_adjust=True)
     
-    # 멀티 인덱스 컬럼 처리
     if isinstance(df.columns, pd.MultiIndex):
         if 'Close' in df.columns.levels[0]:
              df = df['Close'].copy()
@@ -55,7 +54,6 @@ def load_k_data_v4():
              if df.columns.nlevels > 1:
                  df.columns = df.columns.get_level_values(0)
     
-    # [중요] 중복 인덱스 제거 (가끔 야후 데이터에 중복 날짜가 들어와 에러 유발)
     df = df.loc[~df.index.duplicated(keep='first')]
     return df.sort_index()
 
@@ -63,93 +61,89 @@ def load_k_data_v4():
 # 3. 사이드바 설정
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    st.header("1. 자산 구성")
+    st.header("1. Portfolio Setup")
     
-    st.subheader("⚔️ 공격 자산")
-    # [수정] 공격 1: 레버리지 종목 제거
-    att1_options = ["KODEX 200", "KODEX 코스닥150", "TIGER 차이나전기차"]
-    att1_name = st.selectbox("공격 1 (메인/1배수)", att1_options, index=0)
+    st.subheader("⚔️ Aggressive Assets")
+    att1_options = ["KODEX 200", "KODEX KOSDAQ150", "TIGER China EV"]
+    att1_name = st.selectbox("Main Asset (1x)", att1_options, index=0)
     ticker_att1 = K_TICKERS.get(att1_name, "069500.KS")
     
-    # [수정] 공격 2: 코스닥 레버리지 포함
-    att2_options = ["KODEX 레버리지", "KODEX 코스닥150레버리지", "KODEX 200", "KODEX 코스닥150"]
-    att2_name = st.selectbox("공격 2 (서브/레버리지)", att2_options, index=0)
+    att2_options = ["KODEX Leverage", "KODEX KOSDAQ150 Leverage", "KODEX 200", "KODEX KOSDAQ150"]
+    att2_name = st.selectbox("Sub Asset (Leverage)", att2_options, index=0)
     ticker_att2 = K_TICKERS.get(att2_name, "122630.KS")
 
-    st.subheader("⚖️ 비중 설정 (상승장)")
-    att1_weight = st.slider(f"{att1_name} 비중 (%)", 0, 100, 100, 10)
+    st.subheader("⚖️ Weights (Bull Market)")
+    att1_weight = st.slider(f"{att1_name} Weight (%)", 0, 100, 100, 10)
     w1 = att1_weight / 100.0
     w2 = 1.0 - w1
     
-    st.subheader("🛡️ 방어 자산")
-    def_name = st.selectbox("위기 시 대피처", ["KODEX 국고채10년", "KODEX 단기채권", "KODEX KOFR금리"], index=0)
+    st.subheader("🛡️ Defensive Assets")
+    def_name = st.selectbox("Safe Haven", ["KODEX KTB 10Y", "KODEX Short-term Bond", "KODEX KOFR"], index=0)
     ticker_def = K_TICKERS.get(def_name, "152380.KS")
 
     st.markdown("---")
-    st.header("2. 신호 선택 (Signal)")
+    st.header("2. Signal Selection")
     
+    # [수정] 기본값을 "미국 S&P500 (SPY)"로 설정 (index=2)
     signal_type = st.radio(
-        "어떤 기준으로 매매할까요?",
-        ("환율 (USD/KRW)", "코스피 지수 (KOSPI)", "미국 S&P500 (SPY)")
+        "Which signal to use?",
+        ("USD/KRW", "KOSPI", "S&P500 (SPY)"),
+        index=2
     )
     
-    if signal_type == "환율 (USD/KRW)":
+    if signal_type == "USD/KRW":
         ticker_sig = "KRW=X"
-        sig_desc = "환율이 이평선보다 **낮으면(안정)** 매수"
+        sig_desc = "Buy when FX is below MA"
         is_inverted = True 
-    elif signal_type == "코스피 지수 (KOSPI)":
+    elif signal_type == "KOSPI":
         ticker_sig = "^KS11"
-        sig_desc = "지수가 이평선보다 **높으면(상승)** 매수"
+        sig_desc = "Buy when KOSPI is above MA"
         is_inverted = False 
     else:
         ticker_sig = "SPY"
-        sig_desc = "미국장(SPY)이 이평선보다 **높으면** 매수"
+        sig_desc = "Buy when SPY is above MA"
         is_inverted = False
 
-    st.info(f"💡 **전략:** {sig_desc}")
+    st.info(f"💡 **Signal:** {sig_desc}")
 
     st.markdown("---")
-    st.header("3. 옵션")
-    # [수정] 기본 투자금 1억으로 변경
-    initial_capital = st.number_input("투자금 (원)", value=100000000, step=1000000, format="%d")
-    fee_rate = st.number_input("매매 비용 (%)", value=0.02, step=0.01, format="%.2f") / 100.0
-    tax_rate = st.number_input("세금 (%)", value=0.0, step=1.0, format="%.1f") / 100.0
+    st.header("3. Options")
+    initial_capital = st.number_input("Initial Capital (KRW)", value=100000000, step=1000000, format="%d")
+    fee_rate = st.number_input("Trading Fee (%)", value=0.02, step=0.01, format="%.2f") / 100.0
+    tax_rate = st.number_input("Tax (%)", value=0.0, step=1.0, format="%.1f") / 100.0
     
-    start_date = st.date_input("시작일", pd.to_datetime("2016-01-01"))
-    ma_window = st.number_input("이평선 (일)", value=120, help="보통 120일(6개월) 또는 200일(1년) 사용")
+    # [수정] 기본 시작일을 2020년으로 설정
+    start_date = st.date_input("Start Date", pd.to_datetime("2020-01-01"))
+    ma_window = st.number_input("MA Window (Days)", value=120)
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
 # -----------------------------------------------------------------------------
-if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
-    with st.spinner("데이터 로딩 및 분석 중..."):
+if st.button("🚀 Run Backtest", type="primary", use_container_width=True):
+    with st.spinner("Analyzing data..."):
         full_df = load_k_data_v4()
     
     use_tickers = [ticker_att1, ticker_att2, ticker_def, ticker_sig]
     missing = [t for t in use_tickers if t not in full_df.columns]
     if missing:
-        st.error(f"데이터 누락: {missing}. 새로고침(C) 하거나 종목을 변경하세요.")
+        st.error(f"Missing Data: {missing}. Please refresh or change tickers.")
         st.stop()
         
-    df_raw = full_df[use_tickers].fillna(method='ffill')
+    df_raw = full_df[use_tickers].ffill()
     
-    # 시작일 보정 (데이터가 있는 날짜부터)
     sim_start = pd.to_datetime(start_date)
     if sim_start < df_raw.index[0]: sim_start = df_raw.index[0]
     
-    # 2. 신호(Signal) 지표 계산
     sig_series = df_raw[ticker_sig]
     ma_line = sig_series.rolling(window=ma_window).mean()
     
-    # 3. 백테스트 준비
     df_price = df_raw.loc[sim_start:]
     ma_line = ma_line.loc[sim_start:]
     df_ret = df_price.pct_change().fillna(0)
     
     dates = df_price.index
     equity = initial_capital
-    curve = []
-    bench_curve = []
+    curve, bench_curve = [], []
     bench_equity = initial_capital
     
     logs = []
@@ -159,8 +153,6 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
     
     for i in range(len(dates)):
         today = dates[i]
-        
-        # 벤치마크 (공격1 Buy & Hold)
         if i > 0:
             bench_equity *= (1 + df_ret[ticker_att1].iloc[i])
         bench_curve.append(bench_equity)
@@ -169,7 +161,6 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
             curve.append(equity)
             continue
             
-        # [핵심] 신호 확인 (어제 종가 기준)
         last_val = df_price[ticker_sig].iloc[i-1]
         last_ma = ma_line.iloc[i-1]
         
@@ -177,10 +168,9 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
         state = ""
         is_bull = False
         
-        # 신호 해석
-        if is_inverted: # 환율
+        if is_inverted: # FX
             if last_val < last_ma: is_bull = True
-        else: # 지수
+        else: # Index
             if last_val > last_ma: is_bull = True
             
         if is_bull:
@@ -191,7 +181,6 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
             target_w = {ticker_def: 1.0}
             state = "Bear (Defense)"
             
-        # 리밸런싱
         is_chg = (state != prev_state)
         is_month = (today.month != dates[i-1].month)
         
@@ -214,22 +203,13 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
                 })
         
         prev_state = state
-        
-        # 수익률 적용
-        day_ret = 0
-        for t, w in curr_w.items():
-            # [중요] 해당 날짜에 수익률 데이터가 없으면(NaN) 0 처리
-            r = df_ret[t].iloc[i]
-            if pd.isna(r): r = 0
-            day_ret += r * w
+        day_ret = sum(df_ret[t].iloc[i] * w for t, w in curr_w.items())
         
         profit = equity * day_ret
         equity += profit
         year_gain += profit
-        
         curve.append(equity)
         
-        # 세금
         if tax_rate > 0 and (i == len(dates)-1 or dates[i+1].year != today.year):
             tax = max(0, year_gain) * tax_rate
             if tax > 0:
@@ -237,7 +217,6 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
                 logs.append({"Date": today.strftime('%Y-%m-%d'), "Action": "Tax", "State": "-", "Cost": round(tax)})
             year_gain = 0
 
-    # 결과 정리
     res_df = pd.DataFrame({
         'Equity': curve,
         'Benchmark': bench_curve,
@@ -245,10 +224,10 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
         'Signal_MA': ma_line
     }, index=dates)
     
-    final = curve[-1]
-    final_b = bench_curve[-1]
-    cagr = (final/initial_capital)**(1/(len(curve)/252)) - 1
-    cagr_b = (final_b/initial_capital)**(1/(len(curve)/252)) - 1
+    final, final_b = curve[-1], bench_curve[-1]
+    days = len(curve)
+    cagr = (final/initial_capital)**(252/days) - 1
+    cagr_b = (final_b/initial_capital)**(252/days) - 1
     
     peak = res_df['Equity'].cummax()
     mdd = ((res_df['Equity'] - peak) / peak).min()
@@ -260,43 +239,48 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
     # -------------------------------------------------------------------------
     st.divider()
     c1, c2 = st.columns([1, 2])
-    c1.metric("최종 자산", f"{final:,.0f} 원", delta=f"vs Bench: {final - final_b:,.0f}")
+    c1.metric("Final Balance", f"{final:,.0f} KRW", delta=f"vs Bench: {final - final_b:,.0f}")
     c1.metric("CAGR", f"{cagr*100:.2f} %", delta=f"{(cagr - cagr_b)*100:.2f}%p")
     c1.metric("MDD", f"{mdd*100:.2f} %", delta=f"Bench: {mdd_b*100:.2f}%")
     
+    # 엑셀 다운로드 생성
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        res_df.to_excel(writer, sheet_name='EquityCurve')
+        if logs: pd.DataFrame(logs).to_excel(writer, sheet_name='TradeLogs')
+        st.info("Excel file prepared for download.")
+    
+    st.download_button(
+        label="📥 Download Results (Excel)",
+        data=output.getvalue(),
+        file_name=f"Backtest_Result_{signal_type}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
     with c2:
         last_val = res_df['Signal_Val'].iloc[-1]
         last_ma = res_df['Signal_MA'].iloc[-1]
-        
-        # 현재 상태 표시 로직
-        status_color = "off"
-        status_msg = ""
-        
-        # 로직 재확인
-        is_now_bull = False
-        if is_inverted: 
-            if last_val < last_ma: is_now_bull = True
-        else:
-            if last_val > last_ma: is_now_bull = True
+        is_now_bull = (last_val < last_ma) if is_inverted else (last_val > last_ma)
             
-        st.markdown(f"### 📢 현재 신호 상태 ({signal_type})")
-        st.write(f"현재값: **{last_val:,.2f}** / 기준선: **{last_ma:,.2f}**")
+        st.markdown(f"### 📢 Current Signal Status ({signal_type})")
+        st.write(f"Current: **{last_val:,.2f}** / Baseline: **{last_ma:,.2f}**")
         
         if is_now_bull:
-            st.success("📈 **공격 (Attack)**: 긍정적 신호입니다. 주식 비중을 가져갑니다.")
+            st.success("📈 **Bull (Attack)**: Signal is positive. Allocate to stocks.")
         else:
-            st.warning("🛡️ **방어 (Defense)**: 부정적 신호입니다. 안전 자산으로 대피합니다.")
+            st.warning("🛡️ **Bear (Defense)**: Signal is negative. Move to safe assets.")
 
     tab1, tab2, tab3 = st.tabs(["📈 Chart", "📝 Trade Logs", "📅 Monthly Returns"])
     
     with tab1:
         fig, axes = plt.subplots(3, 1, figsize=(12, 14), gridspec_kw={'height_ratios': [2, 1, 1]})
         
-        # 1. Equity
+        # 1. Equity (한글 제거)
         axes[0].plot(res_df.index, res_df['Equity'], color='firebrick', label='Strategy')
-        axes[0].plot(res_df.index, res_df['Benchmark'], color='gray', linestyle='--', alpha=0.6, label=f'Bench ({att1_name})')
+        axes[0].plot(res_df.index, res_df['Benchmark'], color='gray', linestyle='--', alpha=0.6, label='Bench')
         axes[0].set_yscale('log')
-        axes[0].set_title("1. Equity Curve")
+        axes[0].set_title("1. Equity Curve (Log Scale)")
         axes[0].legend()
         
         # 2. MDD
@@ -308,18 +292,15 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
         axes[1].set_title("2. Drawdown (%)")
         axes[1].legend()
         
-        # 3. Signal
-        # 신호 종류에 따라 색상/라벨 변경
+        # 3. Signal (한글 제거)
         sig_color = 'green' if not is_inverted else 'purple'
-        
         axes[2].plot(res_df.index, res_df['Signal_Val'], label='Signal Value', color=sig_color)
         axes[2].plot(res_df.index, res_df['Signal_MA'], label='MA Line', color='orange', linestyle='--')
         
-        # 위기 구간 칠하기
-        if is_inverted: # 환율
+        if is_inverted: # FX
             axes[2].fill_between(res_df.index, res_df['Signal_Val'], res_df['Signal_MA'], 
                                  where=(res_df['Signal_Val'] > res_df['Signal_MA']), color='red', alpha=0.3, label='Defensive Zone')
-        else: # 지수
+        else: # Index
             axes[2].fill_between(res_df.index, res_df['Signal_Val'], res_df['Signal_MA'], 
                                  where=(res_df['Signal_Val'] < res_df['Signal_MA']), color='red', alpha=0.3, label='Defensive Zone')
             
@@ -331,10 +312,9 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
         
     with tab2:
         if logs: st.dataframe(pd.DataFrame(logs), use_container_width=True)
-        else: st.info("기록 없음")
+        else: st.info("No logs found.")
         
     with tab3:
-        # 월별 수익률 히트맵
         m_eq = res_df['Equity'].resample('M').last()
         m_ret = m_eq.pct_change().fillna(0)
         m_df = pd.DataFrame(m_ret)
@@ -349,8 +329,7 @@ if st.button("🚀 실행 (Run)", type="primary", use_container_width=True):
             if len(yd) > 0:
                 start_v = res_df[res_df.index.year == (y-1)]['Equity'].iloc[-1] if y > res_df.index.year.min() else yd.iloc[0]
                 yearly_ret.append((yd.iloc[-1]/start_v) - 1)
-            else:
-                yearly_ret.append(0)
+            else: yearly_ret.append(0)
         m_pivot['Total'] = yearly_ret
         
         styler = m_pivot.style\

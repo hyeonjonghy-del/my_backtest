@@ -20,7 +20,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🛡️ Safe/Risky/Cash Mix Strategy (TNX Chart Added)")
+st.title("🛡️ Safe/Risky/Cash Mix Strategy (Tax Option Added)")
 st.markdown("""
 **전략 개요 (Verified Version):**
 - **로직:** 시그널 발생(T일) → 다음 날(T+1일) 장 마감(종가)에 매매
@@ -45,6 +45,11 @@ with st.sidebar:
     start_date = st.date_input("시작일", pd.to_datetime("2020-01-01"))
     initial_capital = st.number_input("초기 자본", value=100000000, step=1000000)
     fee_rate = st.number_input("매매 수수료 (%)", value=0.02, step=0.01) / 100.0
+    
+    # [NEW] 세금 옵션 추가
+    apply_tax = st.checkbox("양도소득세 22% 차감 (수익 발생 시)", value=False)
+    if apply_tax:
+        st.caption("ℹ️ 최종 총 수익금의 22%를 세금으로 제하고 계산합니다.")
     
     ma_window = st.number_input("추세 판단 이평선 (일)", value=120, min_value=5)
 
@@ -215,7 +220,6 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
         st.divider()
         st.markdown("### 📢 오늘의 투자 가이드 (Today's Action)")
         
-        # 가장 최근 데이터 가져오기
         last_date = df_raw.index[-1]
         last_safe_p = df_raw[ticker_safe].iloc[-1]
         last_safe_m = ma_safe.iloc[-1]
@@ -223,7 +227,6 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
         last_rate_p = df_raw[ticker_rate].iloc[-1]
         last_rate_m = ma_rate.iloc[-1]
         
-        # 현재 상태 판단 (가장 최근 종가 기준)
         is_bull_now = last_safe_p > last_safe_m
         is_hike_now = last_rate_p > last_rate_m
         
@@ -236,16 +239,9 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
         
         st.caption(f"기준 데이터: {last_date.strftime('%Y-%m-%d')} 종가")
         
-        # UI 구성
         col_g1, col_g2 = st.columns([1, 2])
-        
         with col_g1:
-            st.metric(
-                label=f"{ticker_safe} 추세",
-                value=f"{last_safe_p:,.2f}",
-                delta=f"{last_safe_p - last_safe_m:.2f} (vs 이평선)",
-                delta_color="normal"
-            )
+            st.metric(label=f"{ticker_safe} 추세", value=f"{last_safe_p:,.2f}", delta=f"{last_safe_p - last_safe_m:.2f} (vs 이평선)", delta_color="normal")
             trend_emoji = "📈 상승장 (Bull)" if is_bull_now else "📉 하락장 (Bear)"
             risk_emoji = "🔥 금리 주의!" if (is_hike_now and use_rate_filter) else "🍀 금리 안정"
             st.text(f"{trend_emoji}")
@@ -253,43 +249,49 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
 
         with col_g2:
             if current_state == "Bear":
-                st.error(f"🛑 **[하락장 방어]** 현재 시장이 좋지 않습니다.\n\n"
-                         f"👉 **{ticker_safe} (안전자산)** 100% 보유하세요.\n"
-                         f"(공격 자산은 모두 매도)")
+                st.error(f"🛑 **[하락장 방어]** 현재 시장이 좋지 않습니다.\n\n👉 **{ticker_safe} (안전자산)** 100% 보유 (공격 자산 매도)")
             elif current_state == "Bull_Full":
-                st.success(f"🚀 **[강한 상승장]** 시장과 금리가 모두 좋습니다.\n\n"
-                           f"👉 **{ticker_risky} (공격자산)** 100% 보유하세요.\n"
-                           f"(현금 없이 전액 투자)")
+                st.success(f"🚀 **[강한 상승장]** 시장과 금리가 모두 좋습니다.\n\n👉 **{ticker_risky} (공격자산)** 100% 보유 (전액 투자)")
             elif current_state == "Bull_Mix":
                 mix_pct = int(exposure_ratio * 100)
                 cash_pct = 100 - mix_pct
-                st.warning(f"⚠️ **[리스크 관리]** 상승장이지만 금리가 높습니다.\n\n"
-                           f"👉 **{ticker_risky} (공격)**: {mix_pct}% \n"
-                           f"👉 **{ticker_cash} (현금)**: {cash_pct}% \n"
-                           f"비율로 리밸런싱 하세요.")
+                st.warning(f"⚠️ **[리스크 관리]** 상승장이지만 금리가 높습니다.\n\n👉 **{ticker_risky}**: {mix_pct}% / **{ticker_cash}**: {cash_pct}% 비율로 리밸런싱 하세요.")
 
         # ==============================================================================
+        # [NEW] 세금 계산 및 성과 지표
+        # ==============================================================================
+        final_pre_tax = res_df['Equity'].iloc[-1]
+        profit = final_pre_tax - initial_capital
+        tax_amount = 0
+        
+        if apply_tax and profit > 0:
+            tax_amount = profit * 0.22
+            final_balance = final_pre_tax - tax_amount
+        else:
+            final_balance = final_pre_tax
 
-        # 성과 지표 계산
-        final = res_df['Equity'].iloc[-1]
         final_b = res_df['Benchmark'].iloc[-1]
         days = (res_df.index[-1] - res_df.index[0]).days
+        
         if days > 0:
-            cagr = (final / initial_capital) ** (365 / days) - 1
+            cagr = (final_balance / initial_capital) ** (365 / days) - 1
             cagr_b = (final_b / initial_capital) ** (365 / days) - 1
         else: cagr = 0; cagr_b = 0
             
         mdd = res_df['Drawdown(%)'].min() / 100.0
 
-        # UI 출력
         st.divider()
         c1, c2, c3 = st.columns(3)
-        c1.metric("Final Balance", f"{final:,.0f} KRW", delta=f"vs SPY: {final - final_b:,.0f}")
+        
+        # 세금 반영 여부에 따른 라벨 변경
+        label_balance = "Final Balance (After Tax)" if apply_tax else "Final Balance"
+        
+        c1.metric(label_balance, f"{final_balance:,.0f} KRW", delta=f"세금: -{tax_amount:,.0f}" if tax_amount > 0 else None)
         c2.metric("CAGR", f"{cagr*100:.2f} %", delta=f"{(cagr - cagr_b)*100:.2f}%p")
         c3.metric("MDD", f"{mdd*100:.2f} %")
         st.divider()
         
-        # 월별 수익률 및 차트
+        # 차트 및 데이터 출력 (기존 유지)
         m_df = res_df[['Equity']].resample('M').last()
         m_df['Return'] = m_df['Equity'].pct_change()
         pivot_table = m_df['Return'].groupby([m_df.index.year, m_df.index.month]).sum().unstack()
@@ -312,14 +314,13 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
         
         with tab1:
             st.subheader("Strategy Performance & Indicators")
-            # [변경] 4행 1열로 변경 (맨 아래 금리 차트 추가)
             fig, ax = plt.subplots(4, 1, figsize=(14, 20), gridspec_kw={'height_ratios': [2, 1, 1, 1]})
             
             # 1. Equity
-            ax[0].plot(res_df.index, res_df['Equity'], color='firebrick', label='Strategy')
-            ax[0].plot(res_df.index, res_df['Benchmark'], color='gray', linestyle='--', alpha=0.6, label='Benchmark (Safe)')
+            ax[0].plot(res_df.index, res_df['Equity'], color='firebrick', label='Strategy (Pre-Tax)')
+            ax[0].plot(res_df.index, res_df['Benchmark'], color='gray', linestyle='--', alpha=0.6, label='Benchmark')
             ax[0].set_yscale('log')
-            ax[0].set_title("1. Equity Curve (Log)")
+            ax[0].set_title("1. Equity Curve (Log, Pre-Tax)")
             ax[0].legend()
             
             # 2. MDD
@@ -327,20 +328,18 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
             ax[1].fill_between(res_df.index, res_df['Drawdown(%)'], 0, color='blue', alpha=0.1)
             ax[1].set_title("2. Drawdown (%)")
             
-            # 3. Main Signal (Safe Asset)
+            # 3. Main Signal
             ax[2].plot(res_df.index, res_df['Safe_Price'], color='black', label=f'{ticker_safe} Price')
             ax[2].plot(res_df.index, res_df['Safe_MA'], color='orange', linestyle='--', label=f'MA ({ma_window})')
             ax[2].set_title(f"3. Main Trend Signal ({ticker_safe})")
             ax[2].legend()
             
-            # 4. [NEW] Risk Signal (Rate/TNX)
-            # res_df 기간에 맞게 원본 데이터 슬라이싱
+            # 4. Risk Signal
             plot_rate = df_raw.loc[res_df.index, ticker_rate]
             plot_rate_ma = ma_rate.loc[res_df.index]
-            
             ax[3].plot(res_df.index, plot_rate, color='purple', label=f'{ticker_rate} (Rate)')
             ax[3].plot(res_df.index, plot_rate_ma, color='green', linestyle='--', label=f'MA ({rate_ma_window})')
-            ax[3].set_title(f"4. Risk Signal ({ticker_rate}) - (Rate > MA = Risk)")
+            ax[3].set_title(f"4. Risk Signal ({ticker_rate})")
             ax[3].legend()
             
             st.pyplot(fig)

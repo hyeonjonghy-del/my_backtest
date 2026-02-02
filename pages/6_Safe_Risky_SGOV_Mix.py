@@ -20,16 +20,15 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🛡️ Safe/Risky/Cash Mix Strategy (Verified Logic)")
+st.title("🛡️ Safe/Risky/Cash Mix Strategy (Action Guide Added)")
 st.markdown("""
 **전략 개요 (Verified Version):**
-- **로직:** 시그널 발생(T일) → 다음 날(T+1일) 장 마감(종가)에 매매 (시차 적용 완료)
+- **로직:** 시그널 발생(T일) → 다음 날(T+1일) 장 마감(종가)에 매매
 - **자산 배분:**
     - **Bear (하락장):** 안전자산 100%
     - **Bull (상승장):**
         - **Low Risk (금리 안정):** 공격자산 100%
         - **High Risk (금리 급등):** 공격자산 + 현금 혼합 (리스크 관리)
-- **데이터:** 수정주가 아님 (배당금 제외, 실제 시장가 기준)
 """)
 st.markdown("---")
 
@@ -93,34 +92,23 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
             st.error(f"데이터 부족: {req_cols} 중 일부를 가져오지 못했습니다.")
             st.stop()
             
-        # SGOV 등이 상장 전이라 데이터가 없는 경우 0 처리하지 않고, 해당 기간엔 수익률 0으로 처리됨
-        # (pct_change 시 fillna(0) 처리 예정)
-            
         df_raw = full_df.ffill() # 결측치 보완
         
         # 2. 지표 계산 (전체 기간)
-        # 안전자산 이평선
         series_safe = df_raw[ticker_safe]
         ma_safe = series_safe.rolling(window=ma_window).mean()
         
-        # 금리 이평선
         series_rate = df_raw[ticker_rate]
         ma_rate = series_rate.rolling(window=rate_ma_window).mean()
         
         # 3. 시그널 판단 (T일 기준)
-        # Bull: 종가 > 이평
         is_bull = series_safe > ma_safe
-        # Hike(Risk): 금리 > 이평
         is_hike = series_rate > ma_rate
         
         # 4. 포지션 결정 (Raw State)
-        # 0: Bear (Safe 100%)
-        # 1: Bull_Full (Risky 100%)
-        # 2: Bull_Mix (Risky X% + Cash Y%)
-        
         conditions = [
             (~is_bull),  # Bear
-            (is_bull & (~is_hike | ~use_rate_filter)), # Bull Full (필터 끄면 무조건 Full)
+            (is_bull & (~is_hike | ~use_rate_filter)), # Bull Full
             (is_bull & is_hike & use_rate_filter)      # Bull Mix
         ]
         choices = ["Bear", "Bull_Full", "Bull_Mix"]
@@ -128,55 +116,37 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
         raw_state = np.select(conditions, choices, default="Bear")
         raw_state_series = pd.Series(raw_state, index=df_raw.index)
         
-        # [핵심] 5. 매매 시점 지연 (T+1일 매매)
-        # T일의 시그널 -> T+1일 포지션에 반영
+        # 5. 매매 시점 지연 (T+1일 매매)
         trade_state = raw_state_series.shift(1)
         
         # 6. 시뮬레이션 루프
-        # 사용자 시작일 이후 데이터만 사용
         sim_start = pd.to_datetime(start_date)
         if sim_start < df_raw.index[0]: sim_start = df_raw.index[0]
         
         df_sim = df_raw.loc[sim_start:].copy()
-        # 시그널도 잘라냄
-        trade_state = trade_state.loc[sim_start:]
-        # 혹시 앞부분 잘려서 NaN이면 Bear로 시작
-        trade_state = trade_state.fillna("Bear")
+        trade_state = trade_state.loc[sim_start:].fillna("Bear")
         
-        # 필요한 자산만 모음 (수익률 계산용)
-        # Cash 티커가 없거나 데이터가 비어있을 수 있으므로 처리
-        asset_cols = [ticker_safe, ticker_risky]
-        if ticker_cash in df_raw.columns:
-            asset_cols.append(ticker_cash)
-            
         equity = initial_capital
         peak = equity
         history = []
         
-        # 초기 포지션 (첫날 시그널 기준)
+        # 초기 포지션 설정
         first_state = trade_state.iloc[0]
         curr_w = {}
-        
-        if first_state == "Bear":
-            curr_w = {ticker_safe: 1.0}
-        elif first_state == "Bull_Full":
-            curr_w = {ticker_risky: 1.0}
-        elif first_state == "Bull_Mix":
+        if first_state == "Bear": curr_w = {ticker_safe: 1.0}
+        elif first_state == "Bull_Full": curr_w = {ticker_risky: 1.0}
+        elif first_state == "Bull_Mix": 
             curr_w = {ticker_risky: exposure_ratio}
-            if ticker_cash in df_raw.columns:
-                curr_w[ticker_cash] = 1.0 - exposure_ratio
-                
-        # 가중치 0 제거
-        curr_w = {k:v for k,v in curr_w.items() if v > 0}
+            if ticker_cash in df_raw.columns: curr_w[ticker_cash] = 1.0 - exposure_ratio
         
-        # 첫 진입 수수료
-        equity -= equity * fee_rate
+        curr_w = {k:v for k,v in curr_w.items() if v > 0}
+        equity -= equity * fee_rate # 첫 진입 수수료
         
         for i in range(len(df_sim)):
             today = df_sim.index[i]
             state = trade_state.iloc[i]
             
-            # [A] 목표 가중치 설정
+            # [A] 목표 가중치
             target_w = {}
             if state == "Bear":
                 target_w = {ticker_safe: 1.0}
@@ -189,31 +159,20 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
             
             target_w = {k:v for k,v in target_w.items() if v > 0}
             
-            # [B] 수익률 반영 (보유 중인 자산)
+            # [B] 수익률 반영
             day_ret = 0
             if i > 0:
                 for t, w in curr_w.items():
-                    # 데이터프레임에서 등락률 계산
-                    # 당일 종가 / 전일 종가 - 1
-                    # (df_raw 전체에서 계산해두는 게 빠르지만, 가독성 위해 루프 내 처리)
                     try:
                         r = df_raw[t].pct_change().loc[today]
                         if pd.isna(r): r = 0
-                    except:
-                        r = 0
+                    except: r = 0
                     day_ret += r * w
             
             equity *= (1 + day_ret)
             
-            # [C] 리밸런싱 (종가 기준)
+            # [C] 리밸런싱 Check
             action = ""
-            
-            # 딕셔너리 비교 (키와 값이 모두 같아야 함)
-            # 부동소수점 오차 고려하여 약간의 허용오차를 둘 수도 있으나,
-            # 여기선 상태(State)가 바뀌면 구성이 바뀌므로 키 비교로 충분
-            # (단, Bull_Mix -> Bull_Mix인데 비율만 바뀔 일은 없음)
-            
-            # 키 집합 비교 + 값 비교
             is_same = (curr_w.keys() == target_w.keys())
             if is_same:
                 for k in curr_w:
@@ -225,11 +184,10 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
                 equity -= equity * fee_rate
                 curr_w = target_w
                 
-            # MDD
+            # MDD & Log
             if equity > peak: peak = equity
             dd = (equity - peak) / peak
             
-            # 로그용 포지션 문자열
             pos_str = ""
             if state == "Bear": pos_str = f"Bear ({ticker_safe})"
             elif state == "Bull_Full": pos_str = f"Bull Full ({ticker_risky})"
@@ -243,20 +201,76 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
                 "Equity": round(equity),
                 "Daily_Return(%)": round(day_ret * 100, 2),
                 "Drawdown(%)": round(dd * 100, 2),
-                # 차트용
                 "Safe_Price": df_sim[ticker_safe].iloc[i],
                 "Safe_MA": ma_safe.loc[today] if today in ma_safe.index else None
             })
             
-        # 결과 정리
         res_df = pd.DataFrame(history).set_index("Date")
-        
-        # 벤치마크 (Safe 자산 보유 시)
         res_df['Benchmark'] = (1 + df_raw[ticker_safe].loc[sim_start:].pct_change().fillna(0)).cumprod() * initial_capital
-        # 길이 맞춤
         res_df = res_df.loc[res_df.index <= df_sim.index[-1]]
 
-        # 성과 지표
+        # ==============================================================================
+        # [NEW] 오늘/내일 행동 가이드 (Today's Action Guide)
+        # ==============================================================================
+        st.divider()
+        st.markdown("### 📢 오늘의 투자 가이드 (Today's Action)")
+        
+        # 가장 최근 데이터 가져오기
+        last_date = df_raw.index[-1]
+        last_safe_p = df_raw[ticker_safe].iloc[-1]
+        last_safe_m = ma_safe.iloc[-1]
+        
+        last_rate_p = df_raw[ticker_rate].iloc[-1]
+        last_rate_m = ma_rate.iloc[-1]
+        
+        # 현재 상태 판단 (가장 최근 종가 기준)
+        is_bull_now = last_safe_p > last_safe_m
+        is_hike_now = last_rate_p > last_rate_m
+        
+        current_state = "Bear"
+        if is_bull_now:
+            if use_rate_filter and is_hike_now:
+                current_state = "Bull_Mix"
+            else:
+                current_state = "Bull_Full"
+        
+        st.caption(f"기준 데이터: {last_date.strftime('%Y-%m-%d')} 종가")
+        
+        # UI 구성
+        col_g1, col_g2 = st.columns([1, 2])
+        
+        with col_g1:
+            st.metric(
+                label=f"{ticker_safe} 추세",
+                value=f"{last_safe_p:,.2f}",
+                delta=f"{last_safe_p - last_safe_m:.2f} (vs 이평선)",
+                delta_color="normal"
+            )
+            trend_emoji = "📈 상승장 (Bull)" if is_bull_now else "📉 하락장 (Bear)"
+            risk_emoji = "🔥 금리 주의!" if (is_hike_now and use_rate_filter) else "🍀 금리 안정"
+            st.text(f"{trend_emoji}")
+            st.text(f"{risk_emoji}")
+
+        with col_g2:
+            if current_state == "Bear":
+                st.error(f"🛑 **[하락장 방어]** 현재 시장이 좋지 않습니다.\n\n"
+                         f"👉 **{ticker_safe} (안전자산)** 100% 보유하세요.\n"
+                         f"(공격 자산은 모두 매도)")
+            elif current_state == "Bull_Full":
+                st.success(f"🚀 **[강한 상승장]** 시장과 금리가 모두 좋습니다.\n\n"
+                           f"👉 **{ticker_risky} (공격자산)** 100% 보유하세요.\n"
+                           f"(현금 없이 전액 투자)")
+            elif current_state == "Bull_Mix":
+                mix_pct = int(exposure_ratio * 100)
+                cash_pct = 100 - mix_pct
+                st.warning(f"⚠️ **[리스크 관리]** 상승장이지만 금리가 높습니다.\n\n"
+                           f"👉 **{ticker_risky} (공격)**: {mix_pct}% \n"
+                           f"👉 **{ticker_cash} (현금)**: {cash_pct}% \n"
+                           f"비율로 리밸런싱 하세요.")
+
+        # ==============================================================================
+
+        # 성과 지표 계산
         final = res_df['Equity'].iloc[-1]
         final_b = res_df['Benchmark'].iloc[-1]
         days = (res_df.index[-1] - res_df.index[0]).days
@@ -275,7 +289,7 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
         c3.metric("MDD", f"{mdd*100:.2f} %")
         st.divider()
         
-        # 월별 수익률
+        # 월별 수익률 및 차트 (기존 코드 유지)
         m_df = res_df[['Equity']].resample('M').last()
         m_df['Return'] = m_df['Equity'].pct_change()
         pivot_table = m_df['Return'].groupby([m_df.index.year, m_df.index.month]).sum().unstack()
@@ -294,27 +308,22 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
             if pd.isna(val): return ''
             return f'color: {"red" if val < 0 else "green"}'
 
-        # 탭 구성
         tab1, tab2, tab3 = st.tabs(["📊 Chart", "📝 Trade Logs", "📅 Monthly Returns"])
         
         with tab1:
             st.subheader("Strategy Performance")
             fig, ax = plt.subplots(3, 1, figsize=(14, 16), gridspec_kw={'height_ratios': [2, 1, 1]})
             
-            # 1. Equity
             ax[0].plot(res_df.index, res_df['Equity'], color='firebrick', label='Strategy')
             ax[0].plot(res_df.index, res_df['Benchmark'], color='gray', linestyle='--', alpha=0.6, label='Benchmark (Safe)')
             ax[0].set_yscale('log')
             ax[0].set_title("Equity Curve (Log)")
             ax[0].legend()
             
-            # 2. MDD
             ax[1].plot(res_df.index, res_df['Drawdown(%)'], color='blue')
             ax[1].fill_between(res_df.index, res_df['Drawdown(%)'], 0, color='blue', alpha=0.1)
             ax[1].set_title("Drawdown (%)")
             
-            # 3. Signal Check
-            # 안전자산 가격과 이평선만 표시 (시그널 확인용)
             ax[2].plot(res_df.index, res_df['Safe_Price'], color='black', label=f'{ticker_safe} Price')
             ax[2].plot(res_df.index, res_df['Safe_MA'], color='orange', linestyle='--', label=f'MA ({ma_window})')
             ax[2].set_title(f"Trend Signal ({ticker_safe})")
@@ -328,7 +337,6 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
         with tab3:
             st.dataframe(pivot_table.style.applymap(color_map).format("{:.2%}", na_rep=""), use_container_width=True)
             
-        # 엑셀 다운로드
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             res_df.to_excel(writer, sheet_name='Daily_Log')

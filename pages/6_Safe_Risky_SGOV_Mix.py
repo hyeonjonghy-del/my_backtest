@@ -20,7 +20,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🛡️ Safe/Risky/Cash Mix Strategy (Action Guide Added)")
+st.title("🛡️ Safe/Risky/Cash Mix Strategy (TNX Chart Added)")
 st.markdown("""
 **전략 개요 (Verified Version):**
 - **로직:** 시그널 발생(T일) → 다음 날(T+1일) 장 마감(종가)에 매매
@@ -289,7 +289,7 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
         c3.metric("MDD", f"{mdd*100:.2f} %")
         st.divider()
         
-        # 월별 수익률 및 차트 (기존 코드 유지)
+        # 월별 수익률 및 차트
         m_df = res_df[['Equity']].resample('M').last()
         m_df['Return'] = m_df['Equity'].pct_change()
         pivot_table = m_df['Return'].groupby([m_df.index.year, m_df.index.month]).sum().unstack()
@@ -311,23 +311,37 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
         tab1, tab2, tab3 = st.tabs(["📊 Chart", "📝 Trade Logs", "📅 Monthly Returns"])
         
         with tab1:
-            st.subheader("Strategy Performance")
-            fig, ax = plt.subplots(3, 1, figsize=(14, 16), gridspec_kw={'height_ratios': [2, 1, 1]})
+            st.subheader("Strategy Performance & Indicators")
+            # [변경] 4행 1열로 변경 (맨 아래 금리 차트 추가)
+            fig, ax = plt.subplots(4, 1, figsize=(14, 20), gridspec_kw={'height_ratios': [2, 1, 1, 1]})
             
+            # 1. Equity
             ax[0].plot(res_df.index, res_df['Equity'], color='firebrick', label='Strategy')
             ax[0].plot(res_df.index, res_df['Benchmark'], color='gray', linestyle='--', alpha=0.6, label='Benchmark (Safe)')
             ax[0].set_yscale('log')
-            ax[0].set_title("Equity Curve (Log)")
+            ax[0].set_title("1. Equity Curve (Log)")
             ax[0].legend()
             
+            # 2. MDD
             ax[1].plot(res_df.index, res_df['Drawdown(%)'], color='blue')
             ax[1].fill_between(res_df.index, res_df['Drawdown(%)'], 0, color='blue', alpha=0.1)
-            ax[1].set_title("Drawdown (%)")
+            ax[1].set_title("2. Drawdown (%)")
             
+            # 3. Main Signal (Safe Asset)
             ax[2].plot(res_df.index, res_df['Safe_Price'], color='black', label=f'{ticker_safe} Price')
             ax[2].plot(res_df.index, res_df['Safe_MA'], color='orange', linestyle='--', label=f'MA ({ma_window})')
-            ax[2].set_title(f"Trend Signal ({ticker_safe})")
+            ax[2].set_title(f"3. Main Trend Signal ({ticker_safe})")
             ax[2].legend()
+            
+            # 4. [NEW] Risk Signal (Rate/TNX)
+            # res_df 기간에 맞게 원본 데이터 슬라이싱
+            plot_rate = df_raw.loc[res_df.index, ticker_rate]
+            plot_rate_ma = ma_rate.loc[res_df.index]
+            
+            ax[3].plot(res_df.index, plot_rate, color='purple', label=f'{ticker_rate} (Rate)')
+            ax[3].plot(res_df.index, plot_rate_ma, color='green', linestyle='--', label=f'MA ({rate_ma_window})')
+            ax[3].set_title(f"4. Risk Signal ({ticker_rate}) - (Rate > MA = Risk)")
+            ax[3].legend()
             
             st.pyplot(fig)
             

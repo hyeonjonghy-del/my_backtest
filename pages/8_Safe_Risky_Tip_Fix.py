@@ -17,8 +17,15 @@ ALL_TICKERS = ["SPY", "QQQ", "IWM", "DIA", "069500.KS", "SSO", "UPRO", "QLD", "T
 
 @st.cache_data(ttl=3600*24) 
 def load_all_data_cached():
+    # 데이터 다운로드 및 전처리
     df = yf.download(ALL_TICKERS, start="2000-01-01", progress=False, auto_adjust=True)
-    if isinstance(df.columns, pd.MultiIndex): df = df['Close']
+    if isinstance(df.columns, pd.MultiIndex):
+        # MultiIndex 컬럼일 경우 Close만 선택하거나 레벨 조정
+        if 'Close' in df.columns.levels[0]:
+             df = df['Close']
+        elif df.columns.nlevels > 1:
+             df = df.droplevel(0, axis=1) # Ticker 레벨만 남김
+             
     return df.ffill().dropna().sort_index()
 
 # -----------------------------------------------------------------------------
@@ -46,12 +53,22 @@ full_df = load_all_data_cached()
 
 if st.button("🚀 전략 시뮬레이션 실행", type="primary", use_container_width=True):
     needed = list(set([ticker_risky_base, ticker_risky_lev, ticker_safe_cash, ticker_safe_bond, ticker_canary]))
-    df_price = full_df[needed].loc[pd.to_datetime(start_date):]
     
+    # [수정] 데이터 슬라이싱 안전장치 추가
+    sim_start_date = pd.to_datetime(start_date)
+    df_price = full_df[needed].loc[sim_start_date:]
+    
+    if df_price.empty:
+        st.error("선택한 시작일에 데이터가 없습니다. 날짜를 조정해주세요.")
+        st.stop()
+
     def get_score(series):
         return (series.pct_change(21)*12)+(series.pct_change(63)*4)+(series.pct_change(126)*2)+(series.pct_change(252)*1)
 
-    scores = pd.DataFrame({t: get_score(full_df[t]) for t in needed}, index=full_df.index).loc[df_price.index:]
+    # [수정된 부분] df_price.index[0]을 사용하여 명확한 시작점(Scalar) 지정
+    scores = pd.DataFrame({t: get_score(full_df[t]) for t in needed}, index=full_df.index)
+    scores = scores.loc[df_price.index[0]:] 
+    
     df_ret = df_price.pct_change().fillna(0)
     
     # 백테스트 루프
@@ -59,14 +76,25 @@ if st.button("🚀 전략 시뮬레이션 실행", type="primary", use_container
     equity, b_equity = [], []
     curr_w = {ticker_safe_cash: 1.0}
     
-    for i in range(len(df_price)):
+    # 인덱스 길이 불일치 방지 (df_price 길이만큼만 반복)
+    loop_len = len(df_price)
+    
+    for i in range(loop_len):
         today = df_price.index[i]
+        
         if i == 0:
             equity.append(cap); b_equity.append(b_cap); continue
             
         # 신호 (전일 기준)
-        canary, base = scores[ticker_canary].iloc[i-1], scores[ticker_risky_base].iloc[i-1]
-        cash, bond = scores[ticker_safe_cash].iloc[i-1], scores[ticker_safe_bond].iloc[i-1]
+        # scores 인덱스가 df_price와 동일하게 맞춰졌으므로 i-1로 접근 가능
+        try:
+            canary = scores[ticker_canary].iloc[i-1]
+            base = scores[ticker_risky_base].iloc[i-1]
+            cash = scores[ticker_safe_cash].iloc[i-1]
+            bond = scores[ticker_safe_bond].iloc[i-1]
+        except IndexError:
+            # 데이터 초반부 인덱스 오류 방지
+            continue
         
         # 리밸런싱 로직
         if canary > 0 and base > 0:
@@ -77,13 +105,24 @@ if st.button("🚀 전략 시뮬레이션 실행", type="primary", use_container
             for t, w in s_w.items(): target[t] = w * (1-w_def_atk)
         
         curr_w = target
-        cap = sum(cap * w * (1 + df_ret[t].iloc[i]) for t, w in curr_w.items())
+        
+        # 수익률 계산
+        daily_ret = 0
+        for t, w in curr_w.items():
+            daily_ret += w * df_ret[t].iloc[i]
+            
+        cap *= (1 + daily_ret)
         b_cap *= (1 + df_ret[ticker_risky_base].iloc[i])
         
         equity.append(cap); b_equity.append(b_cap)
 
     # 결과 데이터 정리
-    res = pd.DataFrame({'Strategy': equity, 'SPY_Bench': b_equity}, index=df_price.index)
+    res = pd.DataFrame({'Strategy': equity, 'SPY_Bench': b_equity}, index=df_price.index[:len(equity)])
+    
+    if res.empty:
+        st.error("결과 데이터가 생성되지 않았습니다.")
+        st.stop()
+        
     res['S_Peak'] = res['Strategy'].cummax()
     res['B_Peak'] = res['SPY_Bench'].cummax()
     res['S_DD'] = (res['Strategy'] - res['S_Peak']) / res['S_Peak']
@@ -100,7 +139,7 @@ if st.button("🚀 전략 시뮬레이션 실행", type="primary", use_container
     
     c1.metric("최종 자산", f"{final_val:,.0f} 원", f"{total_ret:.2f}%")
     c2.metric("전략 MDD", f"{mdd_val:.2f}%")
-    c3.metric("벤치마크 MDD (SPY)", f"{res['B_DD'].min()*100:.2f}%")
+    c3.metric("벤치마크 MDD", f"{res['B_DD'].min()*100:.2f}%")
 
     tab1, tab2 = st.tabs(["📈 수익률 & MDD 비교", "🐤 카나리아 신호"])
     
@@ -109,19 +148,22 @@ if st.button("🚀 전략 시뮬레이션 실행", type="primary", use_container
         
         # 주 차트 (수익률)
         ax1.plot(res.index, res['Strategy'], label='My Strategy', color='#d62728', lw=2)
-        ax1.plot(res.index, res['SPY_Bench'], label='SPY (Benchmark)', color='gray', linestyle='--', alpha=0.7)
+        ax1.plot(res.index, res['SPY_Bench'], label=f'{ticker_risky_base} (Bench)', color='gray', linestyle='--', alpha=0.7)
         ax1.set_title("Strategy Performance (Equity Curve)", fontsize=15); ax1.legend()
+        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
         
         # MDD 비교 차트
         ax2.fill_between(res.index, res['S_DD']*100, 0, color='red', alpha=0.3, label='Strategy DD')
-        ax2.plot(res.index, res['B_DD']*100, color='black', lw=1, label='SPY DD')
+        ax2.plot(res.index, res['B_DD']*100, color='black', lw=1, label='Bench DD')
         ax2.set_title("MDD Comparison (%)", fontsize=13); ax2.legend()
         plt.tight_layout()
         st.pyplot(fig)
         
     with tab2:
         fig2, ax3 = plt.subplots(figsize=(12, 4))
-        ax3.plot(res.index, scores[ticker_canary], color='purple', label=f'Canary ({ticker_canary})')
+        # scores 데이터 길이 안전하게 자르기
+        plot_scores = scores.loc[res.index]
+        ax3.plot(plot_scores.index, plot_scores[ticker_canary], color='purple', label=f'Canary ({ticker_canary})')
         ax3.axhline(0, color='red', linestyle='--')
         ax3.set_title("Risk Signal Score"); ax3.legend()
         st.pyplot(fig2)

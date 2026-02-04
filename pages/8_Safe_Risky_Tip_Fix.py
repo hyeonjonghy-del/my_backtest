@@ -33,8 +33,9 @@ def load_all_data_cached():
         elif df.columns.nlevels > 1:
             df = df.droplevel(0, axis=1)
             
-    # Remove NaN and sort
-    return df.ffill().dropna().sort_index()
+    # [FIX] Do NOT dropna() here. Only ffill().
+    # Dropping here would cut data to the shortest history ticker (e.g. SGOV 2020)
+    return df.ffill()
 
 # -----------------------------------------------------------------------------
 # 2. Sidebar (Settings)
@@ -45,7 +46,6 @@ with st.sidebar:
     with st.expander("Asset Selection (Tickers)", expanded=True):
         ticker_risky_base = st.selectbox("Risky 1 (Base)", ["SPY", "QQQ", "IWM", "069500.KS"], index=0)
         ticker_risky_lev = st.selectbox("Risky 2 (Leverage)", ["UPRO", "TQQQ", "QLD", "122630.KS"], index=0)
-        # [Modified] Default index changed to 0 (BIL) to support older data. SGOV (index 1) starts from 2020.
         ticker_safe_cash = st.selectbox("Safe 1 (Cash)", ["BIL", "SGOV", "SHV"], index=0) 
         ticker_safe_bond = st.selectbox("Safe 2 (Bond)", ["IEF", "TLT", "BND"], index=0)
         ticker_canary = st.selectbox("Canary (Signal)", ["TIP", "DBC", "VWO"], index=0)
@@ -74,20 +74,29 @@ with st.expander("📌 Strategy Overview", expanded=False):
     """)
 
 if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
-    # Prepare Data
+    # [FIX] Filter columns FIRST, then drop NaN
     needed = list(set([ticker_risky_base, ticker_risky_lev, ticker_safe_cash, ticker_safe_bond, ticker_canary]))
     
+    # 1. Select only needed columns
+    df_selected = full_df[needed].copy()
+    
+    # 2. Drop NaN (This will now only cut based on the selected tickers, e.g. BIL starts 2007)
+    df_clean = df_selected.dropna()
+    
+    # 3. Apply Date Filter
     sim_start = pd.to_datetime(start_date)
     
-    # Validate Data Availability
-    # Ensure we don't crash if user selects a date before data exists
-    first_valid_idx = full_df[needed].dropna().index[0]
+    if df_clean.empty:
+        st.error("Error: No overlapping data found for the selected tickers.")
+        st.stop()
+        
+    first_valid_idx = df_clean.index[0]
     
     if sim_start < first_valid_idx:
-        st.warning(f"⚠️ Note: Data for some selected tickers starts from {first_valid_idx.date()}. Simulation will start from there instead of {sim_start}.")
+        st.warning(f"⚠️ Data for selected tickers starts from {first_valid_idx.date()}. Simulation adapted.")
         sim_start = first_valid_idx
         
-    df_price = full_df[needed].loc[sim_start:]
+    df_price = df_clean.loc[sim_start:]
     
     if df_price.empty:
         st.error("Error: No data available for the selected range.")
@@ -97,7 +106,8 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
     def get_score(series):
         return (series.pct_change(21)*12) + (series.pct_change(63)*4) + (series.pct_change(126)*2) + (series.pct_change(252)*1)
 
-    scores = pd.DataFrame({t: get_score(full_df[t]) for t in needed}, index=full_df.index)
+    # Calculate scores on the cleaned full history first
+    scores = pd.DataFrame({t: get_score(df_clean[t]) for t in needed}, index=df_clean.index)
     scores = scores.loc[sim_start:] 
     
     df_ret = df_price.pct_change().fillna(0)
@@ -237,25 +247,37 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
     tab1, tab2, tab3 = st.tabs(["📈 Charts", "📝 Trade Logs", "📅 Monthly Returns"])
     
     with tab1:
-        fig, ax = plt.subplots(2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [2, 1]})
+        # [FIX] Added 3rd subplot for Signal
+        fig, ax = plt.subplots(3, 1, figsize=(12, 14), gridspec_kw={'height_ratios': [2, 1, 1]})
         
-        # Equity Curve
+        # 1. Equity Curve
         ax[0].plot(res.index, res['Strategy'], label='Strategy', color='#d62728', lw=2)
         ax[0].plot(res.index, res['Benchmark'], label=f'Benchmark ({ticker_risky_base})', color='gray', linestyle='--')
-        ax[0].set_title("Cumulative Equity Curve")
+        ax[0].set_title("1. Cumulative Equity Curve")
         ax[0].legend()
         ax[0].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+        ax[0].grid(True, alpha=0.3)
         
-        # MDD
+        # 2. MDD
         ax[1].fill_between(res.index, res['dd']*100, 0, color='blue', alpha=0.3, label='Strategy DD')
-        
         b_peak = res['Benchmark'].cummax()
         b_dd = (res['Benchmark'] - b_peak) / b_peak
         ax[1].plot(res.index, b_dd*100, color='black', alpha=0.5, linestyle=':', label='Benchmark DD')
-        
-        ax[1].set_title("Drawdown Comparison (%)")
+        ax[1].set_title("2. Drawdown Comparison (%)")
         ax[1].legend()
+        ax[1].grid(True, alpha=0.3)
+
+        # 3. Canary Signal Chart (Requested)
+        plot_scores = scores.reindex(res.index)
+        ax[2].plot(plot_scores.index, plot_scores[ticker_canary], color='purple', label=f'Canary ({ticker_canary}) Score')
+        ax[2].axhline(0, color='red', linestyle='--', linewidth=1.5, label='Threshold (0)')
+        ax[2].fill_between(plot_scores.index, plot_scores[ticker_canary], 0, where=(plot_scores[ticker_canary] < 0), color='red', alpha=0.1)
+        ax[2].fill_between(plot_scores.index, plot_scores[ticker_canary], 0, where=(plot_scores[ticker_canary] > 0), color='green', alpha=0.1)
+        ax[2].set_title(f"3. Risk Signal ({ticker_canary})")
+        ax[2].legend(loc='upper left')
+        ax[2].grid(True, alpha=0.3)
         
+        plt.tight_layout()
         st.pyplot(fig)
         
     with tab2:
@@ -278,7 +300,6 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
             
         m_pivot['Total (Year)'] = y_ret.values
         
-        # English Month Names
         cols = {i: pd.to_datetime(f"2000-{i}-01").strftime('%b') for i in range(1, 13)}
         m_pivot.rename(columns=cols, inplace=True)
         

@@ -33,8 +33,7 @@ def load_all_data_cached():
         elif df.columns.nlevels > 1:
             df = df.droplevel(0, axis=1)
             
-    # [FIX] Do NOT dropna() here. Only ffill().
-    # Dropping here would cut data to the shortest history ticker (e.g. SGOV 2020)
+    # [Important] Only ffill to preserve history for older tickers (e.g. BIL)
     return df.ffill()
 
 # -----------------------------------------------------------------------------
@@ -55,6 +54,10 @@ with st.sidebar:
         w_def_atk = st.slider("Bear Market: Risky 1 Hold (%)", 0, 100, 0, step=5) / 100.0
         initial_capital = st.number_input("Initial Capital (KRW)", value=100_000_000, step=1_000_000)
         start_date = st.date_input("Start Date", pd.to_datetime("2016-01-01"))
+        
+        st.divider()
+        # [NEW] Tax Option
+        apply_tax = st.checkbox("Apply 22% Tax (Annual)", value=True, help="Deduct 22% tax on annual realized gains > 2.5M KRW.")
 
 # -----------------------------------------------------------------------------
 # 3. Main Logic
@@ -74,16 +77,12 @@ with st.expander("📌 Strategy Overview", expanded=False):
     """)
 
 if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
-    # [FIX] Filter columns FIRST, then drop NaN
+    # Prepare Data
     needed = list(set([ticker_risky_base, ticker_risky_lev, ticker_safe_cash, ticker_safe_bond, ticker_canary]))
     
-    # 1. Select only needed columns
     df_selected = full_df[needed].copy()
+    df_clean = df_selected.dropna() # Drop NaN only for selected tickers
     
-    # 2. Drop NaN (This will now only cut based on the selected tickers, e.g. BIL starts 2007)
-    df_clean = df_selected.dropna()
-    
-    # 3. Apply Date Filter
     sim_start = pd.to_datetime(start_date)
     
     if df_clean.empty:
@@ -91,9 +90,8 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
         st.stop()
         
     first_valid_idx = df_clean.index[0]
-    
     if sim_start < first_valid_idx:
-        st.warning(f"⚠️ Data for selected tickers starts from {first_valid_idx.date()}. Simulation adapted.")
+        st.warning(f"⚠️ Data starts from {first_valid_idx.date()}. Simulation adapted.")
         sim_start = first_valid_idx
         
     df_price = df_clean.loc[sim_start:]
@@ -106,7 +104,6 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
     def get_score(series):
         return (series.pct_change(21)*12) + (series.pct_change(63)*4) + (series.pct_change(126)*2) + (series.pct_change(252)*1)
 
-    # Calculate scores on the cleaned full history first
     scores = pd.DataFrame({t: get_score(df_clean[t]) for t in needed}, index=df_clean.index)
     scores = scores.loc[sim_start:] 
     
@@ -121,9 +118,29 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
     curr_w = {ticker_safe_cash: 1.0}
     prev_mode = "Init"
     
+    # Tax variables
+    year_start_cap = initial_capital
+    
     for i in range(len(df_price)):
         date = df_price.index[i]
         
+        # [NEW] Tax Logic (Check at the start of a new year)
+        if i > 0 and date.year != df_price.index[i-1].year:
+            if apply_tax:
+                # Profit made during the previous year
+                year_profit = cap - year_start_cap
+                if year_profit > 2_500_000:
+                    tax_amount = (year_profit - 2_500_000) * 0.22
+                    cap -= tax_amount
+                    trade_logs.append({
+                        "Date": date.strftime('%Y-%m-%d'),
+                        "Mode": "Tax",
+                        "Allocation": "Tax Payment (22%)",
+                        "Balance": round(cap)
+                    })
+            # Reset year start capital (Mark-to-Market for next year's tax base)
+            year_start_cap = cap
+
         if i == 0:
             equity.append(cap); b_equity.append(b_cap); continue
 
@@ -140,11 +157,9 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
         target = {}
         mode = ""
         
-        # Bull Market
         if canary_score > 0 and base_score > 0:
             mode = "Bull"
             target = {ticker_risky_base: w_base, ticker_risky_lev: 1.0 - w_base}
-        # Bear Market
         else:
             mode = "Defense"
             if cash_score > 0 and bond_score > 0:
@@ -247,13 +262,12 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
     tab1, tab2, tab3 = st.tabs(["📈 Charts", "📝 Trade Logs", "📅 Monthly Returns"])
     
     with tab1:
-        # [FIX] Added 3rd subplot for Signal
         fig, ax = plt.subplots(3, 1, figsize=(12, 14), gridspec_kw={'height_ratios': [2, 1, 1]})
         
         # 1. Equity Curve
-        ax[0].plot(res.index, res['Strategy'], label='Strategy', color='#d62728', lw=2)
+        ax[0].plot(res.index, res['Strategy'], label='Strategy (Net)', color='#d62728', lw=2)
         ax[0].plot(res.index, res['Benchmark'], label=f'Benchmark ({ticker_risky_base})', color='gray', linestyle='--')
-        ax[0].set_title("1. Cumulative Equity Curve")
+        ax[0].set_title("1. Cumulative Equity Curve (After Tax)")
         ax[0].legend()
         ax[0].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
         ax[0].grid(True, alpha=0.3)
@@ -267,7 +281,7 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
         ax[1].legend()
         ax[1].grid(True, alpha=0.3)
 
-        # 3. Canary Signal Chart (Requested)
+        # 3. Signal
         plot_scores = scores.reindex(res.index)
         ax[2].plot(plot_scores.index, plot_scores[ticker_canary], color='purple', label=f'Canary ({ticker_canary}) Score')
         ax[2].axhline(0, color='red', linestyle='--', linewidth=1.5, label='Threshold (0)')

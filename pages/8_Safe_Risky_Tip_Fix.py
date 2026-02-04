@@ -4,16 +4,16 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import io
 import warnings
-import xlsxwriter # 엑셀 생성을 위해 필요
+import xlsxwriter
 
 # -----------------------------------------------------------------------------
-# 1. 기본 설정 및 데이터 로딩
+# 1. Configuration & Data Loading
 # -----------------------------------------------------------------------------
 warnings.filterwarnings('ignore')
 plt.style.use('ggplot') 
 st.set_page_config(page_title="HAA Strategy Report", page_icon="📈", layout="wide")
 
-# 사용할 티커 목록
+# Ticker List
 ALL_TICKERS = [
     "SPY", "QQQ", "IWM", "DIA", "069500.KS", 
     "SSO", "UPRO", "QLD", "TQQQ", "UWM", "122630.KS", 
@@ -23,80 +23,86 @@ ALL_TICKERS = [
 
 @st.cache_data(ttl=3600*24) 
 def load_all_data_cached():
-    # 데이터 다운로드
+    # Download Data
     df = yf.download(ALL_TICKERS, start="2000-01-01", progress=False, auto_adjust=True)
     
-    # 멀티인덱스 처리 (Close 컬럼만 추출)
+    # Handle MultiIndex
     if isinstance(df.columns, pd.MultiIndex):
         if 'Close' in df.columns.levels[0]:
             df = df['Close']
         elif df.columns.nlevels > 1:
             df = df.droplevel(0, axis=1)
             
-    # 결측치 제거 및 정렬
+    # Remove NaN and sort
     return df.ffill().dropna().sort_index()
 
 # -----------------------------------------------------------------------------
-# 2. 사이드바 (설정)
+# 2. Sidebar (Settings)
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    st.header("⚙️ 전략 파라미터")
+    st.header("⚙️ Strategy Parameters")
     
-    with st.expander("자산 선택 (Tickers)", expanded=True):
-        ticker_risky_base = st.selectbox("공격 1 (Base)", ["SPY", "QQQ", "IWM", "069500.KS"], index=0)
-        ticker_risky_lev = st.selectbox("공격 2 (Leverage)", ["UPRO", "TQQQ", "QLD", "122630.KS"], index=0)
-        ticker_safe_cash = st.selectbox("방어 1 (Cash)", ["BIL", "SGOV", "SHV"], index=0)
-        ticker_safe_bond = st.selectbox("방어 2 (Bond)", ["IEF", "TLT", "BND"], index=0)
-        ticker_canary = st.selectbox("카나리아 (Signal)", ["TIP", "DBC", "VWO"], index=0)
+    with st.expander("Asset Selection (Tickers)", expanded=True):
+        ticker_risky_base = st.selectbox("Risky 1 (Base)", ["SPY", "QQQ", "IWM", "069500.KS"], index=0)
+        ticker_risky_lev = st.selectbox("Risky 2 (Leverage)", ["UPRO", "TQQQ", "QLD", "122630.KS"], index=0)
+        # [Modified] Default index changed to 0 (BIL) to support older data. SGOV (index 1) starts from 2020.
+        ticker_safe_cash = st.selectbox("Safe 1 (Cash)", ["BIL", "SGOV", "SHV"], index=0) 
+        ticker_safe_bond = st.selectbox("Safe 2 (Bond)", ["IEF", "TLT", "BND"], index=0)
+        ticker_canary = st.selectbox("Canary (Signal)", ["TIP", "DBC", "VWO"], index=0)
     
-    with st.expander("비중 및 자금 설정", expanded=True):
-        w_base = st.slider("상승장 공격1 비중 (%)", 0, 100, 30, step=5) / 100.0
-        w_def_atk = st.slider("방어장 공격1 유지 비중 (%)", 0, 100, 0, step=5) / 100.0
-        initial_capital = st.number_input("초기 투자금 (원)", value=100_000_000, step=1_000_000)
-        start_date = st.date_input("시작일", pd.to_datetime("2016-01-01"))
+    with st.expander("Allocation & Capital", expanded=True):
+        w_base = st.slider("Bull Market: Risky 1 Weight (%)", 0, 100, 30, step=5) / 100.0
+        w_def_atk = st.slider("Bear Market: Risky 1 Hold (%)", 0, 100, 0, step=5) / 100.0
+        initial_capital = st.number_input("Initial Capital (KRW)", value=100_000_000, step=1_000_000)
+        start_date = st.date_input("Start Date", pd.to_datetime("2016-01-01"))
 
 # -----------------------------------------------------------------------------
-# 3. 메인 로직
+# 3. Main Logic
 # -----------------------------------------------------------------------------
 full_df = load_all_data_cached()
 
-st.title("🛡️ HAA 전략 운용 리포트")
+st.title("🛡️ HAA Strategy Report")
 
-# [1] 전략 요약
-with st.expander("📌 전략 개요 (Strategy Summary)", expanded=False):
+# [1] Strategy Summary
+with st.expander("📌 Strategy Overview", expanded=False):
     st.markdown(f"""
-    **하이브리드 자산 배분 (HAA) 전략:**
-    1. **카나리아 신호:** `{ticker_canary}`의 모멘텀 스코어가 0보다 크면 **상승장**, 작으면 **하락장**으로 판단합니다.
-    2. **상승장 (Bull):** 공격 자산(`{ticker_risky_base}` + `{ticker_risky_lev}`)을 매수하여 수익을 극대화합니다.
-    3. **하락장 (Bear):** 방어 자산(`{ticker_safe_cash}`, `{ticker_safe_bond}`) 중 모멘텀이 더 강한 자산으로 대피합니다.
-    4. **모멘텀 스코어:** 최근 1, 3, 6, 12개월 수익률에 가중치를 두어 계산합니다.
+    **Hybrid Asset Allocation (HAA):**
+    1. **Canary Signal:** Checks `{ticker_canary}` momentum. Score > 0 is **Bull**, Score < 0 is **Bear**.
+    2. **Bull Market:** Buy Aggressive Assets (`{ticker_risky_base}` + `{ticker_risky_lev}`).
+    3. **Bear Market:** Switch to Defensive Assets (`{ticker_safe_cash}` or `{ticker_safe_bond}`).
+    4. **Momentum Score:** Weighted average of 1, 3, 6, 12-month returns.
     """)
 
-if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=True):
-    # 데이터 준비
+if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
+    # Prepare Data
     needed = list(set([ticker_risky_base, ticker_risky_lev, ticker_safe_cash, ticker_safe_bond, ticker_canary]))
     
     sim_start = pd.to_datetime(start_date)
-    # 데이터 인덱스 안전 처리
-    if sim_start < full_df.index[0]:
-        sim_start = full_df.index[0]
+    
+    # Validate Data Availability
+    # Ensure we don't crash if user selects a date before data exists
+    first_valid_idx = full_df[needed].dropna().index[0]
+    
+    if sim_start < first_valid_idx:
+        st.warning(f"⚠️ Note: Data for some selected tickers starts from {first_valid_idx.date()}. Simulation will start from there instead of {sim_start}.")
+        sim_start = first_valid_idx
         
     df_price = full_df[needed].loc[sim_start:]
     
     if df_price.empty:
-        st.error("데이터 부족: 시작일을 확인해주세요.")
+        st.error("Error: No data available for the selected range.")
         st.stop()
     
-    # 스코어 계산
+    # Score Calculation
     def get_score(series):
         return (series.pct_change(21)*12) + (series.pct_change(63)*4) + (series.pct_change(126)*2) + (series.pct_change(252)*1)
 
     scores = pd.DataFrame({t: get_score(full_df[t]) for t in needed}, index=full_df.index)
-    scores = scores.loc[sim_start:] # 시뮬레이션 기간 매칭
+    scores = scores.loc[sim_start:] 
     
     df_ret = df_price.pct_change().fillna(0)
     
-    # 백테스트 루프
+    # Backtest Loop
     cap = initial_capital
     b_cap = initial_capital
     equity, b_equity = [], []
@@ -111,7 +117,7 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
         if i == 0:
             equity.append(cap); b_equity.append(b_cap); continue
 
-        # 전일 종가 기준 신호
+        # Check Signal (Previous Day)
         try:
             canary_score = scores[ticker_canary].iloc[i-1]
             base_score = scores[ticker_risky_base].iloc[i-1]
@@ -120,17 +126,17 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
         except:
             equity.append(cap); b_equity.append(b_cap); continue
             
-        # 포지션 결정
+        # Determine Position
         target = {}
         mode = ""
         
         # Bull Market
         if canary_score > 0 and base_score > 0:
-            mode = "Bull (공격)"
+            mode = "Bull"
             target = {ticker_risky_base: w_base, ticker_risky_lev: 1.0 - w_base}
         # Bear Market
         else:
-            mode = "Defense (방어)"
+            mode = "Defense"
             if cash_score > 0 and bond_score > 0:
                 s_alloc = {ticker_safe_cash: 0.5, ticker_safe_bond: 0.5}
             elif bond_score > 0:
@@ -144,14 +150,14 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
             else:
                 target = s_alloc
         
-        # 매매 기록 (상태 변경 or 월 변경 시)
+        # Logging
         if mode != prev_mode or date.month != df_price.index[i-1].month:
             alloc_str = ", ".join([f"{t}({w:.0%})" for t, w in target.items() if w > 0])
             trade_logs.append({
-                "날짜": date.strftime('%Y-%m-%d'),
-                "시장상태": mode,
-                "매수 종목 및 비중": alloc_str,
-                "평가금": round(cap)
+                "Date": date.strftime('%Y-%m-%d'),
+                "Mode": mode,
+                "Allocation": alloc_str,
+                "Balance": round(cap)
             })
             prev_mode = mode
             
@@ -164,17 +170,17 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
         equity.append(cap)
         b_equity.append(b_cap)
 
-    # 결과 정리
+    # DataFrame creation
     res = pd.DataFrame({'Strategy': equity, 'Benchmark': b_equity}, index=df_price.index[:len(equity)])
     
-    # [2] 오늘 해야 할 일 (Action Plan)
+    # [2] Action Plan
     st.divider()
     last_canary = scores[ticker_canary].iloc[-1]
     last_base = scores[ticker_risky_base].iloc[-1]
     last_cash = scores[ticker_safe_cash].iloc[-1]
     last_bond = scores[ticker_safe_bond].iloc[-1]
     
-    st.markdown("### 🔔 오늘 해야 할 일 (Action Plan)")
+    st.markdown("### 🔔 Action Plan (Today)")
     
     final_target = {}
     action_msg = ""
@@ -182,10 +188,9 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
     
     if last_canary > 0 and last_base > 0:
         final_target = {ticker_risky_base: w_base, ticker_risky_lev: 1.0 - w_base}
-        action_msg = f"🚀 **상승장 진입/유지**: 공격 자산을 적극 매수하세요."
+        action_msg = f"🚀 **Bull Market**: Buy Aggressive Assets."
         msg_color = "success"
     else:
-        # 방어 로직 재계산
         if last_cash > 0 and last_bond > 0: s_alloc = {ticker_safe_cash: 0.5, ticker_safe_bond: 0.5}
         elif last_bond > 0: s_alloc = {ticker_safe_bond: 1.0}
         else: s_alloc = {ticker_safe_cash: 1.0}
@@ -195,7 +200,7 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
             for t, w in s_alloc.items(): final_target[t] = w * (1.0 - w_def_atk)
         else:
             final_target = s_alloc
-        action_msg = f"🛡️ **방어장 진입/유지**: 리스크 관리를 위해 방어 자산으로 이동하세요."
+        action_msg = f"🛡️ **Defense Mode**: Move to Defensive Assets."
         msg_color = "warning"
 
     c1, c2 = st.columns([2, 1])
@@ -203,17 +208,16 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
         if msg_color == "success": st.success(action_msg)
         else: st.warning(action_msg)
     with c2:
-        st.markdown("**👇 목표 포트폴리오**")
+        st.markdown("**👇 Target Weights**")
         for t, w in final_target.items():
             if w > 0: st.markdown(f"- **{t}**: `{w*100:.1f}%`")
 
-    # [3] 시뮬레이션 결과 (Metrics)
+    # [3] Metrics
     st.divider()
     final_bal = res['Strategy'].iloc[-1]
     profit = final_bal - initial_capital
     total_yield = (profit / initial_capital) * 100
     
-    # CAGR, MDD
     days = (res.index[-1] - res.index[0]).days
     cagr = (final_bal / initial_capital) ** (365 / days) - 1
     
@@ -221,36 +225,35 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
     res['dd'] = (res['Strategy'] - res['peak']) / res['peak']
     mdd = res['dd'].min()
     
-    st.subheader("📊 시뮬레이션 결과")
+    st.subheader("📊 Simulation Results")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("최종 자산 (수익금)", f"{final_bal:,.0f} 원", f"+{profit:,.0f} 원")
-    m2.metric("총 수익률", f"{total_yield:.2f}%")
-    m3.metric("연평균 수익률 (CAGR)", f"{cagr*100:.2f}%")
-    m4.metric("최대 낙폭 (MDD)", f"{mdd*100:.2f}%")
+    m1.metric("Final Balance", f"{final_bal:,.0f} KRW", f"+{profit:,.0f}")
+    m2.metric("Total Return", f"{total_yield:.2f}%")
+    m3.metric("CAGR", f"{cagr*100:.2f}%")
+    m4.metric("MDD", f"{mdd*100:.2f}%")
 
-    # [4] 3개 탭 구성
+    # [4] Tabs (Charts / Logs / Monthly)
     st.markdown("---")
-    tab1, tab2, tab3 = st.tabs(["📈 차트 (수익률/MDD)", "📝 매매 로그", "📅 월별 수익률"])
+    tab1, tab2, tab3 = st.tabs(["📈 Charts", "📝 Trade Logs", "📅 Monthly Returns"])
     
     with tab1:
         fig, ax = plt.subplots(2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [2, 1]})
         
-        # 누적 수익률 비교
+        # Equity Curve
         ax[0].plot(res.index, res['Strategy'], label='Strategy', color='#d62728', lw=2)
         ax[0].plot(res.index, res['Benchmark'], label=f'Benchmark ({ticker_risky_base})', color='gray', linestyle='--')
-        ax[0].set_title("누적 자산 추이 (Equity Curve)")
+        ax[0].set_title("Cumulative Equity Curve")
         ax[0].legend()
         ax[0].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
         
         # MDD
-        ax[1].fill_between(res.index, res['dd']*100, 0, color='blue', alpha=0.3, label='Strategy MDD')
+        ax[1].fill_between(res.index, res['dd']*100, 0, color='blue', alpha=0.3, label='Strategy DD')
         
-        # BM MDD 계산
         b_peak = res['Benchmark'].cummax()
         b_dd = (res['Benchmark'] - b_peak) / b_peak
-        ax[1].plot(res.index, b_dd*100, color='black', alpha=0.5, linestyle=':', label='Benchmark MDD')
+        ax[1].plot(res.index, b_dd*100, color='black', alpha=0.5, linestyle=':', label='Benchmark DD')
         
-        ax[1].set_title("MDD 비교 (%)")
+        ax[1].set_title("Drawdown Comparison (%)")
         ax[1].legend()
         
         st.pyplot(fig)
@@ -260,7 +263,6 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
         st.dataframe(log_df, use_container_width=True, height=500)
         
     with tab3:
-        # 월별 수익률 히트맵 테이블
         m_ret = res['Strategy'].resample('M').last().pct_change().fillna(0)
         m_df = pd.DataFrame({'Return': m_ret})
         m_df['Year'] = m_df.index.year
@@ -268,9 +270,7 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
         
         m_pivot = m_df.pivot(index='Year', columns='Month', values='Return')
         
-        # YTD 계산
         y_ret = res['Strategy'].resample('Y').last().pct_change().fillna(0)
-        # 첫해 보정
         if len(y_ret) > 0:
             first_val = res['Strategy'].iloc[0]
             first_year_end = res['Strategy'][res.index.year == res.index[0].year].iloc[-1]
@@ -278,8 +278,8 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
             
         m_pivot['Total (Year)'] = y_ret.values
         
-        # 컬럼명 월 이름으로 변경
-        cols = {i: f"{i}월" for i in range(1, 13)}
+        # English Month Names
+        cols = {i: pd.to_datetime(f"2000-{i}-01").strftime('%b') for i in range(1, 13)}
         m_pivot.rename(columns=cols, inplace=True)
         
         st.dataframe(
@@ -287,10 +287,9 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
             use_container_width=True
         )
 
-    # [5] 엑셀 다운로드
+    # [5] Excel Download
     st.markdown("---")
     
-    # 엑셀 파일 생성 로직
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         res.to_excel(writer, sheet_name='Daily Data')
@@ -301,7 +300,7 @@ if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=
     excel_data = output.getvalue()
     
     st.download_button(
-        label="📥 결과 엑셀 파일 다운로드",
+        label="📥 Download Excel Report",
         data=excel_data,
         file_name="HAA_Strategy_Report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

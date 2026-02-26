@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import datetime
 import io
 import FinanceDataReader as fdr
+import time  # [NEW] 다운로드 지연을 위한 time 모듈 추가
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 및 캐싱 함수
@@ -33,6 +34,9 @@ def get_kospi_data(start_year, sample_size):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
+    # [NEW] 다운로드 실패 종목을 추적하기 위한 리스트
+    failed_stocks = []
+    
     for i, ticker in enumerate(tickers):
         try:
             status_text.text(f"데이터 다운로드 중.. ({i+1}/{len(tickers)}) - {code_map.get(ticker)}")
@@ -41,11 +45,21 @@ def get_kospi_data(start_year, sample_size):
             df = fdr.DataReader(ticker, str(fetch_year))['Close']
             df.name = ticker
             all_prices.append(df)
-        except:
+            
+            # [NEW] 과도한 트래픽으로 인한 접속 차단(Timeout) 방지
+            time.sleep(0.1) 
+            
+        except Exception as e:
+            # [NEW] 실패한 종목 기록 후 계속 진행
+            failed_stocks.append(f"{code_map.get(ticker)}({ticker})")
             continue
             
     status_text.empty()
     progress_bar.empty()
+    
+    # [NEW] 다운로드에 실패한 종목이 있다면 화면에 경고창으로 안내
+    if failed_stocks:
+        st.warning(f"⚠️ 다음 종목들은 데이터를 가져오지 못해 분석에서 제외되었습니다:\n\n{', '.join(failed_stocks)}")
     
     if not all_prices:
         return pd.DataFrame(), {}
@@ -62,12 +76,12 @@ st.markdown("KOSPI 대형주 중 **최근 수익률이 좋은 종목**으로 포
 with st.sidebar:
     st.header("⚙️ 전략 설정")
     
-    start_year = st.number_input("시작 연도", value=2015, min_value=2000, max_value=2024)
+    start_year = st.number_input("시작 연도", value=2020, min_value=2000, max_value=2024)
     
-    sample_size = st.slider("투자 유니버스 (시총 상위 N개)", 50, 200, 100, step=50,
+    sample_size = st.slider("투자 유니버스 (시총 상위 N개)", 50, 300, 200, step=50,
                             help="데이터 다운로드 시간이 길어질 수 있으니 적절히 조절하세요.")
     
-    top_n = st.number_input("보유 종목 수 (Top N)", value=10, min_value=1)
+    top_n = st.number_input("보유 종목 수 (Top N)", value=20, min_value=1)
     
     rebalance_map = {
         "1개월 (월간)": 1,
@@ -75,13 +89,12 @@ with st.sidebar:
         "6개월 (반기)": 6,
         "12개월 (연간)": 12
     }
-    rebal_label = st.selectbox("리밸런싱 주기", list(rebalance_map.keys()), index=1)
+    rebal_label = st.selectbox("리밸런싱 주기", list(rebalance_map.keys()), index=0)
     rebalance_step = rebalance_map[rebal_label]
     
     momentum_window = st.number_input("모멘텀 기간 (개월)", value=12, help="과거 몇 개월 수익률을 비교할까요?")
 
     st.markdown("---")
-    # [NEW] 엑셀 출력 선택 옵션 추가
     export_excel_option = st.checkbox("📥 엑셀 다운로드 기능 활성화", value=True)
     
     run_btn = st.button("🚀 전략 실행", type="primary")
@@ -203,7 +216,7 @@ if run_btn:
                 picks_data.append({
                     '종목명': code_map.get(code, code),
                     '종목코드': code,
-                    '1년 수익률': score, # 포맷팅은 엑셀 저장 시 처리하지 않고 원본 값 유지 추천
+                    '1년 수익률': score, 
                     '현재가': p_curr[code]
                 })
             df_picks = pd.DataFrame(picks_data)
@@ -239,7 +252,6 @@ if run_btn:
                 
             with tab2:
                 st.subheader(f"📢 오늘 기준 추천 종목 (Top {top_n})")
-                # 화면 표시용 포맷팅
                 df_picks_display = df_picks.copy()
                 df_picks_display['1년 수익률'] = df_picks_display['1년 수익률'].apply(lambda x: f"{x*100:.2f}%")
                 df_picks_display['현재가'] = df_picks_display['현재가'].apply(lambda x: f"{x:,.0f}원")
@@ -254,7 +266,7 @@ if run_btn:
                 st.dataframe(df_history)
 
             # ----------------------------------
-            # [NEW] 엑셀 다운로드 로직
+            # 엑셀 다운로드 로직
             # ----------------------------------
             if export_excel_option:
                 st.markdown("---")
@@ -263,19 +275,14 @@ if run_btn:
                 with st.spinner("엑셀 파일을 생성 중입니다..."):
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                        # 1. 매매 이력
                         df_history.to_excel(writer, sheet_name='Trade_History', index=False)
-                        # 2. 월별 성과
                         monthly_table.to_excel(writer, sheet_name='Monthly_Returns')
-                        # 3. 현재 매수 종목
                         df_picks.to_excel(writer, sheet_name='Current_Picks', index=False)
                         
-                        # (선택) 엑셀 포맷팅: 퍼센트 표시 등
                         workbook = writer.book
                         format_pct = workbook.add_format({'num_format': '0.00%'})
                         format_money = workbook.add_format({'num_format': '#,##0'})
                         
-                        # Current_Picks 시트 포맷 적용 예시 (C열:수익률, D열:가격)
                         worksheet_picks = writer.sheets['Current_Picks']
                         worksheet_picks.set_column('C:C', 12, format_pct)
                         worksheet_picks.set_column('D:D', 12, format_money)

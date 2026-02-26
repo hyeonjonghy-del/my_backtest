@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import datetime
 import io
 import FinanceDataReader as fdr
-import time  # [NEW] 다운로드 지연을 위한 time 모듈 추가
+import time  # 데이터 다운로드 지연 및 재시도를 위한 모듈
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 및 캐싱 함수
@@ -34,32 +34,43 @@ def get_kospi_data(start_year, sample_size):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # [NEW] 다운로드 실패 종목을 추적하기 위한 리스트
     failed_stocks = []
     
     for i, ticker in enumerate(tickers):
-        try:
-            status_text.text(f"데이터 다운로드 중.. ({i+1}/{len(tickers)}) - {code_map.get(ticker)}")
-            progress_bar.progress((i + 1) / len(tickers))
-            
-            df = fdr.DataReader(ticker, str(fetch_year))['Close']
-            df.name = ticker
-            all_prices.append(df)
-            
-            # [NEW] 과도한 트래픽으로 인한 접속 차단(Timeout) 방지
-            time.sleep(0.1) 
-            
-        except Exception as e:
-            # [NEW] 실패한 종목 기록 후 계속 진행
-            failed_stocks.append(f"{code_map.get(ticker)}({ticker})")
-            continue
+        # 진행상황 표시
+        status_text.text(f"데이터 다운로드 중.. ({i+1}/{len(tickers)}) - {code_map.get(ticker)}")
+        progress_bar.progress((i + 1) / len(tickers))
+        
+        success = False
+        max_retries = 3  # 최대 3번까지 재시도
+        
+        for attempt in range(max_retries):
+            try:
+                # 데이터 다운로드 시도
+                df = fdr.DataReader(ticker, str(fetch_year))['Close']
+                df.name = ticker
+                all_prices.append(df)
+                success = True
+                
+                # 성공 시 트래픽 방지용으로 아주 잠깐 대기 후 다음 종목으로 넘어감
+                time.sleep(0.05) 
+                break 
+                
+            except Exception:
+                # 실패하면 1초 대기 후 다시 시도 (서버 접속 일시 차단 방지)
+                time.sleep(1)
+                continue
+        
+        # 3번 모두 실패했을 경우에만 누락 명단에 추가
+        if not success:
+            failed_stocks.append(f"{code_map.get(ticker)} ({ticker})")
             
     status_text.empty()
     progress_bar.empty()
     
-    # [NEW] 다운로드에 실패한 종목이 있다면 화면에 경고창으로 안내
+    # 다운로드에 완전히 실패한 종목이 있다면 화면에 경고창으로 안내
     if failed_stocks:
-        st.warning(f"⚠️ 다음 종목들은 데이터를 가져오지 못해 분석에서 제외되었습니다:\n\n{', '.join(failed_stocks)}")
+        st.warning(f"⚠️ 다음 종목들은 네트워크 문제로 3회 재시도했으나 데이터를 가져오지 못해 제외되었습니다:\n\n{', '.join(failed_stocks)}")
     
     if not all_prices:
         return pd.DataFrame(), {}
@@ -103,7 +114,7 @@ with st.sidebar:
 # 3. 메인 로직
 # -----------------------------------------------------------------------------
 if run_btn:
-    with st.spinner("데이터를 분석하고 있습니다..."):
+    with st.spinner("데이터를 분석하고 있습니다... 이 작업은 네트워크 상태에 따라 시간이 소요될 수 있습니다."):
         # 1. 데이터 로드
         df_price, code_map = get_kospi_data(start_year, sample_size)
         

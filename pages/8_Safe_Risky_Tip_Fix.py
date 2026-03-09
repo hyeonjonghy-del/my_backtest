@@ -200,10 +200,12 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
     
     # [2] Action Plan
     st.divider()
-    last_canary = scores[ticker_canary].iloc[-1]
-    last_base = scores[ticker_risky_base].iloc[-1]
-    last_cash = scores[ticker_safe_cash].iloc[-1]
-    last_bond = scores[ticker_safe_bond].iloc[-1]
+    
+    # 전일장 종료 기준(-2)의 스코어를 가져와 오늘의 포지션을 결정합니다.
+    last_canary = scores[ticker_canary].iloc[-2]
+    last_base = scores[ticker_risky_base].iloc[-2]
+    last_cash = scores[ticker_safe_cash].iloc[-2]
+    last_bond = scores[ticker_safe_bond].iloc[-2]
     
     st.markdown("### 🔔 Action Plan (Today)")
     

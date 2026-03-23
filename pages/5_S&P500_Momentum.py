@@ -94,6 +94,10 @@ def get_stock_data(market_type, start_year, sample_size):
             
             # 데이터 다운로드
             df = fdr.DataReader(ticker, str(fetch_year))['Close']
+            
+            # 💡 [수정된 부분] 인덱스(날짜) 중복 제거
+            df = df[~df.index.duplicated(keep='last')]
+            
             df.name = ticker
             all_prices.append(df)
         except:
@@ -105,7 +109,8 @@ def get_stock_data(market_type, start_year, sample_size):
     if not all_prices:
         return pd.DataFrame(), {}
 
-    price_df = pd.concat(all_prices, axis=1).fillna(method='ffill')
+    # 💡 [수정된 부분] fillna(method='ffill') 대신 .ffill() 사용 (Pandas 최신 버전 호환)
+    price_df = pd.concat(all_prices, axis=1).ffill()
     return price_df, code_map
 
 # -----------------------------------------------------------------------------
@@ -282,7 +287,7 @@ if run_btn:
                 st.caption("ℹ️ 세금 22%가 적용된 결과입니다. (매년 말 이익 발생 시 차감)")
             
             # 월별 수익률 계산 (월별 탭용)
-            monthly_ret = full_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
+            monthly_ret = full_returns.resample('ME').apply(lambda x: (1 + x).prod() - 1)
             m_df = monthly_ret.to_frame('Return')
             m_df['Year'] = m_df.index.year
             m_df['Month'] = m_df.index.month
@@ -290,7 +295,7 @@ if run_btn:
             monthly_pivot = m_df.pivot(index='Year', columns='Month', values='Return')
             monthly_pivot.columns = [f"{c}월" for c in monthly_pivot.columns]
             
-            yearly_ret = full_returns.resample('A').apply(lambda x: (1 + x).prod() - 1)
+            yearly_ret = full_returns.resample('YE').apply(lambda x: (1 + x).prod() - 1)
             yearly_ret.index = yearly_ret.index.year
             monthly_pivot['Year Total'] = yearly_ret
 

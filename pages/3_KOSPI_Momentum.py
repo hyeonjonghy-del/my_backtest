@@ -51,11 +51,12 @@ def get_kospi200_data(start_year, sample_size):
     if not tickers:
         return pd.DataFrame(), {}
 
-    # 2. 종목코드 - 종목명 매핑 (FDR의 정적 데이터베이스 활용)
+    # 2. 종목코드 - 종목명 매핑 (FDR의 데이터베이스 활용 - 오류 수정됨)
     try:
-        desc_df = fdr.StockListing('KRX-DESC') 
+        desc_df = fdr.StockListing('KRX') 
         code_map = desc_df.set_index('Code')['Name'].to_dict()
-    except:
+    except Exception as e:
+        st.error(f"종목명 매핑 중 오류가 발생했습니다: {e}")
         code_map = {}
     
     # 3. 주가 데이터 다운로드 (네이버 금융 기반)

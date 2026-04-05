@@ -42,6 +42,7 @@ with st.sidebar:
     ticker_cash = st.text_input("현금 파킹 (Cash)", value="SGOV")
 
     st.header("2. 전략 옵션")
+    # 백테스트 시작일 기본값 2020년 1월 1일로 복구
     start_date = st.date_input("시작일", pd.to_datetime("2020-01-01"))
     initial_capital = st.number_input("초기 자본", value=100000000, step=1000000)
     fee_rate = st.number_input("매매 수수료 (%)", value=0.02, step=0.01) / 100.0
@@ -291,13 +292,13 @@ if st.button("🚀 Run Verified Backtest", type="primary", use_container_width=T
         c3.metric("MDD", f"{mdd*100:.2f} %")
         st.divider()
         
-        # 차트 및 데이터 출력 (기존 유지)
-        m_df = res_df[['Equity']].resample('M').last()
+        # 차트 및 데이터 출력 
+        m_df = res_df[['Equity']].resample('ME').last()
         m_df['Return'] = m_df['Equity'].pct_change()
         pivot_table = m_df['Return'].groupby([m_df.index.year, m_df.index.month]).sum().unstack()
         pivot_table.columns = [calendar.month_abbr[i] for i in pivot_table.columns]
         
-        y_ret = res_df['Equity'].resample('Y').last().pct_change()
+        y_ret = res_df['Equity'].resample('YE').last().pct_change()
         y_ret.index = y_ret.index.year
         pivot_table['Total'] = y_ret
         

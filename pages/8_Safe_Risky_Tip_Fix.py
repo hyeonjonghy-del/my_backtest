@@ -301,14 +301,16 @@ if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
         st.dataframe(log_df, use_container_width=True, height=500)
         
     with tab3:
-        m_ret = res['Strategy'].resample('M').last().pct_change().fillna(0)
+        # 이 부분의 'M'을 'ME'로 수정했습니다.
+        m_ret = res['Strategy'].resample('ME').last().pct_change().fillna(0)
         m_df = pd.DataFrame({'Return': m_ret})
         m_df['Year'] = m_df.index.year
         m_df['Month'] = m_df.index.month
         
         m_pivot = m_df.pivot(index='Year', columns='Month', values='Return')
         
-        y_ret = res['Strategy'].resample('Y').last().pct_change().fillna(0)
+        # 이 부분의 'Y'를 'YE'로 수정했습니다.
+        y_ret = res['Strategy'].resample('YE').last().pct_change().fillna(0)
         if len(y_ret) > 0:
             first_val = res['Strategy'].iloc[0]
             first_year_end = res['Strategy'][res.index.year == res.index[0].year].iloc[-1]

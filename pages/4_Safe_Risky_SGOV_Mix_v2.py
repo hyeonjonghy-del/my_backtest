@@ -53,10 +53,14 @@ with st.sidebar:
     st.header("5. 🆕 변동성 기반 포지션 사이징")
     use_vol_sizing  = st.checkbox("변동성 기반 비중 조절 사용", value=True)
     vol_window      = st.number_input("변동성 계산 기간 (일)", value=20, min_value=5)
-    target_vol      = st.number_input("목표 변동성 (%)", value=15.0, step=1.0) / 100.0
+    target_vol      = st.number_input("목표 변동성 (%)", value=25.0, step=1.0) / 100.0
     max_risky_w     = st.slider("공격자산 최대 비중", 0.3, 1.0, 1.0, 0.1)
+    vol_rebal_threshold = st.number_input("리밸런싱 최소 비중 변화 (%)", value=5.0, step=1.0,
+                                          help="비중 변화가 이 값 미만이면 거래 안 함 → 과도한 매매 방지") / 100.0
+    apply_vol_on_bull_full = st.checkbox("Bull_Full에도 변동성 사이징 적용", value=False,
+                                          help="체크 해제 시 Bull_Full은 항상 최대 비중 유지 (CAGR 보호)")
     if use_vol_sizing:
-        st.caption("ℹ️ 변동성 높으면 UPRO 비중 자동 축소, 낮으면 확대 (최대 비중 제한)")
+        st.caption("ℹ️ 변동성 높으면 UPRO 비중 자동 축소 / 낮으면 확대 (최대 비중 제한)")
 
     st.header("6. 🆕 보조 시장 필터")
     use_aux_signal  = st.checkbox("보조 시장 신호 사용 (QQQ)", value=False)
@@ -198,31 +202,41 @@ if st.button("🚀 Run Enhanced Backtest", type="primary", use_container_width=T
         # 9. 포지션 가중치 계산 함수
         def state_to_weights(state: str, today_vol: float) -> dict:
             """
-            [변동성 사이징] 목표 변동성 기준으로 UPRO 비중 산출
-            UPRO는 SPY 대비 약 3배 변동성이므로 vol_upro ≈ spy_vol * 3
-            w = target_vol / vol_upro (단, max_risky_w 이하 제한)
+            [v3.1 수정]
+            - Bull_Full: apply_vol_on_bull_full=False(기본)이면 max_risky_w 그대로 사용
+              → CAGR 보호. True이면 변동성 사이징 적용.
+            - Bull_Mix: 항상 변동성 사이징 적용 (리스크 관리 구간이므로)
+            - 리밸런싱 임계값(vol_rebal_threshold)은 루프에서 별도 처리
             """
-            if use_vol_sizing and not np.isnan(today_vol) and today_vol > 0:
-                vol_upro  = today_vol * 3.0
-                vol_w     = min(target_vol / vol_upro, max_risky_w)
-            else:
-                vol_w = max_risky_w  # 변동성 데이터 없으면 최대치 사용
+            def calc_vol_weight(base_w: float) -> float:
+                if use_vol_sizing and not np.isnan(today_vol) and today_vol > 0:
+                    vol_upro = today_vol * 3.0
+                    return min(target_vol / vol_upro, base_w)
+                return base_w
 
             if state == "Bear":
                 return {ticker_safe: 1.0}
+
             elif state == "Bull_Full":
-                cash_w = 1.0 - vol_w
-                w = {ticker_risky: vol_w}
+                if use_vol_sizing and apply_vol_on_bull_full:
+                    risky_w = calc_vol_weight(max_risky_w)
+                else:
+                    risky_w = max_risky_w          # 변동성 사이징 미적용 → 항상 최대치
+                cash_w = 1.0 - risky_w
+                w = {ticker_risky: risky_w}
                 if cash_w > 1e-6 and cash_available:
                     w[ticker_cash] = cash_w
                 return w
+
             elif state == "Bull_Mix":
-                risky_w = vol_w * exposure_ratio
+                base_w  = max_risky_w * exposure_ratio
+                risky_w = calc_vol_weight(base_w)  # Bull_Mix는 항상 변동성 사이징
                 cash_w  = 1.0 - risky_w
                 w = {ticker_risky: risky_w}
                 if cash_w > 1e-6 and cash_available:
                     w[ticker_cash] = cash_w
                 return w
+
             return {ticker_safe: 1.0}
 
         # 10. 시뮬레이션 루프
@@ -250,12 +264,14 @@ if st.button("🚀 Run Enhanced Backtest", type="primary", use_container_width=T
 
             equity *= (1.0 + day_ret)
 
-            # 리밸런싱 판단
-            is_same = (curr_w.keys() == target_w.keys()) and all(
-                abs(curr_w.get(k, 0) - target_w.get(k, 0)) < 1e-9 for k in target_w
+            # 리밸런싱 판단: State 변경 OR 비중 변화가 임계값 이상일 때만 거래
+            state_changed = (curr_w.keys() != target_w.keys())
+            weight_changed = any(
+                abs(curr_w.get(k, 0) - target_w.get(k, 0)) >= vol_rebal_threshold
+                for k in set(list(curr_w.keys()) + list(target_w.keys()))
             )
             action = ""
-            if not is_same:
+            if state_changed or weight_changed:
                 action  = "SWITCH"
                 equity -= equity * fee_rate
                 curr_w  = target_w
@@ -460,6 +476,10 @@ if st.button("🚀 Run Enhanced Backtest", type="primary", use_container_width=T
                 ```
                 UPRO 비중 = min(목표변동성({target_vol*100:.0f}%) / (SPY변동성 × 3), 최대비중({max_risky_w*100:.0f}%))
                 ```
+                **적용 범위:**
+                - Bull_Full: {'변동성 사이징 적용' if apply_vol_on_bull_full else '최대 비중 고정 (CAGR 보호)'}
+                - Bull_Mix: 항상 변동성 사이징 적용
+                - 리밸런싱 임계값: 비중 변화 {vol_rebal_threshold*100:.0f}% 이상 시에만 매매
                 """)
 
         # ── 엑셀 다운로드 ─────────────────────────────────────────────────────

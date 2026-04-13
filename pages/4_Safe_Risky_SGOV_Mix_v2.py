@@ -463,19 +463,32 @@ if st.button("🚀 Run Enhanced Backtest", type="primary", use_container_width=T
             ax[0].legend()
             ax[0].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
 
-            # 2. Drawdown
-            ax[1].fill_between(res_df.index, res_df['Drawdown(%)'], 0, color='blue', alpha=0.25)
-            ax[1].plot(res_df.index, res_df['Drawdown(%)'], color='blue', lw=0.8)
-            ax[1].set_title("2. Drawdown (%)", fontsize=12)
-            ax[1].axhline(0, color='black', lw=0.5)
+            # 2. Drawdown — Strategy vs SPY 비교
+            # SPY Drawdown 계산
+            spy_cum  = (1 + returns_sim[ticker_safe].fillna(0)).cumprod()
+            spy_peak = spy_cum.cummax()
+            spy_dd   = ((spy_cum - spy_peak) / spy_peak * 100)
 
-            # 3. 추세 시그널
-            ax[2].plot(res_df.index, res_df['Safe_Price'], color='black',  lw=1.0, label=f'{ticker_safe}')
-            ax[2].plot(res_df.index, res_df['Safe_MA'],    color='orange', lw=1.5, ls='--', label=f'진입 MA{int(ma_window)}')
+            ax[1].fill_between(res_df.index, res_df['Drawdown(%)'], 0,
+                                color='blue', alpha=0.20, label='Strategy DD')
+            ax[1].plot(res_df.index, res_df['Drawdown(%)'],
+                       color='blue', lw=1.0, label=f'Strategy (MDD {mdd*100:.1f}%)')
+            ax[1].plot(spy_dd.index, spy_dd,
+                       color='tomato', lw=1.0, ls='--', alpha=0.8,
+                       label=f'{ticker_safe} B&H (MDD {spy_dd.min():.1f}%)')
+            ax[1].set_title("2. Drawdown (%) — Strategy vs SPY", fontsize=12)
+            ax[1].axhline(0, color='black', lw=0.5)
+            ax[1].legend(loc='lower left', fontsize=9)
+
+            # 3. Trend Signal (English only)
+            ax[2].plot(res_df.index, res_df['Safe_Price'], color='black',  lw=1.0, label=f'{ticker_safe} Price')
+            ax[2].plot(res_df.index, res_df['Safe_MA'],    color='orange', lw=1.5, ls='--', label=f'Entry MA{int(ma_window)}')
             if use_asymmetric_ma:
                 ma_exit_plot = ma_safe_exit.loc[res_df.index]
-                ax[2].plot(res_df.index, ma_exit_plot, color='red', lw=1.2, ls=':', label=f'퇴출 MA{int(ma_exit_window)}')
-            ax[2].set_title(f"3. Trend Signal — 비대칭MA {'ON' if use_asymmetric_ma else 'OFF'} (진입 MA{int(ma_window)} / 퇴출 MA{int(ma_exit_window)})", fontsize=12)
+                ax[2].plot(res_df.index, ma_exit_plot, color='red', lw=1.2, ls=':', label=f'Exit MA{int(ma_exit_window)}')
+            asym_label = f"Asymmetric MA ON  (Entry MA{int(ma_window)} / Exit MA{int(ma_exit_window)})" \
+                         if use_asymmetric_ma else f"Asymmetric MA OFF  (MA{int(ma_window)})"
+            ax[2].set_title(f"3. Trend Signal — {asym_label}", fontsize=12)
             ax[2].legend()
 
             # 4. 금리 시그널

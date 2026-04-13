@@ -36,7 +36,16 @@ with st.sidebar:
     initial_capital = st.number_input("초기 자본", value=100_000_000, step=1_000_000)
     fee_rate        = st.number_input("매매 수수료 (%)", value=0.02, step=0.01) / 100.0
     apply_tax       = st.checkbox("양도소득세 22% 차감", value=False)
-    ma_window       = st.number_input("추세 이평선 (일)", value=120, min_value=5)
+    ma_window         = st.number_input("Bull 진입 이평선 (일)", value=120, min_value=5,
+                                        help="이 이평선 위여야 Bull 진입 (느린 신호 → 오진입 방지)")
+    use_asymmetric_ma = st.checkbox("비대칭 MA 사용 (빠른 퇴출)", value=True,
+                                     help="Bear 전환 시 더 짧은 이평선 사용 → 폭락 시 빠른 손실 차단")
+    if use_asymmetric_ma:
+        ma_exit_window = st.number_input("Bear 퇴출 이평선 (일)", value=60, min_value=5,
+                                          help="이 이평선 아래로 내려오면 Bear 전환 (빠른 신호 → MDD 감소)")
+        st.caption(f"ℹ️ 진입 MA{int(ma_window)} / 퇴출 MA{int(ma_exit_window)}  →  천천히 사고 빠르게 판다")
+    else:
+        ma_exit_window = ma_window
 
     st.header("3. 금리 리스크 필터")
     use_rate_filter = st.checkbox("금리 필터 사용", value=True)
@@ -135,10 +144,11 @@ if st.button("🚀 Run Enhanced Backtest", type="primary", use_container_width=T
         df_raw = full_df.ffill()
 
         # 2. 지표 계산
-        series_safe = df_raw[ticker_safe]
-        ma_safe     = series_safe.rolling(window=int(ma_window)).mean()
-        series_rate = df_raw[ticker_rate]
-        ma_rate     = series_rate.rolling(window=int(rate_ma_window)).mean()
+        series_safe  = df_raw[ticker_safe]
+        ma_safe      = series_safe.rolling(window=int(ma_window)).mean()       # 진입용 (느린 MA)
+        ma_safe_exit = series_safe.rolling(window=int(ma_exit_window)).mean()  # 퇴출용 (빠른 MA)
+        series_rate  = df_raw[ticker_rate]
+        ma_rate      = series_rate.rolling(window=int(rate_ma_window)).mean()
 
         # [보조 시장] QQQ 이평선
         if aux_available:
@@ -154,8 +164,24 @@ if st.button("🚀 Run Enhanced Backtest", type="primary", use_container_width=T
         # 3. 수익률 시계열 (루프 밖 사전 계산)
         returns_df = df_raw.pct_change()
 
-        # 4. 기본 Bull/Bear 시그널
-        raw_bull = series_safe > ma_safe
+        # 4. 기본 Bull/Bear 시그널 — 비대칭 MA 적용
+        # 진입: 현재가 > 느린MA(120일)  →  Bull
+        # 퇴출: 현재가 < 빠른MA(60일)   →  Bear  (비대칭 MA 사용 시)
+        raw_bull_entry = series_safe > ma_safe       # Bull 진입 조건
+        raw_bear_exit  = series_safe < ma_safe_exit  # Bear 전환 조건 (빠른 MA 기준)
+
+        # 비대칭 상태 머신: 한 번 Bull 진입하면 빠른 MA 아래로 내려올 때만 Bear 전환
+        if use_asymmetric_ma:
+            state_arr = np.zeros(len(series_safe), dtype=int)  # 0=Bear, 1=Bull
+            for i in range(1, len(series_safe)):
+                if state_arr[i-1] == 0:   # 현재 Bear
+                    state_arr[i] = 1 if raw_bull_entry.iloc[i] else 0  # 느린 MA로 진입 판단
+                else:                      # 현재 Bull
+                    state_arr[i] = 0 if raw_bear_exit.iloc[i]  else 1  # 빠른 MA로 퇴출 판단
+            raw_bull = pd.Series(state_arr == 1, index=df_raw.index)
+        else:
+            raw_bull = raw_bull_entry
+
         raw_hike = series_rate > ma_rate
         raw_aux  = (series_aux > ma_aux) if aux_available else pd.Series(True, index=df_raw.index)
 
@@ -431,8 +457,11 @@ if st.button("🚀 Run Enhanced Backtest", type="primary", use_container_width=T
 
             # 3. 추세 시그널
             ax[2].plot(res_df.index, res_df['Safe_Price'], color='black',  lw=1.0, label=f'{ticker_safe}')
-            ax[2].plot(res_df.index, res_df['Safe_MA'],    color='orange', lw=1.5, ls='--', label=f'MA{ma_window}')
-            ax[2].set_title(f"3. Trend Signal ({ticker_safe})", fontsize=12)
+            ax[2].plot(res_df.index, res_df['Safe_MA'],    color='orange', lw=1.5, ls='--', label=f'진입 MA{int(ma_window)}')
+            if use_asymmetric_ma:
+                ma_exit_plot = ma_safe_exit.loc[res_df.index]
+                ax[2].plot(res_df.index, ma_exit_plot, color='red', lw=1.2, ls=':', label=f'퇴출 MA{int(ma_exit_window)}')
+            ax[2].set_title(f"3. Trend Signal — 비대칭MA {'ON' if use_asymmetric_ma else 'OFF'} (진입 MA{int(ma_window)} / 퇴출 MA{int(ma_exit_window)})", fontsize=12)
             ax[2].legend()
 
             # 4. 금리 시그널

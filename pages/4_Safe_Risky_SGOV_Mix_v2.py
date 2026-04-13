@@ -162,11 +162,11 @@ if st.button("🚀 Run Enhanced Backtest", type="primary", use_container_width=T
             is_bull_confirmed = raw_bull.rolling(cd).min().fillna(0).astype(bool)
             # Bear는 반대: 최근 N일 모두 False
             is_bear_confirmed = (~raw_bull).rolling(cd).min().fillna(0).astype(bool)
-            # 확정 안 된 구간은 이전 상태 유지 (ffill)
-            bull_signal = pd.Series(np.nan, index=df_raw.index)
-            bull_signal[is_bull_confirmed] = True
-            bull_signal[is_bear_confirmed] = False
-            is_bull = bull_signal.ffill().fillna(False).astype(bool)
+            # [pandas 2.x 수정] float 타입으로 생성 후 1.0/0.0 할당 → bool 직접 할당 오류 방지
+            bull_signal = pd.Series(np.nan, index=df_raw.index, dtype='float64')
+            bull_signal = bull_signal.where(~is_bull_confirmed, other=1.0)
+            bull_signal = bull_signal.where(~is_bear_confirmed, other=0.0)
+            is_bull = bull_signal.ffill().fillna(0.0).astype(bool)
         else:
             is_bull = raw_bull
 

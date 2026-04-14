@@ -197,9 +197,13 @@ def build_universe_auto(start_year: int, end_year: int) -> dict:
 
     # 모든 시점 실패 시 현재 KOSPI 200으로 최후 폴백
     if not universe_dict:
-        st.warning(
-            "⚠️ 자동 수집에 전부 실패했습니다.  \n"
-            "현재 KOSPI 200 구성종목으로 대체합니다 (생존편향 존재)."
+        st.error(
+            "❌ KRX/WISE API 자동 수집에 실패했습니다.\n\n"
+            "**원인**: KRX와 WISE 모두 외부 스크립트 접근을 차단합니다.\n\n"
+            "**해결 방법 (택1)**:\n"
+            "1. 사이드바에서 **파일 직접 업로드** 선택 → KRX에서 수동 다운로드한 CSV 업로드\n"
+            "2. `krx_downloader.py` 실행 (Selenium 자동화) → 생성된 파일 업로드\n\n"
+            "아래는 현재 KOSPI 200으로 임시 대체합니다 (⚠️ 생존편향 존재)."
         )
         current = try_fdr_current()
         if current:

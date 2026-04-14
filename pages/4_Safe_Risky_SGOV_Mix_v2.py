@@ -115,12 +115,23 @@ def send_email(sender, password, receiver, subject, body):
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'html', 'utf-8'))
 
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(sender, password)
-            server.sendmail(sender, receiver, msg.as_string())
-        return True, "이메일 발송 성공"
+        # 포트 587 (STARTTLS) 먼저 시도 — Streamlit Cloud 호환
+        try:
+            with smtplib.SMTP('smtp.gmail.com', 587, timeout=15) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(sender, password)
+                server.sendmail(sender, receiver, msg.as_string())
+            return True, "✅ 이메일 발송 성공 (포트 587)"
+        except Exception as e1:
+            # 포트 465 (SSL) 재시도
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=15) as server:
+                server.login(sender, password)
+                server.sendmail(sender, receiver, msg.as_string())
+            return True, "✅ 이메일 발송 성공 (포트 465)"
     except Exception as e:
-        return False, f"이메일 오류: {str(e)}"
+        return False, f"❌ 이메일 오류: {str(e)}"
 
 def send_kakao(token, message):
     """카카오톡 나에게 보내기"""

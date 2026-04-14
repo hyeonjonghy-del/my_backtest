@@ -6,3 +6,5 @@ numpy
 xlsxwriter
 finance-datareader
 lxml
+openpyxl
+plotly

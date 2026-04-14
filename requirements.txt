@@ -8,3 +8,4 @@ finance-datareader
 lxml
 openpyxl
 plotly
+pykrx

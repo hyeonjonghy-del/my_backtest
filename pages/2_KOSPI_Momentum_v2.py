@@ -29,6 +29,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import io
+import re
 import FinanceDataReader as fdr
 import time
 from math import ceil
@@ -77,13 +78,21 @@ def parse_krx_files(uploaded_files):
 
     for f in uploaded_files:
         try:
-            # ── 파일명에서 날짜 추출 ──────────────────
-            digits = ''.join(filter(str.isdigit, f.name))
-            date_str = digits[:8] if len(digits) >= 8 else None
-            if not date_str:
-                st.warning(f"⚠️ 날짜 인식 실패 (파일명에 YYYYMMDD 포함 필요): {f.name}")
+            # ── 파일명에서 날짜 추출 (정규식) ─────────
+            # 20XXXXXX 또는 19XXXXXX 패턴만 탐색 (앞뒤 다른 숫자와 구분)
+            date_match = re.search(r'(?<!\d)(19|20)\d{6}(?!\d)', f.name)
+            if not date_match:
+                st.warning(
+                    f"⚠️ 날짜 인식 실패: {f.name} — "
+                    f"파일명에 YYYYMMDD 형식 날짜를 포함해주세요. 예) 20200630_KOSPI200.csv"
+                )
                 continue
-            file_date = pd.to_datetime(date_str, format='%Y%m%d')
+            date_str = date_match.group()
+            try:
+                file_date = pd.to_datetime(date_str, format='%Y%m%d')
+            except ValueError:
+                st.warning(f"⚠️ 날짜 변환 실패 ({date_str}): {f.name}")
+                continue
 
             # ── 파일 읽기 ─────────────────────────────
             if f.name.lower().endswith('.csv'):

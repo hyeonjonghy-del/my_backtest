@@ -21,7 +21,17 @@ st.set_page_config(page_title="Safe/Risky/Cash Mix Strategy v4", page_icon="🛡
 
 st.title("🛡️ Safe/Risky/Cash Mix Strategy v4")
 st.markdown("""
-**v4 추가 기능:** 📧 이메일 알림 | 💬 카카오톡 알림 | 🔔 신호 변경 감지
+**v4 기본값 — Walk-Forward 10년 검증 최적화 반영 (2015~2026)**
+
+| 파라미터 | 기본값 | 근거 |
+|---------|--------|------|
+| Bull 진입 MA | **150일** | 10년 전체 Top 100 독점 |
+| Bear 퇴출 MA | **90일** (×0.60) | 10년 최적화 1위 (기존 112→90 변경) |
+| 금리 MA | **120일** | 10년 최적화 1위 (기존 90→120 변경) |
+| Bull_Mix 비중 | **40%** | 10년 최적화 1위 (기존 60→40% 변경) |
+| 예상 CAGR | **27.28%** | Sharpe 0.834 / MDD -42.05% |
+
+**v4 추가 기능:** 📡 오늘 신호만 확인 | 🚨 신호 변경 감지 | 📧 이메일 알림 | 💬 카카오톡 알림
 """)
 st.markdown("---")
 
@@ -41,8 +51,8 @@ with st.sidebar:
                                         help="최적화 결과: 150일")
     use_asymmetric_ma = st.checkbox("비대칭 MA 사용 (빠른 퇴출)", value=True)
     if use_asymmetric_ma:
-        ma_exit_window = st.number_input("Bear 퇴출 이평선 (일)", value=112, min_value=5,
-                                          help="최적화 결과: 진입 MA × 0.75")
+        ma_exit_window = st.number_input("Bear 퇴출 이평선 (일)", value=90, min_value=5,
+                                          help="Walk-Forward 10년 최적화: 진입 MA × 0.60 (150×0.60=90일)")
         st.caption(f"ℹ️ Entry MA{int(ma_window)} / Exit MA{int(ma_exit_window)}")
     else:
         ma_exit_window = ma_window
@@ -50,7 +60,8 @@ with st.sidebar:
     st.header("3. 금리 리스크 필터")
     use_rate_filter = st.checkbox("금리 필터 사용", value=True)
     ticker_rate     = st.text_input("금리 지표", value="^TNX")
-    rate_ma_window  = st.number_input("금리 이평선 (일)", value=90)
+    rate_ma_window  = st.number_input("금리 이평선 (일)", value=120,
+                                       help="Walk-Forward 10년 최적화: 120일")
 
     st.header("4. Whipsaw 필터")
     use_whipsaw  = st.checkbox("Whipsaw 필터 사용", value=False)
@@ -70,7 +81,8 @@ with st.sidebar:
     aux_ma_window  = st.number_input("보조 이평선 (일)", value=120)
 
     st.header("7. Bull_Mix 비중 설정")
-    exposure_ratio = st.slider("리스크 시 공격비중", 0.0, 1.0, 0.6, 0.1)
+    exposure_ratio = st.slider("리스크 시 공격비중", 0.0, 1.0, 0.4, 0.1,
+                                help="Walk-Forward 10년 최적화: 40% (더 보수적, MDD 개선)")
 
     # ── 알림 설정 ─────────────────────────────────────────────────────────────
     st.header("8. 🔔 알림 설정")

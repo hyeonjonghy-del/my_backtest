@@ -216,7 +216,10 @@ def load_data(safe, risky, rate, cash, aux):
         df = raw['Close'].copy()
     else:
         df = raw.copy()
-    return df.loc[~df.index.duplicated(keep='first')].sort_index()
+    df = df.loc[~df.index.duplicated(keep='first')].sort_index()
+    # [중요] yfinance 최신버전 timezone 제거 → 날짜 비교 오류 방지
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    return df
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 유틸 함수

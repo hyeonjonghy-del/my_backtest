@@ -61,43 +61,57 @@ st.markdown("""
 """)
 
 # ─────────────────────────────────────────────────────────
-# 2-A. [자동수집] KRX REST API로 반기별 KOSPI 200 구성종목 수집
+# 2-A. [자동수집] KOSPI 200 구성종목 자동 수집 (다중 방법)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600 * 24, show_spinner=False)
-def build_universe_krx_api(start_year: int, end_year: int) -> dict:
+def build_universe_auto(start_year: int, end_year: int) -> dict:
     """
-    KRX 데이터시스템 REST API를 직접 호출하여
-    반기별(6월말/12월말) KOSPI 200 구성종목을 자동 수집합니다.
-    별도 라이브러리 불필요, 휴장일은 직전 거래일로 자동 조정합니다.
-    반환: {pd.Timestamp: [종목코드 str, ...]}
+    세 가지 방법을 순서대로 시도하여 KOSPI 200 구성종목을 수집합니다.
+      1순위: KRX API (세션 쿠키 포함)
+      2순위: WISE Index API
+      3순위: 현재 KOSPI 200으로 대체 (생존편향 경고)
     """
     import requests
 
-    API_URL = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-    HEADERS = {
+    # ── 공통 세션 (KRX 쿠키 확보) ────────────────────
+    session = requests.Session()
+    session.headers.update({
         'User-Agent': (
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
             'AppleWebKit/537.36 (KHTML, like Gecko) '
             'Chrome/120.0.0.0 Safari/537.36'
         ),
-        'Referer': 'http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd',
-        'Content-Type': 'application/x-www-form-urlencoded',
-    }
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Accept-Language': 'ko-KR,ko;q=0.9',
+        'X-Requested-With': 'XMLHttpRequest',
+    })
+    # 세션 쿠키 취득
+    try:
+        session.get(
+            'http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd'
+            '?menuId=MDC0201020506',
+            timeout=10
+        )
+    except Exception:
+        pass
 
-    def fetch_kospi200(date_str: str) -> list:
-        """특정 날짜의 KOSPI 200 구성종목 코드 리스트 반환. 실패 시 빈 리스트."""
-        payload = {
-            'bld':         'dbms/MDC/STAT/standard/MDCSTAT00601',
-            'indIdx':      '1',      # KOSPI 계열
-            'indIdx2':     '028',    # KOSPI 200
-            'trdDd':       date_str,
-            'share':       '1',
-            'money':       '1',
-            'csvxls_isNo': 'false',
-        }
+    def try_krx_api(date_str: str) -> list:
+        """방법 1: KRX 데이터시스템 API (세션 쿠키 포함)"""
         try:
-            resp  = requests.post(API_URL, data=payload, headers=HEADERS, timeout=15)
-            resp.raise_for_status()
+            resp = session.post(
+                'http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd',
+                data={
+                    'bld':         'dbms/MDC/STAT/standard/MDCSTAT00601',
+                    'indIdx':      '1',
+                    'indIdx2':     '028',
+                    'trdDd':       date_str,
+                    'share':       '1',
+                    'money':       '1',
+                    'csvxls_isNo': 'false',
+                },
+                headers={'Referer': 'http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201020506'},
+                timeout=15
+            )
             items = resp.json().get('OutBlock_1', [])
             codes = [
                 item['ISU_SRT_CD'].strip().zfill(6)
@@ -108,7 +122,33 @@ def build_universe_krx_api(start_year: int, end_year: int) -> dict:
         except Exception:
             return []
 
-    # 수집 대상 반기말 날짜 목록 (미래 날짜 제거)
+    def try_wise_api(date_str: str) -> list:
+        """방법 2: WISE Index API"""
+        try:
+            resp = requests.get(
+                f'https://www.wiseindex.com/Index/GetIndexComponets'
+                f'?ceil_yn=0&dt={date_str}&sec_cd=G25',
+                timeout=15
+            )
+            data  = resp.json()
+            codes = [
+                str(item.get('CMP_CD', '')).zfill(6)
+                for item in data.get('component', [])
+                if str(item.get('CMP_CD', '')).isdigit()
+            ]
+            return codes
+        except Exception:
+            return []
+
+    def try_fdr_current() -> list:
+        """방법 3: 현재 KOSPI 200 종목 (폴백용)"""
+        try:
+            df = fdr.StockListing('KOSPI200')
+            return df['Code'].str.zfill(6).tolist()
+        except Exception:
+            return []
+
+    # ── 수집 대상 날짜 목록 ───────────────────────────
     today_str    = pd.Timestamp.today().strftime('%Y%m%d')
     target_dates = [
         f"{year}{half}"
@@ -124,26 +164,46 @@ def build_universe_krx_api(start_year: int, end_year: int) -> dict:
     for i, date_str in enumerate(target_dates):
         prog.progress((i + 1) / len(target_dates))
         status.text(
-            f"📅 {date_str[:4]}년 {date_str[4:6]}월 KOSPI 200 구성종목 수집 중... "
+            f"📅 {date_str[:4]}년 {date_str[4:6]}월 KOSPI 200 수집 중... "
             f"({i+1}/{len(target_dates)})"
         )
 
-        # 휴장일이면 최대 10일 전으로 조정
         codes   = []
         base_dt = pd.to_datetime(date_str)
+
+        # 휴장일 보정: 최대 10일 전으로 조정
         for offset in range(0, -12, -1):
-            dt    = base_dt + pd.Timedelta(days=offset)
-            codes = fetch_kospi200(dt.strftime('%Y%m%d'))
+            dt     = base_dt + pd.Timedelta(days=offset)
+            dt_str = dt.strftime('%Y%m%d')
+
+            # 1순위: KRX API
+            codes = try_krx_api(dt_str)
             if len(codes) > 10:
                 break
+
+            # 2순위: WISE API
+            codes = try_wise_api(dt_str)
+            if len(codes) > 10:
+                break
+
             time.sleep(0.1)
 
-        if codes:
+        if len(codes) > 10:
             universe_dict[pd.to_datetime(date_str)] = codes
         else:
             st.warning(f"⚠️ {date_str[:4]}-{date_str[4:6]} 수집 실패 (건너뜀)")
 
-        time.sleep(0.5)   # KRX 서버 과부하 방지
+        time.sleep(0.4)
+
+    # 모든 시점 실패 시 현재 KOSPI 200으로 최후 폴백
+    if not universe_dict:
+        st.warning(
+            "⚠️ 자동 수집에 전부 실패했습니다.  \n"
+            "현재 KOSPI 200 구성종목으로 대체합니다 (생존편향 존재)."
+        )
+        current = try_fdr_current()
+        if current:
+            universe_dict[pd.Timestamp.today().normalize()] = current
 
     prog.empty()
     status.empty()
@@ -295,7 +355,7 @@ with st.sidebar:
     st.subheader("📡 유니버스 수집 방식")
     universe_mode = st.radio(
         "방식 선택",
-        ["🤖 자동 수집 (KRX API) ← 권장", "📁 파일 직접 업로드 (KRX CSV)"],
+        ["🤖 자동 수집 (KRX/WISE API) ← 권장", "📁 파일 직접 업로드 (KRX CSV)"],
         index=0
     )
 
@@ -303,8 +363,8 @@ with st.sidebar:
 
     if universe_mode.startswith("🤖"):
         st.markdown("""
-**KRX 공식 API**를 직접 호출하여 반기별 KOSPI 200 구성종목을 자동으로 수집합니다.  
-별도 라이브러리 설치가 전혀 필요 없으며, 첫 실행 후 **24시간 캐시**됩니다.
+KRX API → WISE Index API 순서로 시도하여 반기별 KOSPI 200 구성종목을 자동 수집합니다.  
+별도 라이브러리 설치 불필요, 첫 실행 후 **24시간 캐시**됩니다.
         """)
     else:
         st.markdown("""
@@ -349,10 +409,10 @@ if run_btn:
 
     if universe_mode.startswith("🤖"):
         end_year = pd.Timestamp.today().year
-        st.info(f"🤖 pykrx로 {start_year}~{end_year}년 반기별 KOSPI 200 구성종목을 수집합니다...")
+        st.info(f"🤖 {start_year}~{end_year}년 반기별 KOSPI 200 구성종목을 자동 수집합니다 (KRX → WISE → 폴백 순)...")
 
         with st.spinner("구성종목 자동 수집 중..."):
-            universe_dict = build_universe_krx_api(start_year, end_year)
+            universe_dict = build_universe_auto(start_year, end_year)
 
         if not universe_dict:
             st.error("❌ 구성종목 수집 실패. pykrx 설치 및 인터넷 연결을 확인하세요.")

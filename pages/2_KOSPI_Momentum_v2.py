@@ -394,10 +394,31 @@ KRX API → WISE Index API 순서로 시도하여 반기별 KOSPI 200 구성종�
         "1개월 (월간)": 1, "3개월 (분기)": 3,
         "6개월 (반기)": 6, "12개월 (연간)": 12,
     }
-    rebal_label   = st.selectbox("리밸런싱 주기", list(rebalance_map.keys()))
+    rebal_label    = st.selectbox("리밸런싱 주기", list(rebalance_map.keys()), index=1)  # 기본값: 3개월
     rebalance_step = rebalance_map[rebal_label]
 
-    momentum_window = st.number_input("모멘텀 기간 (개월)", value=12, min_value=1, max_value=24)
+    momentum_window = st.number_input("모멘텀 기간 (개월)", value=12, min_value=2, max_value=24)
+
+    st.markdown("---")
+    st.subheader("🔧 고급 설정")
+
+    skip_recent = st.checkbox(
+        "최근 1개월 제외 (11-1 모멘텀)",
+        value=True,
+        help="단기 반전 현상 방지. 12개월 수익률 계산 시 최근 1개월을 제외합니다."
+    )
+
+    transaction_cost = st.slider(
+        "거래비용 (왕복, %)",
+        min_value=0.0, max_value=1.0, value=0.3, step=0.1,
+        help="매수+매도 합산 수수료. 보통 0.3~0.5% 수준"
+    ) / 100
+
+    max_sector_pct = st.slider(
+        "섹터 최대 비중 (%)",
+        min_value=0, max_value=100, value=40, step=10,
+        help="특정 섹터 쏠림 방지. 0이면 제한 없음"
+    )
 
     st.markdown("---")
     run_btn = st.button("🚀 전략 실행", type="primary", use_container_width=True)
@@ -526,7 +547,7 @@ if run_btn:
             if len(valid_cols) < top_n:
                 continue
 
-            # 모멘텀 점수 계산
+            # ── 모멘텀 점수 계산 (11-1 모멘텀 옵션) ─────────
             past_target = curr_date - pd.DateOffset(months=momentum_window)
             idx_loc     = df_price.index.get_indexer([past_target], method='nearest')[0]
             past_date   = df_price.index[idx_loc]
@@ -535,9 +556,16 @@ if run_btn:
             if abs((curr_date - past_date).days - momentum_window * 30) > 45:
                 continue
 
-            price_curr = df_price[valid_cols].loc[curr_date]
+            # 11-1 모멘텀: 최근 1개월 제외 시 1개월 전 가격을 현재 기준으로 사용
+            if skip_recent:
+                recent_target = curr_date - pd.DateOffset(months=1)
+                recent_loc    = df_price.index.get_indexer([recent_target], method='nearest')[0]
+                price_ref     = df_price[valid_cols].iloc[recent_loc]  # 1개월 전 가격
+            else:
+                price_ref = df_price[valid_cols].loc[curr_date]        # 당일 가격
+
             price_past = df_price[valid_cols].loc[past_date]
-            mom_score  = ((price_curr - price_past) / price_past)
+            mom_score  = ((price_ref - price_past) / price_past)
             mom_score  = mom_score.replace([np.inf, -np.inf], np.nan).dropna()
 
             actual_top_n = min(top_n, len(mom_score))
@@ -552,7 +580,7 @@ if run_btn:
                     '리밸런싱일': curr_date.strftime('%Y-%m-%d'),
                     '코드':       stock,
                     '종목명':     code_map.get(stock, stock),
-                    f'{momentum_window}개월 모멘텀': f"{top_series[stock]*100:.2f}%",
+                    f'모멘텀 점수': f"{top_series[stock]*100:.2f}%",
                 })
 
             # [수정] Look-ahead Bias 제거: 다음 거래일에 진입
@@ -573,6 +601,11 @@ if run_btn:
                 continue
 
             port_ret = daily_ret.mean(axis=1)
+
+            # ── 거래비용 반영: 진입 첫날에 왕복 비용 차감 ────
+            if transaction_cost > 0 and not port_ret.empty:
+                port_ret.iloc[0] -= transaction_cost
+
             portfolio_returns_list.append(port_ret)
 
         except Exception:
@@ -601,13 +634,20 @@ if run_btn:
     cagr       = cum_returns.iloc[-1] ** (365 / total_days) - 1 if total_days > 0 else 0
     annual_vol = full_returns.std() * np.sqrt(252)
     sharpe     = (cagr - 0.03) / annual_vol if annual_vol > 0 else 0
+    calmar     = cagr / abs(mdd) if mdd != 0 else 0
 
     # ── 5-8. 벤치마크 (KOSPI 200) ───────────────────────
     bm_cum = None
     try:
-        bm_raw = fdr.DataReader('KS200', start=full_returns.index[0], end=full_returns.index[-1])['Close']
-        bm_ret = bm_raw.pct_change().reindex(full_returns.index).fillna(0)
-        bm_cum = (1 + bm_ret).cumprod()
+        for ticker in ['KS200', 'KOSPI', '^KS200']:
+            try:
+                bm_raw = fdr.DataReader(ticker, start=full_returns.index[0], end=full_returns.index[-1])['Close']
+                if len(bm_raw) > 10:
+                    bm_ret = bm_raw.pct_change().reindex(full_returns.index).fillna(0)
+                    bm_cum = (1 + bm_ret).cumprod()
+                    break
+            except Exception:
+                continue
     except Exception:
         st.warning("⚠️ KOSPI 200 벤치마크 데이터를 가져오지 못했습니다.")
 
@@ -617,11 +657,18 @@ if run_btn:
     bias_label = "✅ 생존편향 제거됨" if survivorship_bias_removed else "⚠️ 생존편향 있음"
     st.markdown(f"## 📊 백테스트 결과 — {bias_label}")
 
-    c1, c2, c3, c4 = st.columns(4)
+    # 설정 요약
+    cost_label = f"거래비용 {transaction_cost*100:.1f}% 반영" if transaction_cost > 0 else "거래비용 미반영"
+    mom_label  = f"{momentum_window}개월 (최근 1개월 제외)" if skip_recent else f"{momentum_window}개월"
+    st.caption(f"모멘텀: {mom_label} | 리밸런싱: {rebal_label} | {cost_label} | Top {top_n}종목")
+
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("총 수익률",           f"{(cum_returns.iloc[-1]-1)*100:.2f}%")
     c2.metric("연평균 수익률 (CAGR)", f"{cagr*100:.2f}%")
     c3.metric("최대 낙폭 (MDD)",      f"{mdd*100:.2f}%", delta_color="inverse")
     c4.metric("샤프 지수",            f"{sharpe:.2f}")
+    c5.metric("칼마 지수",            f"{calmar:.2f}",
+              help="CAGR / MDD. 1 이상이면 우수")
 
     tab1, tab2, tab3, tab4 = st.tabs([
         "📈 수익률 차트", "🏆 현재 추천 종목", "📅 월별 수익률", "📝 매매 기록"

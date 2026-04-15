@@ -535,6 +535,9 @@ if run_btn:
         .pipe(lambda s: s[~s.index.duplicated(keep='first')])
     )
 
+    # 이상치 제거: 일간 수익률 ±50% 초과는 데이터 오류로 클리핑
+    full_returns = full_returns.clip(lower=-0.5, upper=0.5)
+
     cum_returns = (1 + full_returns).cumprod()
     running_max = cum_returns.cummax()
     drawdown    = (cum_returns / running_max) - 1
@@ -552,6 +555,9 @@ if run_btn:
         try:
             bm_ret = sp500_index.pct_change().reindex(full_returns.index).fillna(0)
             bm_cum = (1 + bm_ret).cumprod()
+            # Series → DataFrame 변환
+            if isinstance(bm_cum, pd.Series):
+                bm_cum = bm_cum.to_frame('SP500')
         except Exception:
             pass
 
@@ -591,7 +597,7 @@ if run_btn:
         )
         if bm_cum is not None:
             axes[0].plot(
-                bm_cum.index, bm_cum.values,
+                bm_cum.index, bm_cum.iloc[:, 0].values,
                 label='S&P 500 Buy & Hold', color='steelblue',
                 linestyle='--', alpha=0.8, linewidth=1.2
             )
@@ -675,7 +681,10 @@ if run_btn:
         m_pivot.to_excel(writer, sheet_name='월별수익률')
         history_df.to_excel(writer, sheet_name='매매기록', index=False)
         if bm_cum is not None:
-            bm_cum.to_frame('SP500').to_excel(writer, sheet_name='벤치마크')
+            if isinstance(bm_cum, pd.Series):
+                bm_cum.to_frame('SP500').to_excel(writer, sheet_name='벤치마크')
+            else:
+                bm_cum.to_excel(writer, sheet_name='벤치마크')
     buf.seek(0)
 
     st.download_button(

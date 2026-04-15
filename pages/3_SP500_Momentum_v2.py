@@ -78,9 +78,9 @@ def build_sp500_universe(start_year: int) -> tuple:
     status.text("🌐 Wikipedia에서 S&P500 데이터 수집 중...")
 
     try:
-        tables = pd.read_html(
-            requests.get(WIKI_URL, headers=headers, timeout=15).text
-        )
+        import io
+        html_text = requests.get(WIKI_URL, headers=headers, timeout=15).text
+        tables = pd.read_html(io.StringIO(html_text))
     except Exception as e:
         st.error(f"❌ Wikipedia 접속 실패: {e}")
         return {}, {}

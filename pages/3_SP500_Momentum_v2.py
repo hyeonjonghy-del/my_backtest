@@ -510,6 +510,16 @@ if run_btn:
             if daily_ret.empty:
                 continue
 
+            # ── 데이터 정합성 검증 ────────────────────────
+            # 하루 수익률이 ±100% 초과인 종목은 주식분할 조정 오류나
+            # 티커 재사용으로 인한 데이터 오류 가능성이 매우 높으므로 제외
+            bad_data_mask = (daily_ret.abs() > 1.0).any()
+            valid_stocks  = daily_ret.columns[~bad_data_mask].tolist()
+
+            if not valid_stocks:
+                continue
+            daily_ret = daily_ret[valid_stocks]
+
             port_ret = daily_ret.mean(axis=1)
 
             # 거래비용 반영
@@ -534,9 +544,6 @@ if run_btn:
         .sort_index()
         .pipe(lambda s: s[~s.index.duplicated(keep='first')])
     )
-
-    # 이상치 제거: 일간 수익률 ±50% 초과는 데이터 오류로 클리핑
-    full_returns = full_returns.clip(lower=-0.5, upper=0.5)
 
     cum_returns = (1 + full_returns).cumprod()
     running_max = cum_returns.cummax()
@@ -564,63 +571,121 @@ if run_btn:
     # ─────────────────────────────────────────────────────
     # 6. 결과 표시
     # ─────────────────────────────────────────────────────
-    st.markdown("## 📊 백테스트 결과 — ✅ 생존편향 제거됨")
+    st.markdown("## 📊 Backtest Results — ✅ Survivorship Bias Removed")
 
-    cost_label = f"거래비용 {transaction_cost*100:.2f}% 반영"
-    mom_label  = f"{momentum_window}개월 (최근 1개월 제외)" if skip_recent else f"{momentum_window}개월"
-    dual_label = "듀얼 모멘텀 ON" if use_dual_momentum else "듀얼 모멘텀 OFF"
+    cost_label = f"Transaction cost {transaction_cost*100:.2f}%"
+    mom_label  = f"{momentum_window}M (excl. last 1M)" if skip_recent else f"{momentum_window}M"
+    dual_label = "Dual Momentum ON" if use_dual_momentum else "Dual Momentum OFF"
     st.caption(
-        f"모멘텀: {mom_label} | 리밸런싱: {rebal_label} | "
-        f"{cost_label} | Top {top_n}종목 | {dual_label} | "
-        f"현금 보유: {cash_periods}회"
+        f"Momentum: {mom_label} | Rebalancing: {rebal_label} | "
+        f"{cost_label} | Top {top_n} stocks | {dual_label} | "
+        f"Cash periods: {cash_periods}"
     )
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("총 수익률",           f"{(cum_returns.iloc[-1]-1)*100:.2f}%")
-    c2.metric("연평균 수익률 (CAGR)", f"{cagr*100:.2f}%")
-    c3.metric("최대 낙폭 (MDD)",      f"{mdd*100:.2f}%", delta_color="inverse")
-    c4.metric("샤프 지수",            f"{sharpe:.2f}")
-    c5.metric("칼마 지수",            f"{calmar:.2f}")
+    c1.metric("Total Return",   f"{(cum_returns.iloc[-1]-1)*100:.2f}%")
+    c2.metric("CAGR",           f"{cagr*100:.2f}%")
+    c3.metric("Max Drawdown",   f"{mdd*100:.2f}%", delta_color="inverse")
+    c4.metric("Sharpe Ratio",   f"{sharpe:.2f}")
+    c5.metric("Calmar Ratio",   f"{calmar:.2f}")
+
+    # ── 3번 질문 답변: 다음 리밸런싱 날짜 안내 ──────────
+    next_reb = rebalance_dates[-1] + pd.DateOffset(months=rebalance_step)
+    st.info(
+        f"📅 **Next Rebalancing:** around **{next_reb.strftime('%Y-%m')}** end "
+        f"(3-month cycle: Jan / Apr / Jul / Oct end)"
+    )
 
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📈 수익률 차트", "🏆 현재 추천 종목", "📅 월별 수익률", "📝 매매 기록"
+        "📈 Return Chart", "🏆 Current Picks", "📅 Monthly Returns", "📝 Trade History"
     ])
 
-    # ── Tab 1: 수익률 차트 ──────────────────────────────
+    # ── Tab 1: 수익률 차트 (영어, 현금보유 표시, MDD 비교) ──
     with tab1:
+        # 현금 보유 구간 계산
+        cash_periods_list = []
+        if use_dual_momentum:
+            history_df_tmp = pd.DataFrame(history_records)
+            if not history_df_tmp.empty and '티커' in history_df_tmp.columns:
+                cash_rows = history_df_tmp[history_df_tmp['티커'] == '💵 CASH']['리밸런싱일'].tolist()
+                for cr in cash_rows:
+                    cr_dt = pd.to_datetime(cr)
+                    cr_idx = rebalance_dates.index(cr_dt) if cr_dt in rebalance_dates else -1
+                    if cr_idx >= 0 and cr_idx + 1 < len(rebalance_dates):
+                        cash_periods_list.append((cr_dt, rebalance_dates[cr_idx + 1]))
+
+        # S&P500 드로다운 계산
+        bm_drawdown = None
+        if bm_cum is not None:
+            bm_vals    = bm_cum.iloc[:, 0] if isinstance(bm_cum, pd.DataFrame) else bm_cum
+            bm_running = bm_vals.cummax()
+            bm_drawdown = (bm_vals / bm_running) - 1
+
         fig, axes = plt.subplots(
-            2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]}
+            2, 1, figsize=(12, 9), gridspec_kw={'height_ratios': [3, 1.5]}
         )
+
+        # ── 상단: 누적 수익률 ──────────────────────────────
         axes[0].plot(
             cum_returns.index, cum_returns.values,
-            label='모멘텀 전략', color='crimson', linewidth=1.5
+            label='Momentum Strategy', color='crimson', linewidth=1.5, zorder=3
         )
         if bm_cum is not None:
+            bm_vals = bm_cum.iloc[:, 0] if isinstance(bm_cum, pd.DataFrame) else bm_cum
             axes[0].plot(
-                bm_cum.index, bm_cum.iloc[:, 0].values,
+                bm_vals.index, bm_vals.values,
                 label='S&P 500 Buy & Hold', color='steelblue',
-                linestyle='--', alpha=0.8, linewidth=1.2
+                linestyle='--', alpha=0.8, linewidth=1.2, zorder=2
             )
-        axes[0].set_title("누적 수익률 비교 (1 = 원금)", fontsize=14)
-        axes[0].set_ylabel("누적 배수")
-        axes[0].legend(fontsize=11)
+
+        # 현금 보유 구간 음영
+        first_cash = True
+        for start, end in cash_periods_list:
+            axes[0].axvspan(
+                start, end,
+                color='gold', alpha=0.25,
+                label='Cash (Dual Momentum)' if first_cash else None,
+                zorder=1
+            )
+            first_cash = False
+
+        axes[0].set_title("Cumulative Return Comparison (1 = Initial Capital)", fontsize=13)
+        axes[0].set_ylabel("Multiple")
+        axes[0].legend(fontsize=10)
         axes[0].grid(alpha=0.3)
 
+        # ── 하단: MDD 비교 ─────────────────────────────────
         axes[1].fill_between(
             drawdown.index, drawdown.values * 100, 0,
-            color='crimson', alpha=0.3
+            color='crimson', alpha=0.35, label='Momentum Strategy'
         )
-        axes[1].set_title("낙폭 (Drawdown %)", fontsize=12)
-        axes[1].set_ylabel("(%)")
+        if bm_drawdown is not None:
+            axes[1].fill_between(
+                bm_drawdown.index, bm_drawdown.values * 100, 0,
+                color='steelblue', alpha=0.2, label='S&P 500'
+            )
+        # 현금 보유 구간 MDD 차트에도 표시
+        for start, end in cash_periods_list:
+            axes[1].axvspan(start, end, color='gold', alpha=0.25)
+
+        axes[1].set_title("Drawdown Comparison (%)", fontsize=11)
+        axes[1].set_ylabel("Drawdown (%)")
+        axes[1].legend(fontsize=9)
         axes[1].grid(alpha=0.3)
 
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
 
+        if cash_periods_list:
+            st.caption(
+                f"🟡 Yellow shading = Cash holding periods ({len(cash_periods_list)} times) "
+                f"— Dual Momentum defensive mode"
+            )
+
     # ── Tab 2: 현재 추천 종목 ───────────────────────────
     with tab2:
-        st.subheader("📌 현재 시점 기준 추천 종목")
+        st.subheader("📌 Current Picks (as of latest date)")
         latest_date  = df_price.index[-1]
         latest_univ  = get_universe_at(latest_date, universe_dict)
         valid_latest = [t for t in latest_univ if t in df_price.columns]
@@ -638,30 +703,38 @@ if run_btn:
         curr_top = curr_mom.nlargest(min(top_n, len(curr_mom)))
 
         picks_df = pd.DataFrame([{
-            '순위':   rank + 1,
-            '티커':   t,
-            '섹터':   sector_map.get(t, '-'),
-            f'모멘텀 수익률': f"{s*100:.2f}%",
-            '현재가(USD)': f"${df_price[t].loc[latest_date]:,.2f}",
+            'Rank':   rank + 1,
+            'Ticker': t,
+            'Sector': sector_map.get(t, '-'),
+            'Momentum Return': f"{s*100:.2f}%",
+            'Price (USD)': f"${df_price[t].loc[latest_date]:,.2f}",
         } for rank, (t, s) in enumerate(curr_top.items())])
 
         st.dataframe(picks_df, use_container_width=True,
                      height=min(420, 50 + len(picks_df) * 36))
-        st.caption(f"기준일: {latest_date.strftime('%Y-%m-%d')}")
+        st.caption(f"As of: {latest_date.strftime('%Y-%m-%d')}")
 
-    # ── Tab 3: 월별 수익률 ──────────────────────────────
+    # ── Tab 3: 월별 수익률 (연간 수익률 추가) ─────────────
     with tab3:
         monthly_ret = full_returns.resample('ME').apply(lambda x: (1 + x).prod() - 1)
         m_df = pd.DataFrame({
-            '연도': monthly_ret.index.year,
-            '월':   monthly_ret.index.month,
-            '수익률': monthly_ret.values,
+            'Year':  monthly_ret.index.year,
+            'Month': monthly_ret.index.month,
+            'Ret':   monthly_ret.values,
         })
-        m_pivot = m_df.pivot(index='연도', columns='월', values='수익률')
-        m_pivot.columns = [f'{c}월' for c in m_pivot.columns]
+        m_pivot = m_df.pivot(index='Year', columns='Month', values='Ret')
+        m_pivot.columns = [f'M{c:02d}' for c in m_pivot.columns]
+
+        # 연간 수익률 계산해서 맨 오른쪽 컬럼 추가
+        annual_ret = monthly_ret.groupby(monthly_ret.index.year).apply(
+            lambda x: (1 + x).prod() - 1
+        )
+        m_pivot['Annual'] = annual_ret
+
         st.dataframe(
             m_pivot.style
-            .background_gradient(cmap='RdYlGn', axis=None)
+            .background_gradient(cmap='RdYlGn', axis=None, subset=m_pivot.columns[:-1])
+            .background_gradient(cmap='RdYlGn', axis=None, subset=['Annual'])
             .format("{:.2%}", na_rep="-"),
             use_container_width=True
         )
@@ -670,7 +743,7 @@ if run_btn:
     with tab4:
         history_df = pd.DataFrame(history_records)
         st.dataframe(history_df, use_container_width=True, height=420)
-        st.caption(f"총 {len(history_df)}건 | 현금 보유: {cash_periods}회")
+        st.caption(f"Total {len(history_df)} records | Cash periods: {cash_periods}")
 
     # ── 엑셀 다운로드 ───────────────────────────────────
     st.markdown("---")

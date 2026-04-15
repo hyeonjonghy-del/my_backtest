@@ -408,6 +408,12 @@ KRX API → WISE Index API 순서로 시도하여 반기별 KOSPI 200 구성종�
         help="단기 반전 현상 방지. 12개월 수익률 계산 시 최근 1개월을 제외합니다."
     )
 
+    use_dual_momentum = st.checkbox(
+        "듀얼 모멘텀 (하락장 현금 보유)",
+        value=True,
+        help="KOSPI 200이 12개월 전보다 낮으면 전액 현금 보유. MDD 개선 효과."
+    )
+
     transaction_cost = st.slider(
         "거래비용 (왕복, %)",
         min_value=0.0, max_value=1.0, value=0.3, step=0.1,
@@ -492,7 +498,22 @@ if run_btn:
         f"{df_price.index[0].date()} ~ {df_price.index[-1].date()}"
     )
 
-    # ── 5-4. 백테스트 날짜 설정 ─────────────────────────
+    # ── 5-4b. 절대 모멘텀용 KOSPI 200 지수 다운로드 ──────
+    kospi200_index = None
+    try:
+        for ticker in ['KS200', 'KOSPI']:
+            try:
+                _raw = fdr.DataReader(ticker, start=fetch_start_str)['Close']
+                if len(_raw) > 100:
+                    kospi200_index = _raw
+                    st.success(f"✅ KOSPI 200 지수 다운로드 완료 ({ticker})")
+                    break
+            except Exception:
+                continue
+        if kospi200_index is None:
+            st.warning("⚠️ KOSPI 200 지수를 가져오지 못했습니다. 절대 모멘텀 필터 없이 진행합니다.")
+    except Exception:
+        pass
     start_dt = pd.to_datetime(f'{start_year}-01-01')
     data_avail_start = df_price.index[0] + pd.DateOffset(months=momentum_window)
     if start_dt < data_avail_start:
@@ -540,7 +561,41 @@ if run_btn:
         )
 
         try:
-            # [핵심] 당시 실제 KOSPI 200 유니버스 사용 (생존편향 제거)
+            # ── [듀얼 모멘텀] 절대 모멘텀 필터 ──────────────
+            # KOSPI 200 지수가 12개월 전보다 낮으면 → 현금 보유
+            in_market = True
+            if use_dual_momentum and kospi200_index is not None:
+                try:
+                    mkt_past_target = curr_date - pd.DateOffset(months=momentum_window)
+                    mkt_past_loc    = kospi200_index.index.get_indexer(
+                        [mkt_past_target], method='nearest'
+                    )[0]
+                    mkt_curr = kospi200_index.get(curr_date) or kospi200_index.iloc[
+                        kospi200_index.index.get_indexer([curr_date], method='nearest')[0]
+                    ]
+                    mkt_past = kospi200_index.iloc[mkt_past_loc]
+                    in_market = float(mkt_curr) > float(mkt_past)
+                except Exception:
+                    in_market = True  # 계산 실패 시 진입 유지
+
+            if not in_market:
+                # 현금 보유: 수익률 0으로 처리
+                history_records.append({
+                    '리밸런싱일': curr_date.strftime('%Y-%m-%d'),
+                    '코드': '현금',
+                    '종목명': '💵 현금 보유 (절대 모멘텀 필터)',
+                    '모멘텀 점수': '-',
+                })
+                # 해당 기간 수익률 = 0 (현금)
+                cash_ret = pd.Series(
+                    0.0,
+                    index=df_price.loc[
+                        df_price.index[df_price.index.get_indexer([curr_date], method='nearest')[0]]:
+                        df_price.index[df_price.index.get_indexer([next_date], method='nearest')[0]]
+                    ].index
+                )
+                portfolio_returns_list.append(cash_ret)
+                continue
             universe_at = get_universe_at(curr_date, universe_dict)
             valid_cols  = [c for c in universe_at if c in df_price.columns]
 
@@ -658,9 +713,10 @@ if run_btn:
     st.markdown(f"## 📊 백테스트 결과 — {bias_label}")
 
     # 설정 요약
-    cost_label = f"거래비용 {transaction_cost*100:.1f}% 반영" if transaction_cost > 0 else "거래비용 미반영"
-    mom_label  = f"{momentum_window}개월 (최근 1개월 제외)" if skip_recent else f"{momentum_window}개월"
-    st.caption(f"모멘텀: {mom_label} | 리밸런싱: {rebal_label} | {cost_label} | Top {top_n}종목")
+    cost_label  = f"거래비용 {transaction_cost*100:.1f}% 반영" if transaction_cost > 0 else "거래비용 미반영"
+    mom_label   = f"{momentum_window}개월 (최근 1개월 제외)" if skip_recent else f"{momentum_window}개월"
+    dual_label  = "듀얼 모멘텀 ON" if use_dual_momentum else "듀얼 모멘텀 OFF"
+    st.caption(f"모멘텀: {mom_label} | 리밸런싱: {rebal_label} | {cost_label} | Top {top_n}종목 | {dual_label}")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("총 수익률",           f"{(cum_returns.iloc[-1]-1)*100:.2f}%")

@@ -735,19 +735,25 @@ if run_btn:
         fig, axes = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
 
         axes[0].plot(cum_returns.index, cum_returns.values,
-                     label='모멘텀 전략', color='crimson', linewidth=1.5)
+                     label='Momentum Strategy', color='crimson', linewidth=1.5)
         if bm_cum is not None:
             axes[0].plot(bm_cum.index, bm_cum.values,
                          label='KOSPI 200', color='steelblue',
                          linestyle='--', alpha=0.8, linewidth=1.2)
-        axes[0].set_title("누적 수익률 비교 (1 = 원금)", fontsize=14)
-        axes[0].set_ylabel("누적 배수")
+        axes[0].set_title("Cumulative Return Comparison (1 = Initial)", fontsize=14)
+        axes[0].set_ylabel("Cumulative Multiple")
         axes[0].legend(fontsize=11)
         axes[0].grid(alpha=0.3)
 
         axes[1].fill_between(drawdown.index, drawdown.values * 100, 0,
-                              color='crimson', alpha=0.3)
-        axes[1].set_title("낙폭 (Drawdown %)", fontsize=12)
+                              color='crimson', alpha=0.4, label='Momentum Strategy')
+        if bm_cum is not None:
+            bm_running_max = bm_cum.cummax()
+            bm_drawdown    = (bm_cum / bm_running_max) - 1
+            axes[1].fill_between(bm_drawdown.index, bm_drawdown.values * 100, 0,
+                                  color='steelblue', alpha=0.25, label='KOSPI 200')
+            axes[1].legend(fontsize=9)
+        axes[1].set_title("Drawdown (%)", fontsize=12)
         axes[1].set_ylabel("(%)")
         axes[1].grid(alpha=0.3)
 
@@ -758,6 +764,20 @@ if run_btn:
     # ── Tab 2: 현재 추천 종목 ───────────────────────────
     with tab2:
         st.subheader("📌 현재 시점 기준 추천 종목")
+
+        # 종목명 보완: code_map이 비어있거나 코드 그대로 반환되는 경우 재시도
+        if not code_map or sum(1 for k, v in list(code_map.items())[:10] if v == k) > 5:
+            for _listing_key in ['KRX', 'KOSPI']:
+                try:
+                    _listing = fdr.StockListing(_listing_key)
+                    for col_name in ['Name', '종목명', 'name']:
+                        if col_name in _listing.columns:
+                            _extra = _listing.set_index('Code')[col_name].to_dict()
+                            code_map.update(_extra)
+                            break
+                except Exception:
+                    pass
+
         latest_date  = df_price.index[-1]
         latest_univ  = get_universe_at(latest_date, universe_dict)
         valid_latest = [c for c in latest_univ if c in df_price.columns]
@@ -798,9 +818,15 @@ if run_btn:
         m_pivot = m_df.pivot(index='연도', columns='월', values='수익률')
         m_pivot.columns = [f'{c}월' for c in m_pivot.columns]
 
+        # 연간 수익률 계산 후 맨 오른쪽에 추가
+        annual_ret  = full_returns.resample('YE').apply(lambda x: (1 + x).prod() - 1)
+        annual_dict = {dt.year: val for dt, val in zip(annual_ret.index, annual_ret.values)}
+        m_pivot['연간'] = pd.Series(annual_dict)
+
         st.dataframe(
             m_pivot.style
-                .background_gradient(cmap='RdYlGn', axis=None)
+                .background_gradient(cmap='RdYlGn', axis=None, subset=m_pivot.columns[:-1])
+                .background_gradient(cmap='RdYlGn', axis=None, subset=['연간'])
                 .format("{:.2%}", na_rep="-"),
             use_container_width=True
         )

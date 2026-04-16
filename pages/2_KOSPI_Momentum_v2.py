@@ -300,11 +300,20 @@ def download_price_data(all_codes_tuple: tuple, fetch_start_str: str):
     """모든 필요 종목 주가 일괄 다운로드. 캐시 키: (코드 tuple, 시작일)"""
     all_codes = list(all_codes_tuple)
 
-    try:
-        listing  = fdr.StockListing('KRX')
-        code_map = listing.set_index('Code')['Name'].to_dict()
-    except Exception:
-        code_map = {}
+    code_map = {}
+    for _market in ['KRX', 'KOSPI', 'KOSDAQ']:
+        try:
+            _lst      = fdr.StockListing(_market)
+            _code_col = next((c for c in ['Code', 'Symbol', '종목코드', 'Ticker'] if c in _lst.columns), None)
+            _name_col = next((c for c in ['Name', '종목명', 'CompanyName'] if c in _lst.columns), None)
+            if _code_col and _name_col:
+                _raw = _lst.set_index(_code_col)[_name_col].to_dict()
+                # 6자리 zero-padding 정규화 (핵심: '47040' -> '047040')
+                code_map.update({str(k).zfill(6): v for k, v in _raw.items() if v and str(v).strip()})
+            if len(code_map) > 100:
+                break
+        except Exception:
+            continue
 
     all_prices = []
     failed     = []
@@ -765,16 +774,18 @@ if run_btn:
     with tab2:
         st.subheader("📌 현재 시점 기준 추천 종목")
 
-        # 종목명 보완: code_map이 비어있거나 코드 그대로 반환되는 경우 재시도
-        if not code_map or sum(1 for k, v in list(code_map.items())[:10] if v == k) > 5:
-            for _listing_key in ['KRX', 'KOSPI']:
+        # 종목명 보완: code_map이 비어있거나 매칭 실패 시 재시도 (zero-padding 포함)
+        if not code_map or sum(1 for k, v in list(code_map.items())[:20] if v == k) > 10:
+            for _mk in ['KRX', 'KOSPI', 'KOSDAQ']:
                 try:
-                    _listing = fdr.StockListing(_listing_key)
-                    for col_name in ['Name', '종목명', 'name']:
-                        if col_name in _listing.columns:
-                            _extra = _listing.set_index('Code')[col_name].to_dict()
-                            code_map.update(_extra)
-                            break
+                    _lst2 = fdr.StockListing(_mk)
+                    _cc = next((c for c in ['Code', 'Symbol', '종목코드'] if c in _lst2.columns), None)
+                    _nc = next((c for c in ['Name', '종목명', 'CompanyName'] if c in _lst2.columns), None)
+                    if _cc and _nc:
+                        _r2 = _lst2.set_index(_cc)[_nc].to_dict()
+                        code_map.update({str(k).zfill(6): v for k, v in _r2.items() if v and str(v).strip()})
+                    if len(code_map) > 100:
+                        break
                 except Exception:
                     pass
 

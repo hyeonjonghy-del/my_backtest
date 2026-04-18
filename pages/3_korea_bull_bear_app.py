@@ -363,14 +363,94 @@ if run_btn:
 
     # ── Tab 1: Chart ──────────────────────────────────────────
     with tab1:
-        st.subheader("누적 수익률")
-        st.line_chart(pd.DataFrame({"전략": nav_s, "KODEX200 B&H": bm}), height=340)
+        import plotly.graph_objects as go
 
-        st.subheader("낙폭 (Drawdown)")
-        st.area_chart(
-            pd.DataFrame({"전략 DD": s["dd"], "BM DD": sb["dd"]}),
-            height=200,
+        # 누적 수익률
+        st.subheader("누적 수익률")
+        fig_nav = go.Figure()
+        fig_nav.add_trace(go.Scatter(
+            x=nav_s.index, y=(nav_s * 100 - 100).round(1),
+            name="전략", line=dict(color="#185FA5", width=2)
+        ))
+        fig_nav.add_trace(go.Scatter(
+            x=bm.index, y=(bm * 100 - 100).round(1),
+            name="KODEX200 B&H", line=dict(color="#85B7EB", width=1.5, dash="dash")
+        ))
+        fig_nav.update_layout(
+            height=340, margin=dict(l=0, r=0, t=10, b=0),
+            yaxis=dict(ticksuffix="%"),
+            legend=dict(orientation="h", y=1.08),
+            hovermode="x unified",
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
         )
+        fig_nav.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+        fig_nav.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+        st.plotly_chart(fig_nav, use_container_width=True)
+
+        # 연도별 수익률 비교 (그룹 막대)
+        st.subheader("연도별 수익률 비교")
+        ann    = nav_s.resample("YE").last().pct_change().dropna()
+        bm_ann = bm.resample("YE").last().pct_change().dropna()
+        ann_df = pd.DataFrame({"전략": ann, "KODEX200": bm_ann}).dropna()
+        ann_df.index = ann_df.index.year
+
+        fig_ann = go.Figure()
+        fig_ann.add_trace(go.Bar(
+            x=ann_df.index.astype(str),
+            y=(ann_df["전략"] * 100).round(1),
+            name="전략",
+            marker_color="#185FA5",
+            text=(ann_df["전략"] * 100).round(1).astype(str) + "%",
+            textposition="outside",
+        ))
+        fig_ann.add_trace(go.Bar(
+            x=ann_df.index.astype(str),
+            y=(ann_df["KODEX200"] * 100).round(1),
+            name="KODEX200 B&H",
+            marker_color="#85B7EB",
+            text=(ann_df["KODEX200"] * 100).round(1).astype(str) + "%",
+            textposition="outside",
+        ))
+        fig_ann.update_layout(
+            barmode="group",
+            height=360, margin=dict(l=0, r=0, t=30, b=0),
+            yaxis=dict(ticksuffix="%", zeroline=True, zerolinecolor="rgba(128,128,128,0.4)"),
+            legend=dict(orientation="h", y=1.08),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            bargap=0.2, bargroupgap=0.05,
+        )
+        fig_ann.update_xaxes(showgrid=False)
+        fig_ann.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+        st.plotly_chart(fig_ann, use_container_width=True)
+
+        # MDD 비교
+        st.subheader("낙폭 (MDD) 비교")
+        fig_dd = go.Figure()
+        fig_dd.add_trace(go.Scatter(
+            x=s["dd"].index, y=(s["dd"] * 100).round(2),
+            name="전략 DD", fill="tozeroy",
+            line=dict(color="#185FA5", width=1.5),
+            fillcolor="rgba(24,95,165,0.15)",
+        ))
+        fig_dd.add_trace(go.Scatter(
+            x=sb["dd"].index, y=(sb["dd"] * 100).round(2),
+            name="KODEX200 DD", fill="tozeroy",
+            line=dict(color="#E24B4A", width=1.5, dash="dash"),
+            fillcolor="rgba(226,75,74,0.1)",
+        ))
+        fig_dd.update_layout(
+            height=260, margin=dict(l=0, r=0, t=10, b=0),
+            yaxis=dict(ticksuffix="%"),
+            legend=dict(orientation="h", y=1.12),
+            hovermode="x unified",
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+        fig_dd.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+        fig_dd.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+        st.plotly_chart(fig_dd, use_container_width=True)
 
         if use_tnx and not tnx_aligned.dropna().empty:
             st.subheader("TNX 금리 & 이평선")
@@ -424,13 +504,35 @@ if run_btn:
 
         st.dataframe(pivot, use_container_width=True)
 
-        # 연도별 수익률 비교 차트
+        # 연도별 수익률 비교 차트 (그룹 막대)
         st.subheader("연도별 수익률 비교")
+        import plotly.graph_objects as go
         ann    = nav_s.resample("YE").last().pct_change().dropna()
         bm_ann = bm.resample("YE").last().pct_change().dropna()
         ann_df = pd.DataFrame({"전략": ann, "KODEX200": bm_ann}).dropna()
         ann_df.index = ann_df.index.year
-        st.bar_chart(ann_df, height=280)
+        fig_m = go.Figure()
+        fig_m.add_trace(go.Bar(
+            x=ann_df.index.astype(str), y=(ann_df["전략"]*100).round(1),
+            name="전략", marker_color="#185FA5",
+            text=(ann_df["전략"]*100).round(1).astype(str)+"%", textposition="outside",
+        ))
+        fig_m.add_trace(go.Bar(
+            x=ann_df.index.astype(str), y=(ann_df["KODEX200"]*100).round(1),
+            name="KODEX200", marker_color="#85B7EB",
+            text=(ann_df["KODEX200"]*100).round(1).astype(str)+"%", textposition="outside",
+        ))
+        fig_m.update_layout(
+            barmode="group", height=320,
+            margin=dict(l=0,r=0,t=30,b=0),
+            yaxis=dict(ticksuffix="%", zeroline=True, zerolinecolor="rgba(128,128,128,0.4)"),
+            legend=dict(orientation="h", y=1.08),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            bargap=0.2, bargroupgap=0.05,
+        )
+        fig_m.update_xaxes(showgrid=False)
+        fig_m.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+        st.plotly_chart(fig_m, use_container_width=True)
 
         # 월별 수익률 vs 벤치마크
         st.subheader("월별 전략 vs BM 비교")

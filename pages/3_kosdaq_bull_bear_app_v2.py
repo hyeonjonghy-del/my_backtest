@@ -258,7 +258,7 @@ if run_btn:
     prog = st.progress(0, text="데이터 로딩 중...")
 
     prog.progress(10, text="KOSDAQ150 로딩 중...")
-    kosdaq150 = load_kosdaq150_idx(EXT_START, END_STR)
+    kosdaq150 = load_kosdaq150(EXT_START, END_STR)
     if kosdaq150.empty:
         st.error("KOSDAQ150 데이터 로딩 실패")
         st.stop()

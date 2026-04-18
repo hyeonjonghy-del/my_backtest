@@ -1,17 +1,17 @@
 """
-한국판 Bull/Bull Mix/Bear 전략
+한국판 Bull/Bull Mix/Bear 전략 v2
 ────────────────────────────────────────
 추세 기준 : KOSPI200 vs MA150
 금리 기준 : ^TNX (미국 10년물) vs MA120
 
 상태 판단:
   Bear     : KOSPI200 < MA150
-  Bull Mix : KOSPI200 > MA150 & TNX > TNX MA120 (금리 상승 주의)
+  Bull Mix : KOSPI200 > MA150 & TNX > TNX MA120
   Bull Full: KOSPI200 > MA150 & TNX ≤ TNX MA120
 
 포트폴리오:
   Bull Full → KODEX 200 (069500) 100%
-  Bull Mix  → KODEX 레버리지 (122630) 30% + KODEX 200 70%
+  Bull Mix  → KODEX 레버리지 (122630) N% + KODEX 200 (100-N)%
   Bear      → KODEX 단기채권 (153130) 100%
 """
 
@@ -71,6 +71,7 @@ def auto_login_from_secrets():
 
 auto_login_from_secrets()
 
+TODAY = datetime.today().date()
 
 # ── 사이드바 ─────────────────────────────────────────────────
 with st.sidebar:
@@ -109,22 +110,21 @@ with st.sidebar:
     with c1:
         start_date = st.date_input("시작", datetime(2016, 1, 4))
     with c2:
-        end_date = st.date_input("종료", datetime(2024, 12, 31))
+        end_date = st.date_input("종료", TODAY)   # ← 오늘이 기본값
 
     st.divider()
     st.subheader("📊 추세 필터")
-    ma_trend = st.slider("KOSPI200 이평선 (일)", 60, 250, 150, 10,
-                         help="이평선 하회 시 Bear 전환")
+    ma_trend = st.slider("KOSPI200 이평선 (일)", 60, 250, 150, 10)
 
-    st.subheader("💹 금리 필터 (TNX)")
-    use_tnx  = st.checkbox("금리 필터 사용", value=True)
-    ma_tnx   = st.slider("TNX 이평선 (일)", 60, 200, 120, 10,
-                         disabled=not use_tnx,
-                         help="TNX가 이평선 상회 시 Bull Mix로 제한")
+    st.subheader("💹 금리 필터 (^TNX)")
+    use_tnx = st.checkbox("금리 필터 사용", value=True)
+    ma_tnx  = st.slider("TNX 이평선 (일)", 60, 200, 120, 10, disabled=not use_tnx)
 
     st.divider()
     st.subheader("📦 포트폴리오 비중")
-    lev_ratio = st.slider("Bull Mix 시 레버리지 비중 (%)", 10, 50, 30, 5)
+    lev_ratio = st.slider(
+        "Bull Mix 시 레버리지 비중 (%)", 10, 70, 50, 5   # ← 기본값 50%
+    )
     st.caption(f"Bull Mix = 레버리지 {lev_ratio}% + KODEX200 {100-lev_ratio}%")
 
     st.subheader("💸 거래비용")
@@ -148,26 +148,17 @@ if not st.session_state.get("krx_ok"):
 | 상태 | 조건 | 포트폴리오 |
 |------|------|-----------|
 | 🐂 Bull Full | KOSPI200 > MA150 & TNX ≤ MA120 | KODEX 200 100% |
-| ⚠️ Bull Mix | KOSPI200 > MA150 & TNX > MA120 | 레버리지 30% + KODEX200 70% |
+| ⚠️ Bull Mix | KOSPI200 > MA150 & TNX > MA120 | 레버리지 50% + KODEX200 50% |
 | 🐻 Bear | KOSPI200 < MA150 | KODEX 단기채권 100% |
-
-**핵심 아이디어**
-- 상승장: KODEX200으로 시장 수익 안정적으로 추종
-- 상승장 + 금리주의: 레버리지 비중 줄여 리스크 제한
-- 하락장: 단기채권으로 완전 이탈해 MDD 방어
-
-**벤치마크**: KODEX 200 Buy & Hold
         """)
     st.stop()
 
-# ── 로그인 후 pykrx import ───────────────────────────────────
 from pykrx import stock
 
 
 # ── 데이터 로더 ──────────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_etf_price(ticker: str, start_str: str, end_str: str) -> pd.Series:
-    """pykrx ETF 종가"""
     try:
         df = stock.get_market_ohlcv_by_date(start_str, end_str, ticker)
         return df["종가"].rename(ticker)
@@ -178,25 +169,22 @@ def load_etf_price(ticker: str, start_str: str, end_str: str) -> pd.Series:
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_kospi200(start_str: str, end_str: str) -> pd.Series:
-    """KOSPI200 지수"""
     try:
         df = stock.get_index_ohlcv_by_date(start_str, end_str, "1028")
         return df["종가"].rename("KOSPI200")
     except Exception:
-        # 대체: KODEX 200으로 프록시
         df = stock.get_market_ohlcv_by_date(start_str, end_str, "069500")
         return df["종가"].rename("KOSPI200")
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_tnx(start_str: str, end_str: str) -> pd.Series:
-    """미국 10년물 금리 (^TNX) via yfinance"""
     try:
-        s = datetime.strptime(start_str, "%Y%m%d") - timedelta(days=200)
+        s = datetime.strptime(start_str, "%Y%m%d") - timedelta(days=220)
         df = yf.download(
             "^TNX",
             start=s.strftime("%Y-%m-%d"),
-            end=(datetime.strptime(end_str, "%Y%m%d") + timedelta(days=1)).strftime("%Y-%m-%d"),
+            end=(datetime.strptime(end_str, "%Y%m%d") + timedelta(days=2)).strftime("%Y-%m-%d"),
             progress=False,
             auto_adjust=True,
         )
@@ -223,21 +211,18 @@ def calc_metrics(nav: pd.Series) -> dict:
 
 # ── 백테스트 ─────────────────────────────────────────────────
 if run_btn:
-    START_STR  = start_date.strftime("%Y%m%d")
-    END_STR    = end_date.strftime("%Y%m%d")
-    # MA 계산용 여유 기간
-    EXT_START  = (start_date - timedelta(days=300)).strftime("%Y%m%d")
+    START_STR = start_date.strftime("%Y%m%d")
+    END_STR   = end_date.strftime("%Y%m%d")
+    EXT_START = (start_date - timedelta(days=300)).strftime("%Y%m%d")
 
     prog = st.progress(0, text="데이터 로딩 중...")
 
-    # 1. KOSPI200 지수
     prog.progress(10, text="KOSPI200 로딩 중...")
     kospi200 = load_kospi200(EXT_START, END_STR)
     if kospi200.empty:
         st.error("KOSPI200 데이터 로딩 실패")
         st.stop()
 
-    # 2. ETF 가격
     prog.progress(25, text="KODEX 200 로딩 중...")
     etf_200  = load_etf_price("069500", EXT_START, END_STR)
     prog.progress(40, text="KODEX 레버리지 로딩 중...")
@@ -245,52 +230,38 @@ if run_btn:
     prog.progress(55, text="KODEX 단기채권 로딩 중...")
     etf_bond = load_etf_price("153130", EXT_START, END_STR)
 
-    # 3. TNX
     prog.progress(70, text="TNX 금리 로딩 중...")
     tnx_raw = load_tnx(START_STR, END_STR) if use_tnx else pd.Series(dtype=float)
 
     prog.progress(80, text="신호 계산 중...")
 
-    # ── 이평선 계산 ──────────────────────────────────────────
     kospi200_ma = kospi200.rolling(ma_trend).mean()
-
-    # ── 공통 날짜 인덱스 (백테스트 구간) ─────────────────────
-    # ETF 날짜 기준으로 맞춤
-    common_idx = (etf_200
-                  .loc[START_STR:END_STR]
-                  .dropna()
-                  .index)
+    common_idx  = etf_200.loc[START_STR:END_STR].dropna().index
 
     if len(common_idx) < 20:
-        st.error("유효한 거래일 데이터가 부족합니다. 기간을 확인해 주세요.")
+        st.error("유효한 거래일 데이터가 부족합니다.")
         st.stop()
 
-    # TNX를 한국 거래일로 reindex (forward fill)
     if use_tnx and not tnx_raw.empty:
-        tnx_aligned = tnx_raw.reindex(
-            pd.date_range(tnx_raw.index[0], common_idx[-1], freq="D")
-        ).ffill().reindex(common_idx).ffill()
-        tnx_ma = tnx_raw.rolling(ma_tnx).mean().reindex(
-            pd.date_range(tnx_raw.index[0], common_idx[-1], freq="D")
-        ).ffill().reindex(common_idx).ffill()
+        full_idx    = pd.date_range(tnx_raw.index[0], common_idx[-1], freq="D")
+        tnx_aligned = tnx_raw.reindex(full_idx).ffill().reindex(common_idx).ffill()
+        tnx_ma      = tnx_raw.rolling(ma_tnx).mean().reindex(full_idx).ffill().reindex(common_idx).ffill()
     else:
         tnx_aligned = pd.Series(np.nan, index=common_idx)
         tnx_ma      = pd.Series(np.nan, index=common_idx)
 
-    # ── 일별 수익률 계산 ──────────────────────────────────────
     ret_200  = etf_200.pct_change().reindex(common_idx).fillna(0)
     ret_lev  = etf_lev.pct_change().reindex(common_idx).fillna(0)
     ret_bond = etf_bond.pct_change().reindex(common_idx).fillna(0)
     k200     = kospi200.reindex(common_idx).ffill()
     k200_ma  = kospi200_ma.reindex(common_idx).ffill()
 
-    # ── 상태 결정 & 백테스트 ──────────────────────────────────
+    # ── 백테스트 루프 ─────────────────────────────────────────
     nav        = 1.0
-    nav_list   = []
-    state_list = []
+    nav_list, state_list = [], []
+    trade_log  = []   # 상태 전환 기록
     prev_state = None
-
-    turnover_cost = 0.0
+    w          = lev_ratio / 100
 
     for date in common_idx:
         k  = k200[date]
@@ -298,7 +269,6 @@ if run_btn:
         t  = tnx_aligned[date]
         tm = tnx_ma[date]
 
-        # 상태 결정
         if np.isnan(k) or np.isnan(km):
             state = prev_state or "Bear"
         elif k < km:
@@ -308,11 +278,16 @@ if run_btn:
         else:
             state = "Bull_Full"
 
-        # 전환 시 거래비용
+        # 전환 시 거래비용 & 로그 기록
         if prev_state is not None and state != prev_state:
             nav *= (1 - fee * 2)
+            trade_log.append({
+                "날짜":    date.date(),
+                "이전":    prev_state,
+                "전환":    state,
+                "NAV":     round(nav, 4),
+            })
 
-        # 수익률 적용
         r200  = ret_200[date]
         rlev  = ret_lev[date]
         rbond = ret_bond[date]
@@ -320,9 +295,8 @@ if run_btn:
         if state == "Bull_Full":
             daily_ret = r200
         elif state == "Bull_Mix":
-            w = lev_ratio / 100
             daily_ret = w * rlev + (1 - w) * r200
-        else:  # Bear
+        else:
             daily_ret = rbond
 
         nav *= (1 + daily_ret)
@@ -330,39 +304,34 @@ if run_btn:
         state_list.append(state)
         prev_state = state
 
-    prog.progress(95, text="성과 계산 중...")
-
-    nav_s   = pd.Series(nav_list, index=common_idx, name="전략")
-    state_s = pd.Series(state_list, index=common_idx, name="상태")
-
-    # 벤치마크: KODEX 200 Buy & Hold
-    bm = etf_200.reindex(common_idx).ffill()
-    bm = (bm / bm.iloc[0]).rename("KODEX200 B&H")
-
-    s  = calc_metrics(nav_s)
-    sb = calc_metrics(bm)
-
     prog.progress(100, text="완료!")
     import time; time.sleep(0.3)
     prog.empty()
 
-    # ── 현재 상태 표시 ────────────────────────────────────────
+    nav_s   = pd.Series(nav_list, index=common_idx, name="전략")
+    state_s = pd.Series(state_list, index=common_idx, name="상태")
+    bm      = etf_200.reindex(common_idx).ffill()
+    bm      = (bm / bm.iloc[0]).rename("KODEX200 B&H")
+    s       = calc_metrics(nav_s)
+    sb      = calc_metrics(bm)
+
+    # ── 현재 상태 ─────────────────────────────────────────────
     cur_state = state_s.iloc[-1]
     cur_date  = state_s.index[-1].date()
-    state_emoji = {"Bull_Full": "🐂", "Bull_Mix": "⚠️", "Bear": "🐻"}
-    state_label = {"Bull_Full": "Bull Full — KODEX200 100%",
-                   "Bull_Mix": f"Bull Mix — 레버리지 {lev_ratio}% + KODEX200 {100-lev_ratio}%",
-                   "Bear": "Bear — KODEX 단기채권 100%"}
-    state_color = {"Bull_Full": "success", "Bull_Mix": "warning", "Bear": "error"}
-
-    getattr(st, state_color[cur_state])(
-        f"{state_emoji[cur_state]} **현재 상태** ({cur_date}): {state_label[cur_state]}"
+    emoji_map = {"Bull_Full": "🐂", "Bull_Mix": "⚠️", "Bear": "🐻"}
+    label_map = {
+        "Bull_Full": "Bull Full — KODEX200 100%",
+        "Bull_Mix":  f"Bull Mix — 레버리지 {lev_ratio}% + KODEX200 {100-lev_ratio}%",
+        "Bear":      "Bear — KODEX 단기채권 100%",
+    }
+    color_map = {"Bull_Full": "success", "Bull_Mix": "warning", "Bear": "error"}
+    getattr(st, color_map[cur_state])(
+        f"{emoji_map[cur_state]} **현재 상태** ({cur_date}): {label_map[cur_state]}"
     )
 
     # ── 성과 요약 ─────────────────────────────────────────────
     st.divider()
     st.subheader("📊 성과 요약")
-
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     def show_m(col, lbl, val, bval=None, fmt=".1%"):
         col.metric(lbl, f"{val:{fmt}}",
@@ -374,26 +343,7 @@ if run_btn:
     show_m(c5, "Calmar",     s["calmar"], sb["calmar"], ".2f")
     show_m(c6, "월 승률",    s["win_m"],  None)
 
-    # ── 누적 수익률 차트 ──────────────────────────────────────
-    st.subheader("📈 누적 수익률")
-    chart_df = pd.DataFrame({"전략": nav_s, "KODEX200 B&H": bm})
-    st.line_chart(chart_df, height=320)
-
-    # ── 낙폭 차트 ─────────────────────────────────────────────
-    st.subheader("📉 낙폭 (Drawdown)")
-    dd_df = pd.DataFrame({"전략 DD": s["dd"], "BM DD": sb["dd"]})
-    st.area_chart(dd_df, height=200)
-
-    # ── 연도별 수익률 ─────────────────────────────────────────
-    st.subheader("📅 연도별 수익률")
-    ann    = nav_s.resample("YE").last().pct_change().dropna()
-    bm_ann = bm.resample("YE").last().pct_change().dropna()
-    ann_df = pd.DataFrame({"전략": ann, "KODEX200": bm_ann}).dropna()
-    ann_df.index = ann_df.index.year
-    st.bar_chart(ann_df, height=240)
-
     # ── 상태별 체류 기간 ──────────────────────────────────────
-    st.subheader("🗂 상태별 체류 기간")
     state_counts = state_s.value_counts()
     total_days   = len(state_s)
     sc1, sc2, sc3 = st.columns(3)
@@ -402,62 +352,98 @@ if run_btn:
         (sc2, "Bull_Mix",  "⚠️"),
         (sc3, "Bear",      "🐻"),
     ]:
-        cnt  = state_counts.get(sname, 0)
-        pct  = cnt / total_days * 100
-        col.metric(f"{emoji} {sname.replace('_',' ')}", f"{cnt}일", f"{pct:.1f}%")
+        cnt = state_counts.get(sname, 0)
+        col.metric(f"{emoji} {sname.replace('_',' ')}",
+                   f"{cnt}일", f"{cnt/total_days*100:.1f}%")
 
-    # ── TNX 차트 ──────────────────────────────────────────────
-    if use_tnx and not tnx_aligned.dropna().empty:
-        with st.expander("📊 TNX 금리 & 이평선"):
+    st.divider()
+
+    # ── 탭: Chart / Trade Logs / Monthly Returns ───────────────
+    tab1, tab2, tab3 = st.tabs(["📈 Chart", "📋 Trade Logs", "📅 Monthly Returns"])
+
+    # ── Tab 1: Chart ──────────────────────────────────────────
+    with tab1:
+        st.subheader("누적 수익률")
+        st.line_chart(pd.DataFrame({"전략": nav_s, "KODEX200 B&H": bm}), height=340)
+
+        st.subheader("낙폭 (Drawdown)")
+        st.area_chart(
+            pd.DataFrame({"전략 DD": s["dd"], "BM DD": sb["dd"]}),
+            height=200,
+        )
+
+        if use_tnx and not tnx_aligned.dropna().empty:
+            st.subheader("TNX 금리 & 이평선")
             tnx_chart = pd.DataFrame({
                 "TNX": tnx_aligned,
-                f"TNX MA{ma_tnx}": tnx_ma,
+                f"MA{ma_tnx}": tnx_ma,
             }).dropna()
             st.line_chart(tnx_chart, height=200)
 
-    # ── 상태 전환 이력 ────────────────────────────────────────
-    with st.expander("🔄 상태 전환 이력"):
-        transitions = []
-        ps = None
-        for d, s_val in state_s.items():
-            if s_val != ps:
-                transitions.append({"날짜": d.date(), "전환 상태": s_val,
-                                    "이모지": state_emoji[s_val]})
-                ps = s_val
-        tr_df = pd.DataFrame(transitions)
-        st.dataframe(tr_df, use_container_width=True, hide_index=True)
+    # ── Tab 2: Trade Logs ─────────────────────────────────────
+    with tab2:
+        st.subheader("상태 전환 이력")
 
-    # ── 다운로드 ──────────────────────────────────────────────
-    st.divider()
-    dc1, dc2 = st.columns(2)
-    with dc1:
-        csv = pd.DataFrame({"날짜": nav_s.index, "NAV": nav_s.values,
-                             "상태": state_s.values})
-        st.download_button("NAV + 상태 CSV",
-                           csv.to_csv(index=False).encode("utf-8-sig"),
-                           "korea_bull_bear_nav.csv", "text/csv")
-    with dc2:
-        st.download_button("상태 전환 이력 CSV",
-                           tr_df.to_csv(index=False).encode("utf-8-sig"),
-                           "korea_bull_bear_transitions.csv", "text/csv")
+        if trade_log:
+            tr_df = pd.DataFrame(trade_log)
+            tr_df["이전"] = tr_df["이전"].map(
+                lambda x: emoji_map.get(x,"") + " " + x.replace("_"," "))
+            tr_df["전환"] = tr_df["전환"].map(
+                lambda x: emoji_map.get(x,"") + " " + x.replace("_"," "))
+            st.dataframe(tr_df, use_container_width=True, hide_index=True)
 
-else:
-    st.info("👈 사이드바에서 파라미터를 설정하고 **▶ 백테스트 실행** 을 누르세요.")
-    with st.expander("📋 전략 개요", expanded=True):
-        st.markdown("""
-| 상태 | 조건 | 포트폴리오 | 특징 |
-|------|------|-----------|------|
-| 🐂 Bull Full | KOSPI200 > MA150 & TNX ≤ MA120 | KODEX 200 100% | 안정적 상승 추종 |
-| ⚠️ Bull Mix | KOSPI200 > MA150 & TNX > MA120 | 레버리지 30% + KODEX200 70% | 금리 상승기 레버리지 제한 |
-| 🐻 Bear | KOSPI200 < MA150 | KODEX 단기채권 100% | 하락장 완전 이탈 |
+            # 다음 리밸런싱 예정일 안내
+            st.info(f"📌 총 전환 횟수: {len(tr_df)}회  |  "
+                    f"현재 상태: {emoji_map[cur_state]} {cur_state.replace('_',' ')}")
 
-**ETF 구성**
+            st.download_button(
+                "📥 Trade Log CSV 다운로드",
+                tr_df.to_csv(index=False).encode("utf-8-sig"),
+                "korea_bull_bear_trades.csv",
+                "text/csv",
+            )
+        else:
+            st.info("상태 전환이 없었습니다.")
 
-| 역할 | 종목 | 코드 |
-|------|------|------|
-| 기본 | KODEX 200 | 069500 |
-| 레버리지 | KODEX 레버리지 | 122630 |
-| 방어 | KODEX 단기채권 | 153130 |
+    # ── Tab 3: Monthly Returns ────────────────────────────────
+    with tab3:
+        st.subheader("월별 수익률")
 
-**금리 필터 (^TNX)**: 한국 금리보다 미국 금리가 방향을 선도하므로 TNX를 기준으로 사용
-        """)
+        monthly_nav  = nav_s.resample("ME").last()
+        monthly_ret  = monthly_nav.pct_change().dropna()
+        monthly_bm   = bm.resample("ME").last().pct_change().dropna()
+
+        # 연도 × 월 피벗 테이블
+        mr_df = monthly_ret.to_frame("수익률")
+        mr_df["연도"] = mr_df.index.year
+        mr_df["월"]   = mr_df.index.month
+        pivot = mr_df.pivot(index="연도", columns="월", values="수익률")
+        pivot.columns = [f"{m}월" for m in pivot.columns]
+        pivot["연간합계"] = (1 + monthly_ret).groupby(monthly_ret.index.year).prod() - 1
+        pivot = pivot.map(lambda x: f"{x:.1%}" if pd.notna(x) else "-")
+
+        st.dataframe(pivot, use_container_width=True)
+
+        # 연도별 수익률 비교 차트
+        st.subheader("연도별 수익률 비교")
+        ann    = nav_s.resample("YE").last().pct_change().dropna()
+        bm_ann = bm.resample("YE").last().pct_change().dropna()
+        ann_df = pd.DataFrame({"전략": ann, "KODEX200": bm_ann}).dropna()
+        ann_df.index = ann_df.index.year
+        st.bar_chart(ann_df, height=280)
+
+        # 월별 수익률 vs 벤치마크
+        st.subheader("월별 전략 vs BM 비교")
+        cmp_df = pd.DataFrame({
+            "전략":     monthly_ret,
+            "KODEX200": monthly_bm,
+        }).dropna()
+        st.line_chart(cmp_df, height=220)
+
+        st.download_button(
+            "📥 Monthly Returns CSV 다운로드",
+            cmp_df.reset_index().rename(columns={"index": "날짜"})
+            .to_csv(index=False).encode("utf-8-sig"),
+            "korea_bull_bear_monthly.csv",
+            "text/csv",
+        )

@@ -135,7 +135,8 @@ with st.sidebar:
 # ── 데이터 로드 ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600 * 24)
 def load_data(safe, risky, rate, cash, aux):
-    tickers = list(dict.fromkeys([safe, risky, rate, cash, aux]))
+    # ^GSPC: 추세 신호용 S&P500 지수 (SPY 괴리율 제거)
+    tickers = list(dict.fromkeys([safe, risky, rate, cash, aux, "^GSPC"]))
     raw = yf.download(tickers, start="2000-01-01", progress=False, auto_adjust=True)
     if isinstance(raw.columns, pd.MultiIndex):
         df = raw['Close'].copy()
@@ -181,9 +182,18 @@ if st.button("🚀 Run Backtest v5", type="primary", use_container_width=True):
         df_raw = full_df.ffill()
 
         # ── 지표 계산 ─────────────────────────────────────────────────────────
-        series_safe  = df_raw[ticker_safe]
-        ma_safe      = series_safe.rolling(window=int(ma_window)).mean()
-        ma_safe_exit = series_safe.rolling(window=int(ma_exit_window)).mean()
+        series_safe  = df_raw[ticker_safe]   # 수익률 계산용 (SPY)
+
+        # 추세 신호: S&P500 지수(^GSPC) 사용 — SPY 괴리율/배당 영향 제거
+        # ^GSPC 데이터가 없으면 SPY 폴백
+        if "^GSPC" in df_raw.columns:
+            series_signal = df_raw["^GSPC"]
+        else:
+            series_signal = series_safe
+            st.warning("⚠️ ^GSPC 데이터 없음 — SPY로 대체합니다.")
+
+        ma_safe      = series_signal.rolling(window=int(ma_window)).mean()
+        ma_safe_exit = series_signal.rolling(window=int(ma_exit_window)).mean()
         series_rate  = df_raw[ticker_rate]
         ma_rate      = series_rate.rolling(window=int(rate_ma_window)).mean()
 
@@ -197,8 +207,8 @@ if st.button("🚀 Run Backtest v5", type="primary", use_container_width=True):
         returns_df = df_raw.pct_change()
 
         # ── Bull/Bear 시그널 ──────────────────────────────────────────────────
-        raw_bull_entry = series_safe > ma_safe
-        raw_bear_exit  = series_safe < ma_safe_exit
+        raw_bull_entry = series_signal > ma_safe
+        raw_bear_exit  = series_signal < ma_safe_exit
 
         if use_asymmetric_ma:
             state_arr = np.zeros(len(series_safe), dtype=int)
@@ -326,8 +336,8 @@ if st.button("🚀 Run Backtest v5", type="primary", use_container_width=True):
         st.markdown("### 📢 오늘의 투자 가이드")
 
         last_date   = df_raw.index[-1]
-        last_safe_p = float(df_raw[ticker_safe].iloc[-1])
-        last_safe_m = float(ma_safe.iloc[-1])
+        last_safe_p = float(series_signal.iloc[-1])   # ^GSPC 기준
+        last_safe_m = float(ma_safe.iloc[-1])          # ^GSPC MA 기준
         last_rate_p = float(df_raw[ticker_rate].iloc[-1])
         last_rate_m = float(ma_rate.iloc[-1])
 
@@ -347,7 +357,7 @@ if st.button("🚀 Run Backtest v5", type="primary", use_container_width=True):
         st.caption(f"기준 데이터: {last_date.strftime('%Y-%m-%d')} 종가")
         col_g1, col_g2, col_g3 = st.columns(3)
         with col_g1:
-            st.metric(f"{ticker_safe} 추세", f"{last_safe_p:,.2f}", f"{last_safe_p - last_safe_m:.2f} (vs MA{int(ma_window)})")
+            st.metric(f"^GSPC 추세 (신호기준)", f"{last_safe_p:,.2f}", f"{last_safe_p - last_safe_m:.2f} (vs MA{int(ma_window)})")
             st.text("📈 상승장" if is_bull_now else "📉 하락장")
             st.text("🔥 금리 주의" if (is_hike_now and use_rate_filter) else "🍀 금리 안정")
         with col_g2:
@@ -475,10 +485,10 @@ if st.button("🚀 Run Backtest v5", type="primary", use_container_width=True):
                     prev_state, prev_date = row['State'], d
             ax[2].axvspan(prev_date, res_df.index[-1], alpha=0.15, color=state_colors.get(prev_state, 'white'))
 
-            ax[2].plot(res_df.index, res_df['Safe_Price'], color='black',  lw=1.0, label=f'{ticker_safe} Price')
-            ax[2].plot(res_df.index, res_df['Safe_MA'],    color='orange', lw=1.5, ls='--', label=f'Entry MA{int(ma_window)}')
+            ax[2].plot(res_df.index, res_df['Safe_Price'], color='black',  lw=1.0, label=f'{ticker_safe} Price (returns)')
+            ax[2].plot(res_df.index, res_df['Safe_MA'],    color='orange', lw=1.5, ls='--', label=f'^GSPC Entry MA{int(ma_window)} (signal)')
             if use_asymmetric_ma:
-                ax[2].plot(res_df.index, ma_safe_exit.loc[res_df.index], color='red', lw=1.2, ls=':', label=f'Exit MA{int(ma_exit_window)}')
+                ax[2].plot(res_df.index, ma_safe_exit.loc[res_df.index], color='red', lw=1.2, ls=':', label=f'^GSPC Exit MA{int(ma_exit_window)}')
             ax[2].set_title(f"3. Trend Signal  [녹색=BullFull / 노랑=BullMix / 빨강=Bear]", fontsize=12)
             ax[2].legend(fontsize=9)
 

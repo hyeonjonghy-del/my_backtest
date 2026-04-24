@@ -296,12 +296,9 @@ if run_btn:
     k200     = kospi200.reindex(common_idx).ffill()
     k200_ma  = kospi200_ma.reindex(common_idx).ffill()
 
-    # ── 백테스트 루프 ─────────────────────────────────────────
-    nav        = 1.0
-    nav_list, state_list = [], []
-    trade_log  = []
-    prev_state = None
-
+    # ── 신호 시계열 먼저 계산 (벡터 방식) ───────────────────────
+    # 전일 종가 신호 → 익일 수익률 적용 (look-ahead bias 제거)
+    signals = []
     for date in common_idx:
         k  = k200[date]
         km = k200_ma[date]
@@ -309,13 +306,27 @@ if run_btn:
         tm = tnx_ma[date]
 
         if np.isnan(k) or np.isnan(km):
-            state = prev_state or "Bear"
+            sig = signals[-1] if signals else "Bear"
         elif k < km:
-            state = "Bear"
+            sig = "Bear"
         elif use_tnx and not np.isnan(t) and not np.isnan(tm) and t > tm:
-            state = "Bull_Mix"
+            sig = "Bull_Mix"
         else:
-            state = "Bull_Full"
+            sig = "Bull_Full"
+        signals.append(sig)
+
+    signal_s = pd.Series(signals, index=common_idx)
+    # ★ 핵심 수정: 전일 신호를 당일에 적용 (1일 shift)
+    signal_s = signal_s.shift(1).fillna("Bear")
+
+    # ── 백테스트 루프 ─────────────────────────────────────────
+    nav        = 1.0
+    nav_list, state_list = [], []
+    trade_log  = []
+    prev_state = None
+
+    for date in common_idx:
+        state = signal_s[date]
 
         if prev_state is not None and state != prev_state:
             nav *= (1 - fee * 2)

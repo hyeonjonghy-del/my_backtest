@@ -200,6 +200,17 @@ def load_etf_price(ticker: str, start_str: str, end_str: str) -> pd.Series:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
+def load_etf_open(ticker: str, start_str: str, end_str: str) -> pd.Series:
+    """ETF 시가 데이터"""
+    try:
+        df = stock.get_market_ohlcv_by_date(start_str, end_str, ticker)
+        return df["시가"].rename(ticker)
+    except Exception as e:
+        st.warning(f"ETF {ticker} 시가 로딩 실패: {e}")
+        return pd.Series(dtype=float)
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
 def load_kospi200(start_str: str, end_str: str) -> pd.Series:
     try:
         df = stock.get_index_ohlcv_by_date(start_str, end_str, "1028")
@@ -264,11 +275,14 @@ if run_btn:
         st.stop()
 
     prog.progress(25, text="KODEX 200 로딩 중...")
-    etf_200  = load_etf_price("069500", EXT_START, END_STR)
+    etf_200      = load_etf_price("069500", EXT_START, END_STR)
+    etf_200_open = load_etf_open("069500", EXT_START, END_STR)
     prog.progress(40, text="KODEX 레버리지 로딩 중...")
-    etf_lev  = load_etf_price("122630", EXT_START, END_STR)
+    etf_lev      = load_etf_price("122630", EXT_START, END_STR)
+    etf_lev_open = load_etf_open("122630", EXT_START, END_STR)
     prog.progress(55, text="KODEX 단기채권 로딩 중...")
-    etf_bond = load_etf_price("153130", EXT_START, END_STR)
+    etf_bond      = load_etf_price("153130", EXT_START, END_STR)
+    etf_bond_open = load_etf_open("153130", EXT_START, END_STR)
 
     prog.progress(70, text="TNX 금리 로딩 중...")
     tnx_raw = load_tnx(START_STR, END_STR) if use_tnx else pd.Series(dtype=float)
@@ -290,14 +304,18 @@ if run_btn:
         tnx_aligned = pd.Series(np.nan, index=common_idx)
         tnx_ma      = pd.Series(np.nan, index=common_idx)
 
-    ret_200  = etf_200.pct_change().reindex(common_idx).fillna(0)
-    ret_lev  = etf_lev.pct_change().reindex(common_idx).fillna(0)
-    ret_bond = etf_bond.pct_change().reindex(common_idx).fillna(0)
+    # 시가 → 종가 수익률 (당일 시가 매수 → 당일 종가 기준)
+    # T일 종가 신호 → T+1일 시가 매수 → T+1일 종가 매도
+    # 수익률 = (T+1 종가 - T+1 시가) / T+1 시가
+    ret_200  = ((etf_200 - etf_200_open) / etf_200_open).reindex(common_idx).fillna(0)
+    ret_lev  = ((etf_lev - etf_lev_open) / etf_lev_open).reindex(common_idx).fillna(0)
+    ret_bond = ((etf_bond - etf_bond_open) / etf_bond_open).reindex(common_idx).fillna(0)
+
     k200     = kospi200.reindex(common_idx).ffill()
     k200_ma  = kospi200_ma.reindex(common_idx).ffill()
 
-    # ── 신호 시계열 먼저 계산 (벡터 방식) ───────────────────────
-    # 전일 종가 신호 → 익일 수익률 적용 (look-ahead bias 제거)
+    # ── 신호 시계열 계산 후 1일 shift ────────────────────────────
+    # T일 종가로 신호 → T+1일 시가에 매매 → T+1일 시가~종가 수익률 적용
     signals = []
     for date in common_idx:
         k  = k200[date]
@@ -316,7 +334,7 @@ if run_btn:
         signals.append(sig)
 
     signal_s = pd.Series(signals, index=common_idx)
-    # ★ 핵심 수정: 전일 신호를 당일에 적용 (1일 shift)
+    # T일 신호 → T+1일 적용
     signal_s = signal_s.shift(1).fillna("Bear")
 
     # ── 백테스트 루프 ─────────────────────────────────────────

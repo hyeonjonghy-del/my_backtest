@@ -1,18 +1,18 @@
 """
 한국판 Bull/Bull Mix/Bear 전략 v3
 ────────────────────────────────────────
-추세 기준 : KOSPI200 vs MA150
+추세 기준 : KOSPI200 vs MA60
 금리 기준 : ^TNX (미국 10년물) vs MA120
 
 상태 판단:
-  Bear     : KOSPI200 < MA150
-  Bull Mix : KOSPI200 > MA150 & TNX > TNX MA120 (금리 상승 위험)
-  Bull Full: KOSPI200 > MA150 & TNX ≤ TNX MA120 (최적 상승장)
+  Bear     : KOSPI200 < MA60
+  Bull Mix : KOSPI200 > MA60 & TNX > TNX MA120 (금리 상승 위험)
+  Bull Full: KOSPI200 > MA60 & TNX ≤ TNX MA120 (최적 상승장)
 
 포트폴리오 (사이드바에서 비중 조절 가능):
-  Bull Full → KODEX200 N% + KODEX 레버리지 (100-N)%
-  Bull Mix  → KODEX200 N% + KODEX 레버리지 (100-N)%
-  Bear      → KODEX 단기채권 N% + KODEX200 (100-N)%
+  Bull Full → KODEX200 80% + KODEX 레버리지 20%
+  Bull Mix  → KODEX200 50% + KODEX 레버리지 50%
+  Bear      → KODEX 단기채권 100%
 """
 
 import os
@@ -114,7 +114,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("📊 추세 필터")
-    ma_trend = st.slider("KOSPI200 이평선 (일)", 60, 250, 150, 10)
+    ma_trend = st.slider("KOSPI200 이평선 (일)", 60, 250, 60, 10)
 
     st.subheader("💹 금리 필터 (^TNX)")
     use_tnx = st.checkbox("금리 필터 사용", value=True)
@@ -125,7 +125,7 @@ with st.sidebar:
 
     # ── Bull Full 비중 ────────────────────────────────────────
     st.markdown("**🐂 Bull Full** (최적 상승장)")
-    bf_lev = st.slider("레버리지 비중 (%)", 0, 100, 0, 5, key="bf_lev")
+    bf_lev = st.slider("레버리지 비중 (%)", 0, 100, 20, 5, key="bf_lev")
     bf_k200 = 100 - bf_lev
     st.caption(f"→ KODEX200 {bf_k200}% + 레버리지 {bf_lev}%")
 
@@ -488,6 +488,59 @@ if run_btn:
         fig_dd.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
         fig_dd.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
         st.plotly_chart(fig_dd, use_container_width=True)
+
+        # ── KOSPI200 + MA 차트 ────────────────────────────────
+        st.subheader(f"KOSPI200 & MA{ma_trend} (추세 신호)")
+        kospi_plot  = kospi200.reindex(common_idx).ffill()
+        kospi_ma_plot = kospi200_ma.reindex(common_idx).ffill()
+
+        fig_ma = go.Figure()
+        fig_ma.add_trace(go.Scatter(
+            x=kospi_plot.index, y=kospi_plot.round(1),
+            name="KOSPI200", line=dict(color="#378ADD", width=1.5)
+        ))
+        fig_ma.add_trace(go.Scatter(
+            x=kospi_ma_plot.index, y=kospi_ma_plot.round(1),
+            name=f"MA{ma_trend}", line=dict(color="#E24B4A", width=1.5, dash="dash")
+        ))
+
+        # 상태별 배경색 (Bear 구간 강조)
+        bear_periods = []
+        in_bear = False
+        bear_start = None
+        for date, st_val in state_s.items():
+            if st_val == "Bear" and not in_bear:
+                bear_start = date
+                in_bear = True
+            elif st_val != "Bear" and in_bear:
+                bear_periods.append((bear_start, date))
+                in_bear = False
+        if in_bear:
+            bear_periods.append((bear_start, state_s.index[-1]))
+
+        for bp_start, bp_end in bear_periods:
+            fig_ma.add_vrect(
+                x0=bp_start, x1=bp_end,
+                fillcolor="rgba(226,75,74,0.08)",
+                layer="below", line_width=0,
+            )
+
+        fig_ma.update_layout(
+            height=300, margin=dict(l=0, r=0, t=10, b=0),
+            legend=dict(orientation="h", y=1.08),
+            hovermode="x unified",
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            annotations=[dict(
+                text="🐻 Bear 구간 (빨간 배경)",
+                xref="paper", yref="paper",
+                x=0.01, y=0.02, showarrow=False,
+                font=dict(size=11, color="#E24B4A")
+            )]
+        )
+        fig_ma.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+        fig_ma.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+        st.plotly_chart(fig_ma, use_container_width=True)
 
         if use_tnx and not tnx_aligned.dropna().empty:
             st.subheader("TNX 금리 & 이평선")

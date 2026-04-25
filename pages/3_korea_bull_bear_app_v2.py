@@ -304,18 +304,28 @@ if run_btn:
         tnx_aligned = pd.Series(np.nan, index=common_idx)
         tnx_ma      = pd.Series(np.nan, index=common_idx)
 
-    # 시가 → 종가 수익률 (당일 시가 매수 → 당일 종가 기준)
-    # T일 종가 신호 → T+1일 시가 매수 → T+1일 종가 매도
-    # 수익률 = (T+1 종가 - T+1 시가) / T+1 시가
-    ret_200  = ((etf_200 - etf_200_open) / etf_200_open).reindex(common_idx).fillna(0)
-    ret_lev  = ((etf_lev - etf_lev_open) / etf_lev_open).reindex(common_idx).fillna(0)
-    ret_bond = ((etf_bond - etf_bond_open) / etf_bond_open).reindex(common_idx).fillna(0)
+    # ── 수익률 데이터 준비 ───────────────────────────────────────
+    # 종가→종가 수익률 (보유일 평가용)
+    ret_200_cc  = etf_200.pct_change().reindex(common_idx).fillna(0)
+    ret_lev_cc  = etf_lev.pct_change().reindex(common_idx).fillna(0)
+    ret_bond_cc = etf_bond.pct_change().reindex(common_idx).fillna(0)
 
-    k200     = kospi200.reindex(common_idx).ffill()
-    k200_ma  = kospi200_ma.reindex(common_idx).ffill()
+    # 시가→종가 수익률 (전환일 매수 당일 평가용)
+    # 시가에 매수 → 당일 종가 기준
+    ret_200_oc  = ((etf_200 - etf_200_open) / etf_200_open).reindex(common_idx).fillna(0)
+    ret_lev_oc  = ((etf_lev - etf_lev_open) / etf_lev_open).reindex(common_idx).fillna(0)
+    ret_bond_oc = ((etf_bond - etf_bond_open) / etf_bond_open).reindex(common_idx).fillna(0)
 
-    # ── 신호 시계열 계산 후 1일 shift ────────────────────────────
-    # T일 종가로 신호 → T+1일 시가에 매매 → T+1일 시가~종가 수익률 적용
+    # 전일 종가→당일 시가 수익률 (전환일 매도 당일 평가용)
+    # 전일 종가 보유 → 당일 시가에 매도
+    ret_200_co  = ((etf_200_open - etf_200.shift(1)) / etf_200.shift(1)).reindex(common_idx).fillna(0)
+    ret_lev_co  = ((etf_lev_open - etf_lev.shift(1)) / etf_lev.shift(1)).reindex(common_idx).fillna(0)
+    ret_bond_co = ((etf_bond_open - etf_bond.shift(1)) / etf_bond.shift(1)).reindex(common_idx).fillna(0)
+
+    k200    = kospi200.reindex(common_idx).ffill()
+    k200_ma = kospi200_ma.reindex(common_idx).ffill()
+
+    # ── 신호 시계열 계산 ──────────────────────────────────────────
     signals = []
     for date in common_idx:
         k  = k200[date]
@@ -333,31 +343,58 @@ if run_btn:
             sig = "Bull_Full"
         signals.append(sig)
 
-    signal_s = pd.Series(signals, index=common_idx)
-    # T일 신호 → T+1일 적용
-    signal_s = signal_s.shift(1).fillna("Bear")
+    signal_s      = pd.Series(signals, index=common_idx)
+    signal_prev_s = signal_s.shift(1).fillna("Bear")  # 전일 신호 (당일 적용)
 
-    # ── 백테스트 루프 ─────────────────────────────────────────
+    # ── 백테스트 루프 ─────────────────────────────────────────────
+    # 로직:
+    # 전환일: 전일 보유 ETF → 당일 시가에 매도 (종가→시가 수익률)
+    #         새 ETF → 당일 시가에 매수 → 당일 종가 평가 (시가→종가 수익률)
+    # 보유일: 전일 종가 → 당일 종가 수익률
     nav        = 1.0
     nav_list, state_list = [], []
     trade_log  = []
     prev_state = None
 
+    def get_ret(r200, rlev, rbond, state):
+        if state == "Bull_Full":
+            return w_bf_lev * rlev + w_bf_k200 * r200
+        elif state == "Bull_Mix":
+            return w_bm_lev * rlev + w_bm_k200 * r200
+        else:
+            return w_bear_bond * rbond + w_bear_k200 * r200
+
     for date in common_idx:
-        state = signal_s[date]
+        state = signal_prev_s[date]  # 전일 신호 = 당일 적용 상태
 
         if prev_state is not None and state != prev_state:
+            # 전환일: 두 단계 수익률 적용
+            # 1단계: 전일 보유 ETF → 당일 시가 매도 (종가→시가)
+            sell_ret = get_ret(ret_200_co[date], ret_lev_co[date],
+                               ret_bond_co[date], prev_state)
+            nav *= (1 + sell_ret)
+            # 거래비용 (매도 + 매수)
             nav *= (1 - fee * 2)
+            # 2단계: 새 ETF → 당일 시가 매수 → 종가 평가 (시가→종가)
+            buy_ret = get_ret(ret_200_oc[date], ret_lev_oc[date],
+                              ret_bond_oc[date], state)
+            nav *= (1 + buy_ret)
+
             trade_log.append({
                 "날짜":  date.date(),
                 "이전":  prev_state,
                 "전환":  state,
                 "NAV":   round(nav, 4),
             })
+        else:
+            # 보유일: 종가→종가 수익률
+            daily_ret = get_ret(ret_200_cc[date], ret_lev_cc[date],
+                                ret_bond_cc[date], state)
+            nav *= (1 + daily_ret)
 
-        r200  = ret_200[date]
-        rlev  = ret_lev[date]
-        rbond = ret_bond[date]
+        nav_list.append(nav)
+        state_list.append(state)
+        prev_state = state
 
         if state == "Bull_Full":
             daily_ret = w_bf_lev * rlev + w_bf_k200 * r200
@@ -365,11 +402,6 @@ if run_btn:
             daily_ret = w_bm_lev * rlev + w_bm_k200 * r200
         else:  # Bear
             daily_ret = w_bear_bond * rbond + w_bear_k200 * r200
-
-        nav *= (1 + daily_ret)
-        nav_list.append(nav)
-        state_list.append(state)
-        prev_state = state
 
     prog.progress(100, text="완료!")
     import time; time.sleep(0.3)

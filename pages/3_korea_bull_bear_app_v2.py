@@ -396,13 +396,6 @@ if run_btn:
         state_list.append(state)
         prev_state = state
 
-        if state == "Bull_Full":
-            daily_ret = w_bf_lev * rlev + w_bf_k200 * r200
-        elif state == "Bull_Mix":
-            daily_ret = w_bm_lev * rlev + w_bm_k200 * r200
-        else:  # Bear
-            daily_ret = w_bear_bond * rbond + w_bear_k200 * r200
-
     prog.progress(100, text="완료!")
     import time; time.sleep(0.3)
     prog.empty()

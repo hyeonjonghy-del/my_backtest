@@ -40,8 +40,29 @@ with st.sidebar:
     st.caption("2차 = 1차 금액의 2배 / 3차 = 2차 금액과 동일 (책 고정값)")
 
     st.markdown("**③ 청산 조건**")
-    target_pct   = st.slider("목표 수익률: 평균단가 + x%", 5, 30, 15) / 100
-    stoploss_pct = st.slider("손절 기준: 평균단가 - x%", 3, 30, 15) / 100
+    target_pct   = st.slider("목표 수익률: 평균단가 + x%", 5, 40, 20) / 100
+    stoploss_pct = st.slider("손절 기준: 평균단가 - x%", 3, 30, 10) / 100
+
+    # ── 손익비 계산기 ──────────────────────────────────────
+    rr_ratio      = target_pct / stoploss_pct
+    breakeven_wr  = stoploss_pct / (target_pct + stoploss_pct) * 100
+    color = "🟢" if rr_ratio >= 2.0 else ("🟡" if rr_ratio >= 1.5 else "🔴")
+    st.markdown(
+        f"""
+        **손익비 분석** {color}
+        | 항목 | 값 |
+        |---|---|
+        | 손익비 (R/R) | **{rr_ratio:.1f} : 1** |
+        | 손익분기 승률 | **{breakeven_wr:.0f}%** |
+        | 현재 목표 승률 | 70%+ |
+        """
+    )
+    if rr_ratio >= 2.0:
+        st.success(f"✅ 승률 {breakeven_wr:.0f}%만 넘으면 수익 구조")
+    elif rr_ratio >= 1.5:
+        st.warning(f"⚠️ 승률 {breakeven_wr:.0f}% 이상 필요")
+    else:
+        st.error(f"❌ 손익비 불리 — 손절폭을 줄이거나 목표를 높이세요")
 
     st.divider()
     st.markdown("**라운드넘버 단위 (자동)**")

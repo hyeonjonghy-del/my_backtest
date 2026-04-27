@@ -10,7 +10,7 @@ import time
 st.set_page_config(page_title="차트박사 우량주 백테스트", page_icon="📊", layout="wide")
 
 st.title("📊 6. 차트박사 절대수익 우량주 매매법 백테스트")
-st.caption("라운드넘버존 진입 · 역피라미딩 분할매수 · 연간 유니버스 리밸런싱 · NAV 기반 동적 포지션")
+st.caption("라운드넘버존 진입 · 역피라미딩 분할매수 · 연간 유니버스 리밸런싱 · NAV 동적 포지션")
 
 # ────────────────────────────────────────────────────────────
 # 사이드바
@@ -35,11 +35,11 @@ with st.sidebar:
     buy1_pct    = st.slider("1차 매수: 이전 라운드 + x%", 1, 8, 4) / 100
 
     st.markdown("**② 자금 관리 (NAV 기준 비중)**")
-    buy1_cap_pct = st.slider("1차 매수 비중 (현재 NAV %)", 5, 20, 10) / 100
+    buy1_cap_pct = st.slider("1차 매수 비중 (전체 NAV %)", 5, 20, 10) / 100
     add_drop_pct = st.slider("추가매수 트리거 하락폭 (%)", 5, 20, 10) / 100
     st.caption("2차 = 1차 금액 ×2 / 3차 = 2차 금액 동일")
     st.info(
-        f"💰 총 투입 비중 (NAV 기준)\n"
+        f"💰 종목당 최대 투입 (NAV 기준)\n"
         f"- 1차: {buy1_cap_pct*100:.0f}%\n"
         f"- 2차: {buy1_cap_pct*2*100:.0f}%\n"
         f"- 3차: {buy1_cap_pct*2*100:.0f}%\n"
@@ -143,20 +143,22 @@ def fetch_kospi_index(start_str: str, end_str: str) -> pd.Series:
         return pd.Series(dtype=float)
 
 # ────────────────────────────────────────────────────────────
-# 포트폴리오 레벨 백테스트 (날짜 기준, NAV 동적 포지션)
+# 포트폴리오 백테스트
 # ────────────────────────────────────────────────────────────
 def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names: dict):
     """
-    날짜 순으로 전체 종목을 함께 처리.
-    포지션 사이즈 = 그 날의 current_nav × 비중
-    → 시작 기간이 달라도 같은 연도의 수익률이 동일하게 계산됨
+    ■ 현금 추적: 매수 시 현금 차감, 매도 시 현금 회수
+    ■ NAV = 현금 + 보유 포지션 (취득원가 기준)
+    ■ 포지션 사이즈 = 당일 NAV × 비중 (단, 현금이 부족하면 스킵)
+    → 현금 제약이 있어 동시에 무한 포지션 불가 → 현실적
+    → 수익이 쌓이면 NAV 증가 → 포지션도 비례해서 커짐 → 복리 효과
     """
-    current_nav = float(initial_capital)
+    cash = float(initial_capital)
 
     # 종목별 상태
-    states     = {}   # ticker -> "IDLE" | "TRIGGERED" | "IN_TRADE"
-    prev_r_map = {}   # ticker -> setup_prev_r
-    positions  = {}   # ticker -> {shares, avg_cost, tranches, buy1_price, buy2_price, entry_date}
+    states     = {}  # ticker -> "IDLE" | "TRIGGERED" | "IN_TRADE"
+    prev_r_map = {}  # ticker -> setup_prev_r
+    positions  = {}  # ticker -> {shares, avg_cost, tranches, buy1_price, buy2_price, entry_date, cost_basis}
 
     all_trades = []
     nav_series = {}
@@ -164,8 +166,14 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
     all_dates = pd.date_range(start=start_date, end=end_date, freq="B")
 
     for date in all_dates:
-        year     = date.year
-        day_pnl  = 0.0
+        year = date.year
+
+        # ── 현재 NAV 계산 ────────────────────────────────────
+        # NAV = 현금 + 보유 포지션 취득원가 합계 (보수적 평가)
+        pos_book_value = sum(
+            p["shares"] * p["avg_cost"] for p in positions.values()
+        )
+        current_nav = cash + pos_book_value
 
         # ── 1. 보유 포지션 처리 ─────────────────────────────
         for ticker in list(positions.keys()):
@@ -179,13 +187,15 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
             avg  = pos["avg_cost"]
             tgt  = avg * (1 + target_pct)
 
-            # 손절: 3차 이후만
             closed = False
+
+            # 손절: 3차 이후만
             if pos["tranches"] == 3:
                 stop = avg * (1 - stoploss_pct)
                 if l <= stop:
-                    pnl = (stop - avg) * pos["shares"]
-                    day_pnl += pnl
+                    proceeds = stop * pos["shares"]
+                    pnl      = (stop - avg) * pos["shares"]
+                    cash    += proceeds
                     all_trades.append({
                         "종목코드": ticker,
                         "종목명":   ticker_names.get(ticker, ticker),
@@ -205,8 +215,9 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
 
             # 목표수익
             if not closed and h >= tgt:
-                pnl = (tgt - avg) * pos["shares"]
-                day_pnl += pnl
+                proceeds = tgt * pos["shares"]
+                pnl      = (tgt - avg) * pos["shares"]
+                cash    += proceeds
                 all_trades.append({
                     "종목코드": ticker,
                     "종목명":   ticker_names.get(ticker, ticker),
@@ -227,33 +238,38 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
             if closed:
                 continue
 
-            # 2차 추가매수
+            # 2차 추가매수 (현금 체크)
             if pos["tranches"] == 1 and pos.get("buy1_price"):
                 b2t = pos["buy1_price"] * (1 - add_drop_pct)
                 if l <= b2t:
                     buy2_amount = current_nav * buy1_cap_pct * 2
-                    ns = int(buy2_amount / b2t)
-                    if ns > 0:
-                        total = pos["avg_cost"] * pos["shares"] + b2t * ns
+                    ns   = int(buy2_amount / b2t)
+                    cost = ns * b2t
+                    if ns > 0 and cash >= cost:
+                        cash -= cost
+                        total = pos["avg_cost"] * pos["shares"] + cost
                         pos["shares"]    += ns
                         pos["avg_cost"]   = total / pos["shares"]
                         pos["tranches"]   = 2
                         pos["buy2_price"] = b2t
 
-            # 3차 추가매수
+            # 3차 추가매수 (현금 체크)
             elif pos["tranches"] == 2 and pos.get("buy2_price"):
                 b3t = pos["buy2_price"] * (1 - add_drop_pct)
                 if l <= b3t:
                     buy3_amount = current_nav * buy1_cap_pct * 2
-                    ns = int(buy3_amount / b3t)
-                    if ns > 0:
-                        total = pos["avg_cost"] * pos["shares"] + b3t * ns
+                    ns   = int(buy3_amount / b3t)
+                    cost = ns * b3t
+                    if ns > 0 and cash >= cost:
+                        cash -= cost
+                        total = pos["avg_cost"] * pos["shares"] + cost
                         pos["shares"]  += ns
                         pos["avg_cost"] = total / pos["shares"]
                         pos["tranches"] = 3
 
-        # ── NAV 업데이트 (청산 손익 반영) ───────────────────
-        current_nav += day_pnl
+        # ── NAV 업데이트 후 기록 ────────────────────────────
+        pos_book_value = sum(p["shares"] * p["avg_cost"] for p in positions.values())
+        current_nav    = cash + pos_book_value
         nav_series[date] = current_nav
 
         # ── 2. 신규 진입 탐색 ───────────────────────────────
@@ -271,7 +287,7 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
             if state == "IDLE":
                 pr, nr = get_round_numbers(c)
                 if h >= nr * (1 - trigger_pct):
-                    states[ticker]    = "TRIGGERED"
+                    states[ticker]     = "TRIGGERED"
                     prev_r_map[ticker] = pr
 
             if states.get(ticker) == "TRIGGERED":
@@ -282,8 +298,11 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
                     b1 = prev_r_map[ticker] * (1 + buy1_pct)
                     if l <= b1:
                         buy1_amount = current_nav * buy1_cap_pct
-                        ns = int(buy1_amount / b1)
-                        if ns > 0:
+                        ns   = int(buy1_amount / b1)
+                        cost = ns * b1
+                        # ★ 현금이 충분할 때만 진입
+                        if ns > 0 and cash >= cost:
+                            cash -= cost
                             positions[ticker] = {
                                 "shares":     ns,
                                 "avg_cost":   b1,
@@ -332,9 +351,9 @@ if run_btn:
     st.info(f"✅ 전체 분석 대상: {len(all_tickers)}개 종목 (연간 합집합)")
 
     # ── OHLCV 수집 ──────────────────────────────────────────
-    prog_bar  = st.progress(0, text="데이터 수집 중...")
-    ticker_dfs    = {}
-    ticker_names  = {}
+    prog_bar = st.progress(0, text="데이터 수집 중...")
+    ticker_dfs   = {}
+    ticker_names = {}
 
     for i, ticker in enumerate(all_tickers):
         name = fetch_ticker_name(ticker)
@@ -343,14 +362,14 @@ if run_btn:
         if not df.empty and len(df) >= 60:
             ticker_dfs[ticker] = df
         prog_bar.progress((i + 1) / len(all_tickers),
-                          text=f"데이터 수집: {name}({ticker}) [{i+1}/{len(all_tickers)}]")
+                          text=f"수집: {name}({ticker}) [{i+1}/{len(all_tickers)}]")
         time.sleep(0.02)
 
     prog_bar.empty()
     st.info(f"📦 데이터 수집 완료: {len(ticker_dfs)}개 종목")
 
-    # ── 포트폴리오 백테스트 실행 ─────────────────────────────
-    with st.spinner("🔄 포트폴리오 시뮬레이션 실행 중... (날짜 기준 NAV 동적 포지션)"):
+    # ── 포트폴리오 시뮬 ─────────────────────────────────────
+    with st.spinner("🔄 포트폴리오 시뮬레이션 실행 중..."):
         all_trades, strat_nav = run_portfolio_backtest(
             ticker_dfs, yearly_universe, ticker_names
         )
@@ -377,12 +396,11 @@ if run_btn:
     pf_den    = abs(rdf.loc[rdf["손익(원)"] < 0, "손익(원)"].sum()) + 1e-9
     profit_factor = pf_num / pf_den
 
-    total_return  = total_pnl / initial_capital
+    total_return  = (strat_nav.iloc[-1] - initial_capital) / initial_capital
     years_n = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365.25
-    cagr    = (1 + total_return) ** (1 / years_n) - 1 if years_n > 0 else 0
-    final_capital = initial_capital + total_pnl
+    cagr    = (strat_nav.iloc[-1] / initial_capital) ** (1 / years_n) - 1 if years_n > 0 else 0
+    final_capital = strat_nav.iloc[-1]
 
-    # NAV 파생 지표
     strat_ret    = (strat_nav / initial_capital - 1) * 100
     roll_max     = strat_nav.expanding().max()
     strat_mdd    = (strat_nav / roll_max - 1) * 100
@@ -429,7 +447,7 @@ if run_btn:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("초기 자본",   f"{initial_capital/10000:,.0f}만원")
     c2.metric("최종 자산",   f"{final_capital/10000:,.0f}만원",
-              delta=f"+{total_pnl/10000:,.0f}만원")
+              delta=f"+{(final_capital-initial_capital)/10000:,.0f}만원")
     c3.metric("전체 수익률", f"{total_return*100:.1f}%")
     c4.metric("연환산 CAGR", f"{cagr*100:.1f}%")
 
@@ -466,21 +484,18 @@ if run_btn:
     # ════════════════════════════════════════════════════════
     tab1, tab2, tab3 = st.tabs(["📊 성과 분석", "📋 거래 로그", "📅 기간별 수익률"])
 
-    # ── TAB 1: 성과 분석 ─────────────────────────────────────
     with tab1:
         fig_ret = go.Figure()
         fig_ret.add_trace(go.Scatter(
             x=strat_ret.index, y=strat_ret.values, mode="lines", name="전략",
             line=dict(color="#2196F3", width=2),
-            hovertemplate="%{x|%Y-%m-%d}<br>전략: %{y:.1f}%<extra></extra>"
         ))
         if not kospi_ret.empty:
             fig_ret.add_trace(go.Scatter(
                 x=kospi_ret.index, y=kospi_ret.values, mode="lines", name="KOSPI",
                 line=dict(color="#FF9800", width=2, dash="dot"),
-                hovertemplate="%{x|%Y-%m-%d}<br>KOSPI: %{y:.1f}%<extra></extra>"
             ))
-        fig_ret.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
+        fig_ret.add_hline(y=0, line_dash="dash", line_color="gray")
         fig_ret.update_layout(
             title="📈 누적 수익률 비교 (전략 vs KOSPI)",
             yaxis_ticksuffix="%",
@@ -564,11 +579,10 @@ if run_btn:
                 "추가매수하락(%)": add_drop_pct * 100,
                 "목표수익률(%)": target_pct * 100,
                 "손절기준(%)": stoploss_pct * 100,
-                "포지션사이징": "NAV 동적 (날짜 기준 포트폴리오 시뮬)",
+                "포지션사이징": "NAV 동적 + 현금 제약",
                 "리밸런싱": "연간 (매년 1월)",
             })
 
-    # ── TAB 2: 거래 로그 ─────────────────────────────────────
     with tab2:
         st.subheader("📋 전체 거래 이력")
         fc1, fc2, fc3 = st.columns(3)
@@ -599,12 +613,11 @@ if run_btn:
         display["진입일"]   = display["진입일"].dt.strftime("%Y-%m-%d")
         display["청산일"]   = display["청산일"].dt.strftime("%Y-%m-%d")
 
-        st.caption(f"총 {len(filtered):,}건 표시")
+        st.caption(f"총 {len(filtered):,}건")
         st.dataframe(display, use_container_width=True, hide_index=True, height=600)
         csv = filtered.to_csv(index=False, encoding="utf-8-sig")
         st.download_button("⬇️ CSV 다운로드", csv, "chartdoctor_trades.csv", "text/csv")
 
-    # ── TAB 3: 기간별 수익률 ────────────────────────────────
     with tab3:
         st.subheader("📅 연도별 수익률")
         if not yearly_ret.empty:
@@ -670,10 +683,9 @@ if run_btn:
                     [0.6,"#C8E6C9"],[1.0,"#1B5E20"],
                 ],
                 zmid=0, colorbar=dict(title="수익률(%)"),
-                hovertemplate="%{y}년 %{x}<br>%{text}<extra></extra>",
             ))
             fig_heat.update_layout(
-                title="월별 수익률 히트맵",
+                title="월별 수익률 히트맵 (녹색=수익 / 적색=손실)",
                 height=max(300, len(monthly_pivot) * 42 + 120),
                 margin=dict(t=50, b=20), xaxis=dict(side="top"),
             )

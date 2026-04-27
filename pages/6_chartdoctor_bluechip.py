@@ -147,6 +147,16 @@ def fetch_ticker_name(ticker: str) -> str:
     except:
         return ticker
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_kospi_index(start_str: str, end_str: str) -> pd.Series:
+    """KOSPI 지수 종가 시계열 반환"""
+    try:
+        df = stock.get_index_ohlcv_by_date(start_str, end_str, "1001")
+        df.index = pd.to_datetime(df.index)
+        return df["종가"]
+    except:
+        return pd.Series(dtype=float)
+
 # ────────────────────────────────────────────────────────────
 # 단일 종목 백테스트
 # ────────────────────────────────────────────────────────────
@@ -382,44 +392,107 @@ if run_btn:
     c11.metric("손절 청산",     f'{(rdf["청산사유"]=="손절").sum():,}건')
     c12.metric("손절 비율",     f'{(rdf["청산사유"]=="손절").sum()/total*100:.1f}%')
 
-    # ── 누적 수익 곡선 ────────────────────────────────────────
-    rdf["누적손익"] = rdf["손익(원)"].cumsum() + initial_capital
+    # ── KOSPI 지수 로딩 ──────────────────────────────────────
+    kospi_s = fetch_kospi_index(start_str, end_str)
 
-    fig_equity = go.Figure()
-    fig_equity.add_trace(go.Scatter(
-        x=rdf["청산일"],
-        y=rdf["누적손익"] / 10000,
-        mode="lines",
-        fill="tozeroy",
-        fillcolor="rgba(33,150,243,0.1)",
+    # ── 전략 일별 자산 시계열 생성 ───────────────────────────
+    # 청산일 기준 누적 손익을 날짜 인덱스로 변환
+    all_dates = pd.date_range(start=start_date, end=end_date, freq="B")
+    strat_nav = pd.Series(index=all_dates, dtype=float)
+
+    running = float(initial_capital)
+    date_pnl = rdf.groupby("청산일")["손익(원)"].sum()
+    for d in all_dates:
+        if d in date_pnl.index:
+            running += date_pnl[d]
+        strat_nav[d] = running
+    strat_nav = strat_nav.dropna()
+
+    # 수익률(%) 시계열 (시작 = 0%)
+    strat_ret = (strat_nav / initial_capital - 1) * 100
+
+    # KOSPI 수익률(%) 시계열 (시작 = 0%)
+    if not kospi_s.empty:
+        kospi_ret = (kospi_s / kospi_s.iloc[0] - 1) * 100
+        kospi_mdd_base = kospi_s / kospi_s.expanding().max() - 1
+    else:
+        kospi_ret = pd.Series(dtype=float)
+        kospi_mdd_base = pd.Series(dtype=float)
+
+    # MDD 계산
+    roll_max   = strat_nav.expanding().max()
+    strat_mdd  = (strat_nav / roll_max - 1) * 100
+
+    strategy_mdd = strat_mdd.min()
+    kospi_mdd_val = (kospi_mdd_base.min() * 100) if not kospi_mdd_base.empty else 0
+
+    # ── 핵심 지표에 MDD·코스피 비교 추가 ────────────────────
+    st.divider()
+    st.markdown("**📊 코스피 대비 성과**")
+    kospi_total = float(kospi_ret.iloc[-1]) if not kospi_ret.empty else 0
+    kospi_cagr  = ((1 + kospi_total/100) ** (1/years) - 1) * 100 if years > 0 else 0
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    cc1.metric("전략 전체 수익률",  f"{total_return*100:.1f}%",
+               delta=f"코스피 대비 {total_return*100 - kospi_total:+.1f}%p")
+    cc2.metric("전략 CAGR",         f"{cagr*100:.1f}%",
+               delta=f"코스피 대비 {cagr*100 - kospi_cagr:+.1f}%p")
+    cc3.metric("전략 MDD",          f"{strategy_mdd:.1f}%",
+               delta=f"코스피 대비 {strategy_mdd - kospi_mdd_val:+.1f}%p",
+               delta_color="inverse")
+    cc4.metric("코스피 MDD",        f"{kospi_mdd_val:.1f}%")
+
+    # ── ① 누적 수익률 비교 차트 ──────────────────────────────
+    fig_ret = go.Figure()
+    fig_ret.add_trace(go.Scatter(
+        x=strat_ret.index, y=strat_ret.values,
+        mode="lines", name="전략",
         line=dict(color="#2196F3", width=2),
-        name="누적 자산",
-        hovertemplate="%{x}<br>%{y:,.0f}만원<extra></extra>"
+        hovertemplate="%{x|%Y-%m-%d}<br>전략: %{y:.1f}%<extra></extra>"
     ))
-    fig_equity.add_hline(
-        y=initial_capital / 10000,
-        line_dash="dash", line_color="gray",
-        annotation_text="원금"
+    if not kospi_ret.empty:
+        fig_ret.add_trace(go.Scatter(
+            x=kospi_ret.index, y=kospi_ret.values,
+            mode="lines", name="KOSPI",
+            line=dict(color="#FF9800", width=2, dash="dot"),
+            hovertemplate="%{x|%Y-%m-%d}<br>KOSPI: %{y:.1f}%<extra></extra>"
+        ))
+    fig_ret.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
+    fig_ret.update_layout(
+        title="📈 누적 수익률 비교 (전략 vs KOSPI)",
+        xaxis_title="날짜", yaxis_title="수익률 (%)",
+        yaxis_ticksuffix="%",
+        legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
+        height=380, margin=dict(t=50, b=20),
     )
-    # 최종 자산 annotation
-    fig_equity.add_annotation(
-        x=rdf["청산일"].iloc[-1],
-        y=rdf["누적손익"].iloc[-1] / 10000,
-        text=f"최종 {rdf['누적손익'].iloc[-1]/10000:,.0f}만원<br>(+{total_return*100:.1f}% / CAGR {cagr*100:.1f}%)",
-        showarrow=True, arrowhead=2,
-        bgcolor="rgba(33,150,243,0.15)",
-        bordercolor="#2196F3",
-        font=dict(size=12),
-        ax=-120, ay=-40,
+    st.plotly_chart(fig_ret, use_container_width=True)
+
+    # ── ② MDD 비교 차트 ─────────────────────────────────────
+    fig_mdd = go.Figure()
+    fig_mdd.add_trace(go.Scatter(
+        x=strat_mdd.index, y=strat_mdd.values,
+        mode="lines", name="전략 MDD",
+        fill="tozeroy",
+        fillcolor="rgba(33,150,243,0.15)",
+        line=dict(color="#2196F3", width=2),
+        hovertemplate="%{x|%Y-%m-%d}<br>전략 MDD: %{y:.1f}%<extra></extra>"
+    ))
+    if not kospi_mdd_base.empty:
+        fig_mdd.add_trace(go.Scatter(
+            x=kospi_mdd_base.index, y=(kospi_mdd_base * 100).values,
+            mode="lines", name="KOSPI MDD",
+            fill="tozeroy",
+            fillcolor="rgba(255,152,0,0.10)",
+            line=dict(color="#FF9800", width=2, dash="dot"),
+            hovertemplate="%{x|%Y-%m-%d}<br>KOSPI MDD: %{y:.1f}%<extra></extra>"
+        ))
+    fig_mdd.update_layout(
+        title="📉 최대낙폭(MDD) 비교 (전략 vs KOSPI)",
+        xaxis_title="날짜", yaxis_title="낙폭 (%)",
+        yaxis_ticksuffix="%",
+        legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
+        height=320, margin=dict(t=50, b=20),
     )
-    fig_equity.update_layout(
-        title="📉 누적 자산 변화",
-        xaxis_title="날짜",
-        yaxis_title="자산 (만원)",
-        height=350,
-        margin=dict(t=40, b=20),
-    )
-    st.plotly_chart(fig_equity, use_container_width=True)
+    st.plotly_chart(fig_mdd, use_container_width=True)
 
     # ── 차트 2열 ─────────────────────────────────────────────
     col_a, col_b = st.columns(2)

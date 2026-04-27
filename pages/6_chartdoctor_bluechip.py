@@ -354,17 +354,42 @@ if run_btn:
     st.divider()
     st.subheader("📈 백테스트 결과 요약")
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("총 거래 수",     f"{total:,}건")
-    c2.metric("승률",           f"{win_rate:.1f}%")
-    c3.metric("평균 수익률",    f"{avg_ret:.1f}%")
-    c4.metric("총 손익",        f"{total_pnl/10000:,.0f}만원")
-    c5.metric("Profit Factor",  f"{profit_factor:.2f}")
+    # 전체 수익률 & CAGR 계산
+    total_return = total_pnl / initial_capital
+    years = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365.25
+    cagr  = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
+    final_capital = initial_capital + total_pnl
 
-    c6, c7, c8 = st.columns(3)
-    c6.metric("평균 보유기간",  f"{avg_hold:.0f}일")
-    c7.metric("목표수익 청산",  f'{(rdf["청산사유"]=="목표수익").sum():,}건')
-    c8.metric("손절 청산",      f'{(rdf["청산사유"]=="손절").sum():,}건')
+    # 1행: 기간 전체 성과
+    st.markdown("**📊 기간 전체 성과**")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("초기 자본",     f"{initial_capital/10000:,.0f}만원")
+    c2.metric("최종 자산",     f"{final_capital/10000:,.0f}만원",
+              delta=f"+{total_pnl/10000:,.0f}만원")
+    c3.metric("전체 수익률",   f"{total_return*100:.1f}%")
+    c4.metric("연환산 CAGR",   f"{cagr*100:.1f}%",
+              help="복리 기준 연평균 수익률")
+
+    st.divider()
+
+    # 2행: 거래 단위 성과
+    st.markdown("**🔁 거래 단위 성과**")
+    c5, c6, c7, c8, c9 = st.columns(5)
+    c5.metric("총 거래 수",     f"{total:,}건")
+    c6.metric("승률",           f"{win_rate:.1f}%")
+    c7.metric("거래당 평균수익", f"{avg_ret:.1f}%",
+              help="1건당 평균 수익률 (전체 수익률과 다름)")
+    c8.metric("Profit Factor",  f"{profit_factor:.2f}")
+    c9.metric("평균 보유기간",  f"{avg_hold:.0f}일")
+
+    st.divider()
+
+    # 3행: 청산 현황
+    st.markdown("**🎯 청산 현황**")
+    c10, c11, c12 = st.columns(3)
+    c10.metric("목표수익 청산", f'{(rdf["청산사유"]=="목표수익").sum():,}건')
+    c11.metric("손절 청산",     f'{(rdf["청산사유"]=="손절").sum():,}건')
+    c12.metric("손절 비율",     f'{(rdf["청산사유"]=="손절").sum()/total*100:.1f}%')
 
     # ── 누적 수익 곡선 ────────────────────────────────────────
     rdf["누적손익"] = rdf["손익(원)"].cumsum() + initial_capital
@@ -384,6 +409,17 @@ if run_btn:
         y=initial_capital / 10000,
         line_dash="dash", line_color="gray",
         annotation_text="원금"
+    )
+    # 최종 자산 annotation
+    fig_equity.add_annotation(
+        x=rdf["청산일"].iloc[-1],
+        y=rdf["누적손익"].iloc[-1] / 10000,
+        text=f"최종 {rdf['누적손익'].iloc[-1]/10000:,.0f}만원<br>(+{total_return*100:.1f}% / CAGR {cagr*100:.1f}%)",
+        showarrow=True, arrowhead=2,
+        bgcolor="rgba(33,150,243,0.15)",
+        bordercolor="#2196F3",
+        font=dict(size=12),
+        ax=-120, ay=-40,
     )
     fig_equity.update_layout(
         title="📉 누적 자산 변화",

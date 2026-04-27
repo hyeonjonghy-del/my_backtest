@@ -75,16 +75,31 @@ def get_round_numbers(price: float):
 # ────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_tickers(date_str: str, min_cap: int) -> list:
-    """시총 기준으로 KOSPI 종목 필터링"""
-    try:
-        cap_df = stock.get_market_cap(date_str, market="KOSPI")
-        filtered = cap_df[cap_df["시가총액"] >= min_cap * 1e8]
-        # 시총 내림차순 정렬
-        filtered = filtered.sort_values("시가총액", ascending=False)
-        return filtered.index.tolist()
-    except Exception as e:
-        st.error(f"종목 조회 실패: {e}")
-        return []
+    """시총 기준으로 KOSPI 종목 필터링 (공휴일/주말이면 가장 가까운 거래일로 재시도)"""
+    from datetime import datetime, timedelta
+
+    base_dt = datetime.strptime(date_str, "%Y%m%d")
+
+    # 최대 10일 앞뒤로 유효 거래일 탐색
+    for offset in range(0, 10):
+        for sign in [1, -1]:
+            candidate = (base_dt + timedelta(days=offset * sign)).strftime("%Y%m%d")
+            try:
+                cap_df = stock.get_market_cap(candidate, market="KOSPI")
+                if cap_df is None or cap_df.empty:
+                    continue
+                if "시가총액" not in cap_df.columns:
+                    continue
+                filtered = cap_df[cap_df["시가총액"] >= min_cap * 1e8]
+                filtered = filtered.sort_values("시가총액", ascending=False)
+                tickers = filtered.index.tolist()
+                if tickers:
+                    return tickers
+            except Exception:
+                continue
+
+    st.error("유효한 거래일을 찾지 못했습니다. 시작일을 조정해 주세요.")
+    return []
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ohlcv(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:

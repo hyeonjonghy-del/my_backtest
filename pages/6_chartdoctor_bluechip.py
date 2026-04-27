@@ -10,7 +10,7 @@ import time
 st.set_page_config(page_title="차트박사 우량주 백테스트", page_icon="📊", layout="wide")
 
 st.title("📊 6. 차트박사 절대수익 우량주 매매법 백테스트")
-st.caption("라운드넘버존 기반 분할매수(3차) · +15% 전량매도 전략")
+st.caption("라운드넘버존 진입 · 하락 시 역피라미딩 분할매수 · 평균단가 +15% 전량매도 전략")
 
 # ────────────────────────────────────────────────────────────
 # 사이드바 파라미터
@@ -25,31 +25,43 @@ with st.sidebar:
 
     min_cap_억 = st.number_input("최소 시총 (억원)", value=5000, step=1000)
     initial_capital = st.number_input("초기 자본 (만원)", value=3000, step=500) * 10000
-    position_size_pct = st.slider("종목당 투자 비중 (%)", 5, 30, 10) / 100
     max_stocks = st.slider("분석 종목 수 (상위 N개)", 10, 100, 50)
 
     st.divider()
     st.header("📐 매매 기준")
 
-    st.markdown("**진입 조건**")
-    trigger_pct  = st.slider("트리거: 다음 라운드 - x%",  1, 8, 4) / 100
+    st.markdown("**① 라운드넘버존 진입**")
+    trigger_pct  = st.slider("트리거: 다음 라운드 - x%", 1, 8, 4) / 100
     buy1_pct     = st.slider("1차 매수: 이전 라운드 + x%", 1, 8, 4) / 100
-    buy2_pct     = st.slider("2차 매수: 이전 라운드 + x%", 0, 5, 2) / 100
-    buy3_pct     = st.slider("3차 매수: 이전 라운드 + x%", -3, 3, 0) / 100
 
-    st.markdown("**청산 조건**")
-    target_pct   = st.slider("목표 수익률 (%)", 5, 30, 15) / 100
-    stoploss_pct = st.slider("손절 기준 (%)", -30, -3, -10) / 100
+    st.markdown("**② 자금 관리**")
+    buy1_cap_pct = st.slider("1차 매수 비중 (전체 자본 %)", 5, 20, 10) / 100
+    add_drop_pct = st.slider("추가매수 트리거 하락폭 (%)", 5, 20, 10) / 100
+    st.caption("2차 = 1차 금액의 2배 / 3차 = 2차 금액과 동일 (책 고정값)")
 
-    st.markdown("**라운드넘버 단위**")
-    st.caption("주가별 자동 설정 (아래는 참고용)")
+    st.markdown("**③ 청산 조건**")
+    target_pct   = st.slider("목표 수익률: 평균단가 + x%", 5, 30, 15) / 100
+    stoploss_pct = st.slider("손절 기준: 평균단가 - x%", 3, 30, 15) / 100
+
+    st.divider()
+    st.markdown("**라운드넘버 단위 (자동)**")
     st.code(
-        "~ 5,000원    → 1,000원 단위\n"
-        "~ 50,000원   → 5,000원 단위\n"
-        "~ 100,000원  → 10,000원 단위\n"
-        "~ 500,000원  → 50,000원 단위\n"
-        "500,000원 ~  → 100,000원 단위",
+        "~  5,000원  → 1,000원 단위\n"
+        "~ 50,000원  → 5,000원 단위\n"
+        "~100,000원  → 10,000원 단위\n"
+        "~500,000원  → 50,000원 단위\n"
+        " 500,000원~ → 100,000원 단위",
         language=None
+    )
+    buy2_cap = buy1_cap_pct * 2
+    buy3_cap = buy1_cap_pct * 2
+    total_max = buy1_cap_pct + buy2_cap + buy3_cap
+    st.info(
+        f"💰 최대 투입 비중\n"
+        f"- 1차: {buy1_cap_pct*100:.0f}%\n"
+        f"- 2차: {buy2_cap*100:.0f}% (1차 ×2)\n"
+        f"- 3차: {buy3_cap*100:.0f}% (2차 동일)\n"
+        f"- **합계: {total_max*100:.0f}%**"
     )
 
 # ────────────────────────────────────────────────────────────
@@ -120,38 +132,45 @@ def fetch_ticker_name(ticker: str) -> str:
 # ────────────────────────────────────────────────────────────
 # 단일 종목 백테스트
 # ────────────────────────────────────────────────────────────
-def backtest_one(ticker: str, df: pd.DataFrame, capital_per_stock: float) -> list:
+def backtest_one(ticker: str, df: pd.DataFrame) -> list:
     """
-    상태머신:
-    IDLE → TRIGGERED(트리거 발동) → IN_TRADE(1~3차 매수) → 청산 → IDLE
+    자금관리 구조:
+      1차 매수: 전체 자본 × buy1_cap_pct  (라운드넘버존 진입)
+      2차 매수: 1차 매수가 × (1 - add_drop_pct) 도달 시  → 1차 금액 × 2
+      3차 매수: 2차 매수가 × (1 - add_drop_pct) 도달 시  → 2차 금액과 동일
+      매도    : 평균단가 × (1 + target_pct) 전량 매도
+      손절    : 평균단가 × (1 - stoploss_pct) 전량 청산
+
+    상태: IDLE → TRIGGERED → IN_TRADE → IDLE
     """
-    tranche_cap = capital_per_stock / 3
+    buy1_amount = initial_capital * buy1_cap_pct   # 1차 투입금액
+    buy2_amount = buy1_amount * 2                   # 2차 = 1차 × 2
+    buy3_amount = buy2_amount                       # 3차 = 2차와 동일
+
     trades = []
-
-    # 상태
-    state = "IDLE"
+    state  = "IDLE"
     setup_prev_r = None
-    setup_next_r = None
 
-    # 포지션
-    pos_shares   = 0
-    pos_avg_cost = 0.0
-    pos_tranches = 0
+    # 포지션 변수
+    pos_shares     = 0
+    pos_avg_cost   = 0.0
+    pos_tranches   = 0
     pos_entry_date = None
-    pos_buy_prices = []   # [buy1, buy2, buy3]
+    pos_buy1_price = None   # 1차 실제 체결가 → 2차 트리거 계산용
+    pos_buy2_price = None   # 2차 실제 체결가 → 3차 트리거 계산용
 
     for date, row in df.iterrows():
         h, l, c = row["고가"], row["저가"], row["종가"]
         if c <= 0 or h <= 0 or l <= 0:
             continue
 
-        # ── 포지션 보유 중: 청산 & 추가매수 ──────────────────
+        # ── IN_TRADE: 청산 먼저, 그 다음 추가매수 ────────────
         if state == "IN_TRADE":
             avg  = pos_avg_cost
-            stop = avg * (1 + stoploss_pct)
             tgt  = avg * (1 + target_pct)
+            stop = avg * (1 - stoploss_pct)
 
-            # 1) 손절 (저가가 손절가 하회)
+            # 손절 (저가 ≤ 손절가)
             if l <= stop:
                 pnl = (stop - avg) * pos_shares
                 trades.append({
@@ -160,15 +179,17 @@ def backtest_one(ticker: str, df: pd.DataFrame, capital_per_stock: float) -> lis
                     "청산일":   date,
                     "평균단가": round(avg),
                     "청산가":   round(stop),
-                    "수익률":   (stop / avg) - 1,
+                    "수익률":   -stoploss_pct,
                     "손익(원)": pnl,
                     "청산사유": "손절",
                     "매수횟수": pos_tranches,
+                    "1차매수가": round(pos_buy1_price) if pos_buy1_price else 0,
                 })
                 state = "IDLE"; pos_shares = 0; pos_tranches = 0
+                pos_buy1_price = None; pos_buy2_price = None
                 continue
 
-            # 2) 목표 수익 (고가가 목표가 상회)
+            # 목표 수익 (고가 ≥ 목표가)
             if h >= tgt:
                 pnl = (tgt - avg) * pos_shares
                 trades.append({
@@ -177,56 +198,67 @@ def backtest_one(ticker: str, df: pd.DataFrame, capital_per_stock: float) -> lis
                     "청산일":   date,
                     "평균단가": round(avg),
                     "청산가":   round(tgt),
-                    "수익률":   (tgt / avg) - 1,
+                    "수익률":   target_pct,
                     "손익(원)": pnl,
                     "청산사유": "목표수익",
                     "매수횟수": pos_tranches,
+                    "1차매수가": round(pos_buy1_price) if pos_buy1_price else 0,
                 })
                 state = "IDLE"; pos_shares = 0; pos_tranches = 0
+                pos_buy1_price = None; pos_buy2_price = None
                 continue
 
-            # 3) 추가 매수 (2차, 3차)
-            for nth in range(pos_tranches + 1, 4):
-                bp = pos_buy_prices[nth - 1]
-                if l <= bp:
-                    new_shares = int(tranche_cap / bp)
+            # 2차 매수: 1차 매수가 × (1 - add_drop_pct)
+            if pos_tranches == 1 and pos_buy1_price:
+                buy2_trigger = pos_buy1_price * (1 - add_drop_pct)
+                if l <= buy2_trigger:
+                    bp = buy2_trigger
+                    new_shares = int(buy2_amount / bp)
                     if new_shares > 0:
-                        total_cost = pos_avg_cost * pos_shares + bp * new_shares
-                        pos_shares += new_shares
+                        total_cost   = pos_avg_cost * pos_shares + bp * new_shares
+                        pos_shares  += new_shares
                         pos_avg_cost = total_cost / pos_shares
-                        pos_tranches = nth
-                    break  # 하루에 1트랑셰만
+                        pos_tranches = 2
+                        pos_buy2_price = bp
 
-        # ── IDLE: 트리거 탐색 ────────────────────────────────
+            # 3차 매수: 2차 매수가 × (1 - add_drop_pct)
+            elif pos_tranches == 2 and pos_buy2_price:
+                buy3_trigger = pos_buy2_price * (1 - add_drop_pct)
+                if l <= buy3_trigger:
+                    bp = buy3_trigger
+                    new_shares = int(buy3_amount / bp)
+                    if new_shares > 0:
+                        total_cost   = pos_avg_cost * pos_shares + bp * new_shares
+                        pos_shares  += new_shares
+                        pos_avg_cost = total_cost / pos_shares
+                        pos_tranches = 3
+
+        # ── IDLE: 라운드넘버존 트리거 탐색 ──────────────────
         elif state == "IDLE":
             pr, nr = get_round_numbers(c)
-            trigger_price = nr * (1 - trigger_pct)
-            if h >= trigger_price:
-                state = "TRIGGERED"
+            if h >= nr * (1 - trigger_pct):
+                state        = "TRIGGERED"
                 setup_prev_r = pr
-                setup_next_r = nr
 
-        # ── TRIGGERED: 1차 매수 대기 ─────────────────────────
+        # ── TRIGGERED: 1차 매수 진입 대기 ───────────────────
         if state == "TRIGGERED":
-            # 가격이 크게 튀어 라운드넘버가 바뀌면 리셋
             cur_pr, _ = get_round_numbers(c)
+            # 가격 구간이 바뀌면 신호 리셋
             if cur_pr != setup_prev_r:
                 state = "IDLE"
                 continue
 
-            buy1 = setup_prev_r * (1 + buy1_pct)
-            buy2 = setup_prev_r * (1 + buy2_pct)
-            buy3 = setup_prev_r * (1 + buy3_pct)
-
-            if l <= buy1:
-                shares = int(tranche_cap / buy1)
-                if shares > 0:
+            buy1_price = setup_prev_r * (1 + buy1_pct)
+            if l <= buy1_price:
+                new_shares = int(buy1_amount / buy1_price)
+                if new_shares > 0:
                     state          = "IN_TRADE"
-                    pos_shares     = shares
-                    pos_avg_cost   = buy1
+                    pos_shares     = new_shares
+                    pos_avg_cost   = buy1_price
                     pos_tranches   = 1
                     pos_entry_date = date
-                    pos_buy_prices = [buy1, buy2, buy3]
+                    pos_buy1_price = buy1_price
+                    pos_buy2_price = None
 
     return trades
 
@@ -250,7 +282,7 @@ if run_btn:
     tickers = tickers[:max_stocks]
     st.info(f"✅ 분석 대상 {len(tickers)}개 종목 (시총 {min_cap_억:,}억 이상 KOSPI)")
 
-    capital_per_stock = initial_capital * position_size_pct
+    capital_per_stock = initial_capital * buy1_cap_pct  # 참고용 (함수 내부에서 직접 계산)
     all_trades = []
 
     prog_bar  = st.progress(0, text="백테스트 진행 중...")
@@ -265,7 +297,7 @@ if run_btn:
             prog_bar.progress((i + 1) / len(tickers))
             continue
 
-        trades = backtest_one(ticker, df, capital_per_stock)
+        trades = backtest_one(ticker, df)
 
         # 종목명 추가
         for t in trades:
@@ -403,9 +435,9 @@ if run_btn:
     st.subheader("📋 전체 거래 내역")
     display = rdf[[
         "종목명", "종목코드", "진입일", "청산일",
-        "평균단가", "청산가", "수익률", "손익(원)", "청산사유", "매수횟수"
+        "1차매수가", "평균단가", "청산가", "수익률", "손익(원)", "청산사유", "매수횟수"
     ]].copy()
-    display["수익률"]  = display["수익률"].apply(lambda x: f"{x*100:.1f}%")
+    display["수익률"]   = display["수익률"].apply(lambda x: f"{x*100:.1f}%")
     display["손익(원)"] = display["손익(원)"].apply(lambda x: f"{x/10000:,.1f}만원")
 
     st.dataframe(
@@ -424,11 +456,12 @@ if run_btn:
             "최소시총(억)": min_cap_억,
             "분석종목수": max_stocks,
             "초기자본(만원)": initial_capital // 10000,
-            "종목당비중(%)": position_size_pct * 100,
+            "1차매수비중(%)": buy1_cap_pct * 100,
+            "2차매수비중(%)": buy1_cap_pct * 2 * 100,
+            "3차매수비중(%)": buy1_cap_pct * 2 * 100,
+            "추가매수트리거하락(%)": add_drop_pct * 100,
             "트리거(다음라운드-%)": trigger_pct * 100,
             "1차매수(이전라운드+%)": buy1_pct * 100,
-            "2차매수(이전라운드+%)": buy2_pct * 100,
-            "3차매수(이전라운드+%)": buy3_pct * 100,
             "목표수익률(%)": target_pct * 100,
             "손절기준(%)": stoploss_pct * 100,
         })

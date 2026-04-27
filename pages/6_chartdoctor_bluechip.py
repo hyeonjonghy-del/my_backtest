@@ -10,7 +10,7 @@ import time
 st.set_page_config(page_title="차트박사 우량주 백테스트", page_icon="📊", layout="wide")
 
 st.title("📊 6. 차트박사 절대수익 우량주 매매법 백테스트")
-st.caption("라운드넘버존 진입 · 역피라미딩 분할매수 · 연간 유니버스 리밸런싱")
+st.caption("라운드넘버존 진입 · 역피라미딩 분할매수 · 연간 유니버스 리밸런싱 · NAV 기반 동적 포지션")
 
 # ────────────────────────────────────────────────────────────
 # 사이드바
@@ -34,12 +34,12 @@ with st.sidebar:
     trigger_pct = st.slider("트리거: 다음 라운드 - x%", 1, 8, 4) / 100
     buy1_pct    = st.slider("1차 매수: 이전 라운드 + x%", 1, 8, 4) / 100
 
-    st.markdown("**② 자금 관리**")
-    buy1_cap_pct = st.slider("1차 매수 비중 (전체 자본 %)", 5, 20, 10) / 100
+    st.markdown("**② 자금 관리 (NAV 기준 비중)**")
+    buy1_cap_pct = st.slider("1차 매수 비중 (현재 NAV %)", 5, 20, 10) / 100
     add_drop_pct = st.slider("추가매수 트리거 하락폭 (%)", 5, 20, 10) / 100
     st.caption("2차 = 1차 금액 ×2 / 3차 = 2차 금액 동일")
     st.info(
-        f"💰 총 투입 비중\n"
+        f"💰 총 투입 비중 (NAV 기준)\n"
         f"- 1차: {buy1_cap_pct*100:.0f}%\n"
         f"- 2차: {buy1_cap_pct*2*100:.0f}%\n"
         f"- 3차: {buy1_cap_pct*2*100:.0f}%\n"
@@ -89,7 +89,7 @@ def get_round_unit(price: float) -> int:
     else:                 return 100_000
 
 def get_round_numbers(price: float):
-    unit  = get_round_unit(price)
+    unit   = get_round_unit(price)
     prev_r = int(price // unit) * unit
     if prev_r == 0:
         prev_r = unit
@@ -143,115 +143,158 @@ def fetch_kospi_index(start_str: str, end_str: str) -> pd.Series:
         return pd.Series(dtype=float)
 
 # ────────────────────────────────────────────────────────────
-# 단일 종목 백테스트
+# 포트폴리오 레벨 백테스트 (날짜 기준, NAV 동적 포지션)
 # ────────────────────────────────────────────────────────────
-def backtest_one(ticker: str, df: pd.DataFrame, yearly_universe: dict) -> list:
-    buy1_amount = initial_capital * buy1_cap_pct
-    buy2_amount = buy1_amount * 2
-    buy3_amount = buy2_amount
+def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names: dict):
+    """
+    날짜 순으로 전체 종목을 함께 처리.
+    포지션 사이즈 = 그 날의 current_nav × 비중
+    → 시작 기간이 달라도 같은 연도의 수익률이 동일하게 계산됨
+    """
+    current_nav = float(initial_capital)
 
-    trades = []
-    state  = "IDLE"
-    setup_prev_r   = None
-    pos_shares     = 0
-    pos_avg_cost   = 0.0
-    pos_tranches   = 0
-    pos_entry_date = None
-    pos_buy1_price = None
-    pos_buy2_price = None
+    # 종목별 상태
+    states     = {}   # ticker -> "IDLE" | "TRIGGERED" | "IN_TRADE"
+    prev_r_map = {}   # ticker -> setup_prev_r
+    positions  = {}   # ticker -> {shares, avg_cost, tranches, buy1_price, buy2_price, entry_date}
 
-    for date, row in df.iterrows():
-        h, l, c = row["고가"], row["저가"], row["종가"]
-        if c <= 0 or h <= 0 or l <= 0:
-            continue
-        year = date.year
+    all_trades = []
+    nav_series = {}
 
-        if state == "IN_TRADE":
-            avg = pos_avg_cost
-            tgt = avg * (1 + target_pct)
+    all_dates = pd.date_range(start=start_date, end=end_date, freq="B")
+
+    for date in all_dates:
+        year     = date.year
+        day_pnl  = 0.0
+
+        # ── 1. 보유 포지션 처리 ─────────────────────────────
+        for ticker in list(positions.keys()):
+            df = ticker_dfs.get(ticker)
+            if df is None or date not in df.index:
+                continue
+
+            row = df.loc[date]
+            h, l = row["고가"], row["저가"]
+            pos  = positions[ticker]
+            avg  = pos["avg_cost"]
+            tgt  = avg * (1 + target_pct)
 
             # 손절: 3차 이후만
-            if pos_tranches == 3:
+            closed = False
+            if pos["tranches"] == 3:
                 stop = avg * (1 - stoploss_pct)
                 if l <= stop:
-                    pnl = (stop - avg) * pos_shares
-                    trades.append({
-                        "종목코드": ticker, "진입일": pos_entry_date, "청산일": date,
-                        "1차매수가": round(pos_buy1_price), "평균단가": round(avg),
-                        "청산가": round(stop), "수익률": -stoploss_pct,
-                        "손익(원)": pnl, "청산사유": "손절(3차후)", "매수횟수": pos_tranches,
+                    pnl = (stop - avg) * pos["shares"]
+                    day_pnl += pnl
+                    all_trades.append({
+                        "종목코드": ticker,
+                        "종목명":   ticker_names.get(ticker, ticker),
+                        "진입일":   pos["entry_date"],
+                        "청산일":   date,
+                        "1차매수가": round(pos["buy1_price"]),
+                        "평균단가": round(avg),
+                        "청산가":   round(stop),
+                        "수익률":   -stoploss_pct,
+                        "손익(원)": pnl,
+                        "청산사유": "손절(3차후)",
+                        "매수횟수": pos["tranches"],
                     })
-                    state = "IDLE"; pos_shares = 0; pos_tranches = 0
-                    pos_buy1_price = None; pos_buy2_price = None
-                    continue
+                    del positions[ticker]
+                    states[ticker] = "IDLE"
+                    closed = True
 
             # 목표수익
-            if h >= tgt:
-                pnl = (tgt - avg) * pos_shares
-                trades.append({
-                    "종목코드": ticker, "진입일": pos_entry_date, "청산일": date,
-                    "1차매수가": round(pos_buy1_price), "평균단가": round(avg),
-                    "청산가": round(tgt), "수익률": target_pct,
-                    "손익(원)": pnl, "청산사유": "목표수익", "매수횟수": pos_tranches,
+            if not closed and h >= tgt:
+                pnl = (tgt - avg) * pos["shares"]
+                day_pnl += pnl
+                all_trades.append({
+                    "종목코드": ticker,
+                    "종목명":   ticker_names.get(ticker, ticker),
+                    "진입일":   pos["entry_date"],
+                    "청산일":   date,
+                    "1차매수가": round(pos["buy1_price"]),
+                    "평균단가": round(avg),
+                    "청산가":   round(tgt),
+                    "수익률":   target_pct,
+                    "손익(원)": pnl,
+                    "청산사유": "목표수익",
+                    "매수횟수": pos["tranches"],
                 })
-                state = "IDLE"; pos_shares = 0; pos_tranches = 0
-                pos_buy1_price = None; pos_buy2_price = None
+                del positions[ticker]
+                states[ticker] = "IDLE"
+                closed = True
+
+            if closed:
                 continue
 
-            # 2차 매수
-            if pos_tranches == 1 and pos_buy1_price:
-                b2t = pos_buy1_price * (1 - add_drop_pct)
+            # 2차 추가매수
+            if pos["tranches"] == 1 and pos.get("buy1_price"):
+                b2t = pos["buy1_price"] * (1 - add_drop_pct)
                 if l <= b2t:
+                    buy2_amount = current_nav * buy1_cap_pct * 2
                     ns = int(buy2_amount / b2t)
                     if ns > 0:
-                        pos_avg_cost = (pos_avg_cost * pos_shares + b2t * ns) / (pos_shares + ns)
-                        pos_shares  += ns; pos_tranches = 2; pos_buy2_price = b2t
+                        total = pos["avg_cost"] * pos["shares"] + b2t * ns
+                        pos["shares"]    += ns
+                        pos["avg_cost"]   = total / pos["shares"]
+                        pos["tranches"]   = 2
+                        pos["buy2_price"] = b2t
 
-            # 3차 매수
-            elif pos_tranches == 2 and pos_buy2_price:
-                b3t = pos_buy2_price * (1 - add_drop_pct)
+            # 3차 추가매수
+            elif pos["tranches"] == 2 and pos.get("buy2_price"):
+                b3t = pos["buy2_price"] * (1 - add_drop_pct)
                 if l <= b3t:
+                    buy3_amount = current_nav * buy1_cap_pct * 2
                     ns = int(buy3_amount / b3t)
                     if ns > 0:
-                        pos_avg_cost = (pos_avg_cost * pos_shares + b3t * ns) / (pos_shares + ns)
-                        pos_shares  += ns; pos_tranches = 3
+                        total = pos["avg_cost"] * pos["shares"] + b3t * ns
+                        pos["shares"]  += ns
+                        pos["avg_cost"] = total / pos["shares"]
+                        pos["tranches"] = 3
 
-        elif state == "IDLE":
-            if ticker not in yearly_universe.get(year, set()):
+        # ── NAV 업데이트 (청산 손익 반영) ───────────────────
+        current_nav += day_pnl
+        nav_series[date] = current_nav
+
+        # ── 2. 신규 진입 탐색 ───────────────────────────────
+        for ticker in yearly_universe.get(year, set()):
+            if ticker in positions:
                 continue
-            pr, nr = get_round_numbers(c)
-            if h >= nr * (1 - trigger_pct):
-                state = "TRIGGERED"; setup_prev_r = pr
+            df = ticker_dfs.get(ticker)
+            if df is None or date not in df.index:
+                continue
 
-        if state == "TRIGGERED":
-            if ticker not in yearly_universe.get(year, set()):
-                state = "IDLE"; continue
-            cur_pr, _ = get_round_numbers(c)
-            if cur_pr != setup_prev_r:
-                state = "IDLE"; continue
-            b1 = setup_prev_r * (1 + buy1_pct)
-            if l <= b1:
-                ns = int(buy1_amount / b1)
-                if ns > 0:
-                    state = "IN_TRADE"; pos_shares = ns; pos_avg_cost = b1
-                    pos_tranches = 1; pos_entry_date = date
-                    pos_buy1_price = b1; pos_buy2_price = None
+            row   = df.loc[date]
+            h, l, c = row["고가"], row["저가"], row["종가"]
+            state = states.get(ticker, "IDLE")
 
-    return trades
+            if state == "IDLE":
+                pr, nr = get_round_numbers(c)
+                if h >= nr * (1 - trigger_pct):
+                    states[ticker]    = "TRIGGERED"
+                    prev_r_map[ticker] = pr
 
-# ────────────────────────────────────────────────────────────
-# NAV 시계열 생성
-# ────────────────────────────────────────────────────────────
-def build_nav(rdf: pd.DataFrame, s_date, e_date) -> pd.Series:
-    all_dates = pd.date_range(start=s_date, end=e_date, freq="B")
-    running   = float(initial_capital)
-    date_pnl  = rdf.groupby("청산일")["손익(원)"].sum()
-    nav = {}
-    for d in all_dates:
-        if d in date_pnl.index:
-            running += float(date_pnl[d])
-        nav[d] = running
-    return pd.Series(nav)
+            if states.get(ticker) == "TRIGGERED":
+                cur_pr, _ = get_round_numbers(c)
+                if cur_pr != prev_r_map.get(ticker):
+                    states[ticker] = "IDLE"
+                else:
+                    b1 = prev_r_map[ticker] * (1 + buy1_pct)
+                    if l <= b1:
+                        buy1_amount = current_nav * buy1_cap_pct
+                        ns = int(buy1_amount / b1)
+                        if ns > 0:
+                            positions[ticker] = {
+                                "shares":     ns,
+                                "avg_cost":   b1,
+                                "tranches":   1,
+                                "entry_date": date,
+                                "buy1_price": b1,
+                                "buy2_price": None,
+                            }
+                            states[ticker] = "IN_TRADE"
+
+    return all_trades, pd.Series(nav_series)
 
 # ────────────────────────────────────────────────────────────
 # 실행
@@ -264,7 +307,7 @@ if run_btn:
     end_str   = end_date.strftime("%Y%m%d")
 
     # ── 연간 유니버스 구축 ────────────────────────────────────
-    st.info("📅 연간 유니버스 구축 중 (매년 1월 시총 기준 재선별)...")
+    st.info("📅 연간 유니버스 구축 중...")
     yearly_universe = {}
     all_tickers_set = set()
     years = list(range(start_date.year, end_date.year + 1))
@@ -288,24 +331,29 @@ if run_btn:
     all_tickers = sorted(all_tickers_set)
     st.info(f"✅ 전체 분석 대상: {len(all_tickers)}개 종목 (연간 합집합)")
 
-    # ── 백테스트 ─────────────────────────────────────────────
-    all_trades = []
-    prog_bar  = st.progress(0)
-    prog_text = st.empty()
+    # ── OHLCV 수집 ──────────────────────────────────────────
+    prog_bar  = st.progress(0, text="데이터 수집 중...")
+    ticker_dfs    = {}
+    ticker_names  = {}
 
     for i, ticker in enumerate(all_tickers):
         name = fetch_ticker_name(ticker)
-        prog_text.text(f"분석 중: {name}({ticker})  [{i+1}/{len(all_tickers)}]")
+        ticker_names[ticker] = name
         df = fetch_ohlcv(ticker, start_str, end_str)
         if not df.empty and len(df) >= 60:
-            trades = backtest_one(ticker, df, yearly_universe)
-            for t in trades:
-                t["종목명"] = name
-            all_trades.extend(trades)
-        prog_bar.progress((i + 1) / len(all_tickers))
+            ticker_dfs[ticker] = df
+        prog_bar.progress((i + 1) / len(all_tickers),
+                          text=f"데이터 수집: {name}({ticker}) [{i+1}/{len(all_tickers)}]")
         time.sleep(0.02)
 
-    prog_bar.empty(); prog_text.empty()
+    prog_bar.empty()
+    st.info(f"📦 데이터 수집 완료: {len(ticker_dfs)}개 종목")
+
+    # ── 포트폴리오 백테스트 실행 ─────────────────────────────
+    with st.spinner("🔄 포트폴리오 시뮬레이션 실행 중... (날짜 기준 NAV 동적 포지션)"):
+        all_trades, strat_nav = run_portfolio_backtest(
+            ticker_dfs, yearly_universe, ticker_names
+        )
 
     if not all_trades:
         st.warning("⚠️ 조건을 충족하는 거래가 없습니다.")
@@ -334,8 +382,7 @@ if run_btn:
     cagr    = (1 + total_return) ** (1 / years_n) - 1 if years_n > 0 else 0
     final_capital = initial_capital + total_pnl
 
-    # NAV & KOSPI
-    strat_nav    = build_nav(rdf, start_date, end_date)
+    # NAV 파생 지표
     strat_ret    = (strat_nav / initial_capital - 1) * 100
     roll_max     = strat_nav.expanding().max()
     strat_mdd    = (strat_nav / roll_max - 1) * 100
@@ -354,10 +401,10 @@ if run_btn:
         kospi_mdd_val = kospi_total = kospi_cagr = 0.0
 
     # 월별·연도별 수익률
-    monthly_nav   = strat_nav.resample("ME").last()
-    monthly_ret   = monthly_nav.pct_change().dropna() * 100
-    yearly_nav    = strat_nav.resample("YE").last()
-    yearly_ret    = yearly_nav.pct_change().dropna() * 100
+    monthly_nav  = strat_nav.resample("ME").last()
+    monthly_ret  = monthly_nav.pct_change().dropna() * 100
+    yearly_nav   = strat_nav.resample("YE").last()
+    yearly_ret   = yearly_nav.pct_change().dropna() * 100
 
     mret_df = pd.DataFrame({
         "year": monthly_ret.index.year,
@@ -373,7 +420,7 @@ if run_btn:
         monthly_pivot = pd.DataFrame()
 
     # ════════════════════════════════════════════════════════
-    # 공통 지표 요약
+    # 결과 요약
     # ════════════════════════════════════════════════════════
     st.divider()
     st.subheader("📈 백테스트 결과 요약")
@@ -391,8 +438,7 @@ if run_btn:
     c5, c6, c7, c8, c9 = st.columns(5)
     c5.metric("총 거래 수",      f"{total:,}건")
     c6.metric("승률",            f"{win_rate:.1f}%")
-    c7.metric("거래당 평균수익", f"{avg_ret:.1f}%",
-              help="1건당 평균 수익률 (전체와 다름)")
+    c7.metric("거래당 평균수익", f"{avg_ret:.1f}%")
     c8.metric("Profit Factor",   f"{profit_factor:.2f}")
     c9.metric("평균 보유기간",   f"{avg_hold:.0f}일")
 
@@ -422,7 +468,6 @@ if run_btn:
 
     # ── TAB 1: 성과 분석 ─────────────────────────────────────
     with tab1:
-        # 누적 수익률 비교
         fig_ret = go.Figure()
         fig_ret.add_trace(go.Scatter(
             x=strat_ret.index, y=strat_ret.values, mode="lines", name="전략",
@@ -438,19 +483,17 @@ if run_btn:
         fig_ret.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
         fig_ret.update_layout(
             title="📈 누적 수익률 비교 (전략 vs KOSPI)",
-            xaxis_title="날짜", yaxis_title="수익률 (%)", yaxis_ticksuffix="%",
+            yaxis_ticksuffix="%",
             legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
             height=400, margin=dict(t=50, b=20),
         )
         st.plotly_chart(fig_ret, use_container_width=True)
 
-        # MDD 비교
         fig_mdd = go.Figure()
         fig_mdd.add_trace(go.Scatter(
             x=strat_mdd.index, y=strat_mdd.values, mode="lines", name="전략 MDD",
             fill="tozeroy", fillcolor="rgba(33,150,243,0.15)",
             line=dict(color="#2196F3", width=2),
-            hovertemplate="%{x|%Y-%m-%d}<br>전략 MDD: %{y:.1f}%<extra></extra>"
         ))
         if not kospi_mdd_raw.empty:
             fig_mdd.add_trace(go.Scatter(
@@ -458,11 +501,10 @@ if run_btn:
                 mode="lines", name="KOSPI MDD",
                 fill="tozeroy", fillcolor="rgba(255,152,0,0.10)",
                 line=dict(color="#FF9800", width=2, dash="dot"),
-                hovertemplate="%{x|%Y-%m-%d}<br>KOSPI MDD: %{y:.1f}%<extra></extra>"
             ))
         fig_mdd.update_layout(
-            title="📉 최대낙폭(MDD) 비교 (전략 vs KOSPI)",
-            xaxis_title="날짜", yaxis_title="낙폭 (%)", yaxis_ticksuffix="%",
+            title="📉 최대낙폭(MDD) 비교",
+            yaxis_ticksuffix="%",
             legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
             height=320, margin=dict(t=50, b=20),
         )
@@ -483,16 +525,15 @@ if run_btn:
             fig_pie = px.pie(
                 values=reason_cnt.values, names=reason_cnt.index,
                 title="🎯 청산 사유 비율",
-                color_discrete_map={"목표수익": "#4CAF50", "손절(3차후)": "#F44336"},
+                color_discrete_map={"목표수익":"#4CAF50","손절(3차후)":"#F44336"},
                 hole=0.4
             )
             fig_pie.update_layout(height=320, margin=dict(t=40, b=20))
             st.plotly_chart(fig_pie, use_container_width=True)
 
-        # 종목별 Top 15
         st.subheader("🏆 종목별 성과 Top 15")
         by_stock = (
-            rdf.groupby(["종목코드", "종목명"])
+            rdf.groupby(["종목코드","종목명"])
             .agg(거래수=("수익률","count"),
                  승률=("수익률", lambda x: (x>0).mean()*100),
                  평균수익률=("수익률","mean"),
@@ -504,7 +545,6 @@ if run_btn:
         by_stock["총손익"]     = by_stock["총손익"].apply(lambda x: f"{x/10000:,.0f}만원")
         st.dataframe(by_stock, use_container_width=True, hide_index=True)
 
-        # 분할매수 분포
         tranche_cnt = rdf["매수횟수"].value_counts().sort_index()
         fig_bar = px.bar(
             x=[f"{i}차 매수" for i in tranche_cnt.index],
@@ -513,22 +553,6 @@ if run_btn:
         )
         fig_bar.update_layout(height=280, margin=dict(t=40, b=20))
         st.plotly_chart(fig_bar, use_container_width=True)
-
-        # MDD 구조 진단
-        with st.expander("📌 MDD 구조 진단"):
-            d1 = add_drop_pct; d2 = add_drop_pct
-            avg3 = (buy1_cap_pct + buy1_cap_pct*2*(1-d1) + buy1_cap_pct*2*(1-d1)*(1-d2)) / (buy1_cap_pct*5)
-            slv  = avg3 * (1 - stoploss_pct)
-            st.markdown(f"""
-| 단계 | 가격(1차=100) | 투입 |
-|---|---|---|
-| 1차 매수 | **100** | {buy1_cap_pct*100:.0f}% |
-| 2차 트리거 | **{(1-d1)*100:.0f}** | {buy1_cap_pct*2*100:.0f}% |
-| 3차 트리거 | **{(1-d1)*(1-d2)*100:.1f}** | {buy1_cap_pct*2*100:.0f}% |
-| 3차 후 평균단가 | **{avg3*100:.1f}** | 총 {buy1_cap_pct*5*100:.0f}% |
-| **손절 발동가** | **{slv*100:.1f}** | |
-| **1차 대비 실제 하락폭** | **{(slv-1)*100:.1f}%** | |
-            """)
 
         with st.expander("⚙️ 파라미터"):
             st.json({
@@ -540,13 +564,13 @@ if run_btn:
                 "추가매수하락(%)": add_drop_pct * 100,
                 "목표수익률(%)": target_pct * 100,
                 "손절기준(%)": stoploss_pct * 100,
+                "포지션사이징": "NAV 동적 (날짜 기준 포트폴리오 시뮬)",
                 "리밸런싱": "연간 (매년 1월)",
             })
 
     # ── TAB 2: 거래 로그 ─────────────────────────────────────
     with tab2:
         st.subheader("📋 전체 거래 이력")
-
         fc1, fc2, fc3 = st.columns(3)
         with fc1:
             filter_reason = st.multiselect(
@@ -582,8 +606,6 @@ if run_btn:
 
     # ── TAB 3: 기간별 수익률 ────────────────────────────────
     with tab3:
-
-        # 연도별 바 차트
         st.subheader("📅 연도별 수익률")
         if not yearly_ret.empty:
             yr_labels = [str(y) for y in yearly_ret.index.year]
@@ -591,32 +613,27 @@ if run_btn:
 
             fig_yr = go.Figure()
             fig_yr.add_trace(go.Bar(
-                x=yr_labels, y=yearly_ret.values,
-                marker_color=yr_colors,
+                x=yr_labels, y=yearly_ret.values, marker_color=yr_colors,
                 text=[f"{v:.1f}%" for v in yearly_ret.values],
                 textposition="outside", name="전략"
             ))
             if not kospi_s.empty:
                 kospi_yr = kospi_s.resample("YE").last().pct_change().dropna() * 100
-                kospi_yr_labels = [str(y) for y in kospi_yr.index.year]
                 fig_yr.add_trace(go.Scatter(
-                    x=kospi_yr_labels, y=kospi_yr.values,
-                    mode="lines+markers+text", name="KOSPI",
-                    line=dict(color="#FF9800", width=2, dash="dot"),
-                    marker=dict(size=8),
+                    x=[str(y) for y in kospi_yr.index.year],
+                    y=kospi_yr.values, mode="lines+markers+text", name="KOSPI",
+                    line=dict(color="#FF9800", width=2, dash="dot"), marker=dict(size=8),
                     text=[f"{v:.1f}%" for v in kospi_yr.values],
                     textposition="top center",
                 ))
             fig_yr.add_hline(y=0, line_color="gray", line_dash="dash")
             fig_yr.update_layout(
-                title="연도별 수익률 (전략 vs KOSPI)",
-                yaxis_ticksuffix="%",
+                title="연도별 수익률 (전략 vs KOSPI)", yaxis_ticksuffix="%",
                 legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
                 height=420, margin=dict(t=50, b=20),
             )
             st.plotly_chart(fig_yr, use_container_width=True)
 
-            # 연도별 요약 테이블
             if not kospi_s.empty:
                 kospi_yr_map = {y: v for y, v in zip(kospi_yr.index.year, kospi_yr.values)}
             else:
@@ -624,21 +641,20 @@ if run_btn:
 
             yearly_table = []
             for yr_idx, val in zip(yearly_ret.index.year, yearly_ret.values):
-                kv = kospi_yr_map.get(yr_idx, None)
+                kv = kospi_yr_map.get(yr_idx)
                 yearly_table.append({
                     "연도": yr_idx,
                     "전략": f"{val:.1f}%",
                     "코스피": f"{kv:.1f}%" if kv is not None else "-",
-                    "초과수익": f"{val - kv:+.1f}%p" if kv is not None else "-",
+                    "초과수익": f"{val-kv:+.1f}%p" if kv is not None else "-",
                 })
             st.dataframe(pd.DataFrame(yearly_table), use_container_width=True, hide_index=True)
 
         st.divider()
 
-        # 월별 히트맵
         st.subheader("🗓️ 월별 수익률 히트맵")
         if not monthly_pivot.empty:
-            z_vals = monthly_pivot.values.tolist()
+            z_vals    = monthly_pivot.values.tolist()
             text_vals = [
                 [f"{v:.1f}%" if not np.isnan(v) else "" for v in row]
                 for row in monthly_pivot.values
@@ -649,41 +665,37 @@ if run_btn:
                 y=[str(y) for y in monthly_pivot.index.tolist()],
                 text=text_vals, texttemplate="%{text}",
                 colorscale=[
-                    [0.0, "#B71C1C"], [0.4, "#FFCDD2"],
-                    [0.5, "#FFFFFF"],
-                    [0.6, "#C8E6C9"], [1.0, "#1B5E20"],
+                    [0.0,"#B71C1C"],[0.4,"#FFCDD2"],
+                    [0.5,"#FFFFFF"],
+                    [0.6,"#C8E6C9"],[1.0,"#1B5E20"],
                 ],
-                zmid=0,
-                colorbar=dict(title="수익률(%)"),
-                hovertemplate="%{y}년 %{x}<br>수익률: %{text}<extra></extra>",
+                zmid=0, colorbar=dict(title="수익률(%)"),
+                hovertemplate="%{y}년 %{x}<br>%{text}<extra></extra>",
             ))
             fig_heat.update_layout(
-                title="월별 수익률 히트맵 (녹색=수익 / 적색=손실)",
+                title="월별 수익률 히트맵",
                 height=max(300, len(monthly_pivot) * 42 + 120),
-                margin=dict(t=50, b=20),
-                xaxis=dict(side="top"),
+                margin=dict(t=50, b=20), xaxis=dict(side="top"),
             )
             st.plotly_chart(fig_heat, use_container_width=True)
 
-            # 월별 평균
-            st.subheader("📊 월별 평균 수익률 (전 기간)")
+            st.subheader("📊 월별 평균 수익률")
             monthly_avg = monthly_pivot.mean()
             fig_mavg = px.bar(
                 x=monthly_avg.index, y=monthly_avg.values,
                 color=[v >= 0 for v in monthly_avg.values],
-                color_discrete_map={True: "#4CAF50", False: "#F44336"},
-                title="월별 평균 수익률 (전 기간 평균)",
+                color_discrete_map={True:"#4CAF50", False:"#F44336"},
                 text=[f"{v:.2f}%" for v in monthly_avg.values],
             )
             fig_mavg.update_traces(textposition="outside", showlegend=False)
-            fig_mavg.update_layout(height=300, margin=dict(t=40, b=20),
-                                   yaxis_ticksuffix="%")
+            fig_mavg.update_layout(height=300, margin=dict(t=40,b=20), yaxis_ticksuffix="%")
             st.plotly_chart(fig_mavg, use_container_width=True)
 
-            # 월별 데이터 테이블
-            with st.expander("📋 월별 수익률 상세 테이블"):
+            with st.expander("📋 월별 수익률 상세"):
                 tbl = monthly_pivot.copy().round(2)
                 tbl.index.name = "연도"
-                st.dataframe(tbl.style.format("{:.1f}%", na_rep="-")
-                             .background_gradient(cmap="RdYlGn", axis=None),
-                             use_container_width=True)
+                st.dataframe(
+                    tbl.style.format("{:.1f}%", na_rep="-")
+                       .background_gradient(cmap="RdYlGn", axis=None),
+                    use_container_width=True
+                )

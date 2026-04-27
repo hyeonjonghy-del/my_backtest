@@ -387,10 +387,12 @@ if run_btn:
 
     # 3행: 청산 현황
     st.markdown("**🎯 청산 현황**")
+    stop_mask = rdf["청산사유"].str.contains("손절")
+    stop_cnt  = stop_mask.sum()
     c10, c11, c12 = st.columns(3)
     c10.metric("목표수익 청산", f'{(rdf["청산사유"]=="목표수익").sum():,}건')
-    c11.metric("손절 청산",     f'{(rdf["청산사유"]=="손절").sum():,}건')
-    c12.metric("손절 비율",     f'{(rdf["청산사유"]=="손절").sum()/total*100:.1f}%')
+    c11.metric("손절 청산",     f'{stop_cnt:,}건')
+    c12.metric("손절 비율",     f'{stop_cnt/total*100:.1f}%')
 
     # ── KOSPI 지수 로딩 ──────────────────────────────────────
     kospi_s = fetch_kospi_index(start_str, end_str)
@@ -514,11 +516,42 @@ if run_btn:
             values=reason_cnt.values,
             names=reason_cnt.index,
             title="🎯 청산 사유 비율",
-            color_discrete_map={"목표수익": "#4CAF50", "손절": "#F44336"},
+            color_discrete_map={
+                "목표수익":    "#4CAF50",
+                "손절(3차후)": "#F44336",
+                "손절":        "#FF5722",
+            },
             hole=0.4
         )
         fig_pie.update_layout(height=320, margin=dict(t=40, b=20))
         st.plotly_chart(fig_pie, use_container_width=True)
+
+    # ── MDD 원인 진단 ─────────────────────────────────────────
+    with st.expander("📌 MDD가 큰 이유 — 구조 진단", expanded=True):
+        # 1차 매수가 기준 실제 하락폭 계산
+        drop1 = add_drop_pct                         # 2차 트리거: -10%
+        drop2 = add_drop_pct                         # 3차 트리거: -10%
+        avg_after3 = (
+            buy1_cap_pct * 1.0
+            + buy1_cap_pct * 2 * (1 - drop1)
+            + buy1_cap_pct * 2 * (1 - drop1) * (1 - drop2)
+        ) / (buy1_cap_pct + buy1_cap_pct*2 + buy1_cap_pct*2)
+        stop_from_buy1 = avg_after3 * (1 - stoploss_pct)
+        total_loss_pct = (stop_from_buy1 - 1.0) * 100
+
+        st.markdown(f"""
+| 단계 | 가격 (1차 매수가=100 기준) | 투입금액 |
+|---|---|---|
+| 1차 매수 | **100** | {buy1_cap_pct*100:.0f}% |
+| 2차 매수 트리거 | **{(1-drop1)*100:.0f}** (-{drop1*100:.0f}%) | {buy1_cap_pct*2*100:.0f}% |
+| 3차 매수 트리거 | **{(1-drop1)*(1-drop2)*100:.1f}** (-{drop1*100:.0f}% 추가) | {buy1_cap_pct*2*100:.0f}% |
+| 3차 후 평균단가 | **{avg_after3*100:.1f}** | 총 {(buy1_cap_pct*5)*100:.0f}% |
+| **손절 발동가** | **{stop_from_buy1*100:.1f}** | — |
+| **1차 대비 실제 하락폭** | **{total_loss_pct:.1f}%** | — |
+
+> ⚠️ 1차 매수가 기준 **{abs(total_loss_pct):.1f}% 하락** 시 손절 → MDD가 커지는 구조  
+> 💡 개선 방법: 추가매수 하락폭 축소 or 손절 기준 강화 or 1차 비중 축소
+        """)
 
     # ── 종목별 성과 ───────────────────────────────────────────
     st.subheader("🏆 종목별 성과 Top 15")

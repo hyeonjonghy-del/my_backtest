@@ -10,7 +10,7 @@ import time
 st.set_page_config(page_title="차트박사 우량주 백테스트", page_icon="📊", layout="wide")
 
 st.title("📊 6. 차트박사 절대수익 우량주 매매법 백테스트")
-st.caption("라운드넘버존 진입 · 역피라미딩 분할매수 · 연간 유니버스 리밸런싱 · NAV 동적 포지션")
+st.caption("라운드넘버존 진입 · 역피라미딩 분할매수 · 연간 유니버스 리밸런싱 · 시가평가 NAV")
 
 # ────────────────────────────────────────────────────────────
 # 사이드바
@@ -23,9 +23,9 @@ with st.sidebar:
     with col2:
         end_date = st.date_input("종료일", datetime(2024, 12, 31))
 
-    min_cap_억   = st.number_input("최소 시총 (억원)", value=5000, step=1000)
+    min_cap_억      = st.number_input("최소 시총 (억원)", value=5000, step=1000)
     initial_capital = st.number_input("초기 자본 (만원)", value=3000, step=500) * 10000
-    max_stocks   = st.slider("연간 종목 수 (상위 N개)", 10, 100, 50)
+    max_stocks      = st.slider("연간 종목 수 (상위 N개)", 10, 100, 50)
 
     st.divider()
     st.header("📐 매매 기준")
@@ -34,16 +34,18 @@ with st.sidebar:
     trigger_pct = st.slider("트리거: 다음 라운드 - x%", 1, 8, 4) / 100
     buy1_pct    = st.slider("1차 매수: 이전 라운드 + x%", 1, 8, 4) / 100
 
-    st.markdown("**② 자금 관리 (NAV 기준 비중)**")
-    buy1_cap_pct = st.slider("1차 매수 비중 (전체 NAV %)", 5, 20, 10) / 100
-    add_drop_pct = st.slider("추가매수 트리거 하락폭 (%)", 5, 20, 10) / 100
+    st.markdown("**② 자금 관리**")
+    buy1_cap_pct  = st.slider("1차 매수 비중 (NAV %)", 3, 20, 5) / 100
+    add_drop_pct  = st.slider("추가매수 트리거 하락폭 (%)", 5, 20, 10) / 100
+    max_positions = st.slider("최대 동시 보유 종목 수", 3, 30, 10)
     st.caption("2차 = 1차 금액 ×2 / 3차 = 2차 금액 동일")
     st.info(
         f"💰 종목당 최대 투입 (NAV 기준)\n"
         f"- 1차: {buy1_cap_pct*100:.0f}%\n"
         f"- 2차: {buy1_cap_pct*2*100:.0f}%\n"
         f"- 3차: {buy1_cap_pct*2*100:.0f}%\n"
-        f"- **합계: {buy1_cap_pct*5*100:.0f}%**"
+        f"- **합계: {buy1_cap_pct*5*100:.0f}%**\n"
+        f"- 최대 동시: {max_positions}종목"
     )
 
     st.markdown("**③ 청산 조건**")
@@ -143,22 +145,20 @@ def fetch_kospi_index(start_str: str, end_str: str) -> pd.Series:
         return pd.Series(dtype=float)
 
 # ────────────────────────────────────────────────────────────
-# 포트폴리오 백테스트
+# 포트폴리오 백테스트 (시가평가 NAV + 현금 추적)
 # ────────────────────────────────────────────────────────────
 def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names: dict):
     """
-    ■ 현금 추적: 매수 시 현금 차감, 매도 시 현금 회수
-    ■ NAV = 현금 + 보유 포지션 (취득원가 기준)
-    ■ 포지션 사이즈 = 당일 NAV × 비중 (단, 현금이 부족하면 스킵)
-    → 현금 제약이 있어 동시에 무한 포지션 불가 → 현실적
-    → 수익이 쌓이면 NAV 증가 → 포지션도 비례해서 커짐 → 복리 효과
+    ■ NAV = 현금 + 보유 포지션 시가평가 (Mark-to-Market)
+    ■ 현금 추적: 매수 시 차감, 매도 시 회수
+    ■ 포지션 사이즈 = 당일 시가평가 NAV × 비중
+    ■ 진입 조건: 현금 충분 AND 동시 보유 종목 수 < max_positions
     """
     cash = float(initial_capital)
 
-    # 종목별 상태
     states     = {}  # ticker -> "IDLE" | "TRIGGERED" | "IN_TRADE"
     prev_r_map = {}  # ticker -> setup_prev_r
-    positions  = {}  # ticker -> {shares, avg_cost, tranches, buy1_price, buy2_price, entry_date, cost_basis}
+    positions  = {}  # ticker -> {shares, avg_cost, tranches, buy1_price, buy2_price, entry_date}
 
     all_trades = []
     nav_series = {}
@@ -168,14 +168,18 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
     for date in all_dates:
         year = date.year
 
-        # ── 현재 NAV 계산 ────────────────────────────────────
-        # NAV = 현금 + 보유 포지션 취득원가 합계 (보수적 평가)
-        pos_book_value = sum(
-            p["shares"] * p["avg_cost"] for p in positions.values()
-        )
-        current_nav = cash + pos_book_value
+        # ── 시가평가 NAV 계산 ────────────────────────────────
+        mtm_value = 0.0
+        for ticker, pos in positions.items():
+            df = ticker_dfs.get(ticker)
+            if df is not None and date in df.index:
+                mtm_value += pos["shares"] * df.loc[date, "종가"]
+            else:
+                mtm_value += pos["shares"] * pos["avg_cost"]  # 가격 없으면 취득가로
 
-        # ── 1. 보유 포지션 처리 ─────────────────────────────
+        current_nav = cash + mtm_value
+
+        # ── 1. 보유 포지션 처리 (청산 & 추가매수) ──────────
         for ticker in list(positions.keys()):
             df = ticker_dfs.get(ticker)
             if df is None or date not in df.index:
@@ -186,7 +190,6 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
             pos  = positions[ticker]
             avg  = pos["avg_cost"]
             tgt  = avg * (1 + target_pct)
-
             closed = False
 
             # 손절: 3차 이후만
@@ -238,7 +241,7 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
             if closed:
                 continue
 
-            # 2차 추가매수 (현금 체크)
+            # 2차 추가매수
             if pos["tranches"] == 1 and pos.get("buy1_price"):
                 b2t = pos["buy1_price"] * (1 - add_drop_pct)
                 if l <= b2t:
@@ -253,7 +256,7 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
                         pos["tranches"]   = 2
                         pos["buy2_price"] = b2t
 
-            # 3차 추가매수 (현금 체크)
+            # 3차 추가매수
             elif pos["tranches"] == 2 and pos.get("buy2_price"):
                 b3t = pos["buy2_price"] * (1 - add_drop_pct)
                 if l <= b3t:
@@ -267,15 +270,25 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
                         pos["avg_cost"] = total / pos["shares"]
                         pos["tranches"] = 3
 
-        # ── NAV 업데이트 후 기록 ────────────────────────────
-        pos_book_value = sum(p["shares"] * p["avg_cost"] for p in positions.values())
-        current_nav    = cash + pos_book_value
+        # ── 시가평가 NAV 재계산 후 기록 ─────────────────────
+        mtm_value = 0.0
+        for ticker, pos in positions.items():
+            df = ticker_dfs.get(ticker)
+            if df is not None and date in df.index:
+                mtm_value += pos["shares"] * df.loc[date, "종가"]
+            else:
+                mtm_value += pos["shares"] * pos["avg_cost"]
+        current_nav = cash + mtm_value
         nav_series[date] = current_nav
 
         # ── 2. 신규 진입 탐색 ───────────────────────────────
+        n_open = len(positions)
+
         for ticker in yearly_universe.get(year, set()):
             if ticker in positions:
                 continue
+            if n_open >= max_positions:  # 최대 보유 종목 수 제한
+                break
             df = ticker_dfs.get(ticker)
             if df is None or date not in df.index:
                 continue
@@ -300,7 +313,6 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
                         buy1_amount = current_nav * buy1_cap_pct
                         ns   = int(buy1_amount / b1)
                         cost = ns * b1
-                        # ★ 현금이 충분할 때만 진입
                         if ns > 0 and cash >= cost:
                             cash -= cost
                             positions[ticker] = {
@@ -312,6 +324,7 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
                                 "buy2_price": None,
                             }
                             states[ticker] = "IN_TRADE"
+                            n_open += 1
 
     return all_trades, pd.Series(nav_series)
 
@@ -348,7 +361,7 @@ if run_btn:
         st.dataframe(pd.DataFrame(univ_rows), use_container_width=True, hide_index=True)
 
     all_tickers = sorted(all_tickers_set)
-    st.info(f"✅ 전체 분석 대상: {len(all_tickers)}개 종목 (연간 합집합)")
+    st.info(f"✅ 전체 분석 대상: {len(all_tickers)}개 종목")
 
     # ── OHLCV 수집 ──────────────────────────────────────────
     prog_bar = st.progress(0, text="데이터 수집 중...")
@@ -396,10 +409,10 @@ if run_btn:
     pf_den    = abs(rdf.loc[rdf["손익(원)"] < 0, "손익(원)"].sum()) + 1e-9
     profit_factor = pf_num / pf_den
 
-    total_return  = (strat_nav.iloc[-1] - initial_capital) / initial_capital
+    final_nav     = strat_nav.iloc[-1]
+    total_return  = (final_nav - initial_capital) / initial_capital
     years_n = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365.25
-    cagr    = (strat_nav.iloc[-1] / initial_capital) ** (1 / years_n) - 1 if years_n > 0 else 0
-    final_capital = strat_nav.iloc[-1]
+    cagr    = (final_nav / initial_capital) ** (1 / years_n) - 1 if years_n > 0 else 0
 
     strat_ret    = (strat_nav / initial_capital - 1) * 100
     roll_max     = strat_nav.expanding().max()
@@ -418,7 +431,7 @@ if run_btn:
         kospi_mdd_raw = pd.Series(dtype=float)
         kospi_mdd_val = kospi_total = kospi_cagr = 0.0
 
-    # 월별·연도별 수익률
+    # 월별·연도별
     monthly_nav  = strat_nav.resample("ME").last()
     monthly_ret  = monthly_nav.pct_change().dropna() * 100
     yearly_nav   = strat_nav.resample("YE").last()
@@ -446,8 +459,8 @@ if run_btn:
     st.markdown("**📊 기간 전체 성과**")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("초기 자본",   f"{initial_capital/10000:,.0f}만원")
-    c2.metric("최종 자산",   f"{final_capital/10000:,.0f}만원",
-              delta=f"+{(final_capital-initial_capital)/10000:,.0f}만원")
+    c2.metric("최종 자산",   f"{final_nav/10000:,.0f}만원",
+              delta=f"+{(final_nav-initial_capital)/10000:,.0f}만원")
     c3.metric("전체 수익률", f"{total_return*100:.1f}%")
     c4.metric("연환산 CAGR", f"{cagr*100:.1f}%")
 
@@ -574,12 +587,13 @@ if run_btn:
                 "기간": f"{start_date} ~ {end_date}",
                 "최소시총(억)": min_cap_억,
                 "연간종목수": max_stocks,
+                "최대동시보유": max_positions,
                 "초기자본(만원)": initial_capital // 10000,
                 "1차매수비중(%)": buy1_cap_pct * 100,
                 "추가매수하락(%)": add_drop_pct * 100,
                 "목표수익률(%)": target_pct * 100,
                 "손절기준(%)": stoploss_pct * 100,
-                "포지션사이징": "NAV 동적 + 현금 제약",
+                "NAV방식": "시가평가(Mark-to-Market)",
                 "리밸런싱": "연간 (매년 1월)",
             })
 
@@ -685,7 +699,7 @@ if run_btn:
                 zmid=0, colorbar=dict(title="수익률(%)"),
             ))
             fig_heat.update_layout(
-                title="월별 수익률 히트맵 (녹색=수익 / 적색=손실)",
+                title="월별 수익률 히트맵",
                 height=max(300, len(monthly_pivot) * 42 + 120),
                 margin=dict(t=50, b=20), xaxis=dict(side="top"),
             )

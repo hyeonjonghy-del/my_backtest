@@ -31,38 +31,36 @@ with st.sidebar:
     st.header("📐 매매 기준")
 
     st.markdown("**① 라운드넘버존 진입**")
-    trigger_pct  = st.slider("트리거: 다음 라운드 - x%", 1, 8, 4) / 100
-    buy1_pct     = st.slider("1차 매수: 이전 라운드 + x%", 1, 8, 4) / 100
+    trigger_pct = st.slider("트리거: 다음 라운드 - x%", 1, 8, 4) / 100
+    buy1_pct    = st.slider("1차 매수: 이전 라운드 + x%", 1, 8, 4) / 100
+    buy2_pct    = st.slider("2차 매수: 이전 라운드 + x%", 0, 5, 2) / 100
+    buy3_pct    = st.slider("3차 매수: 이전 라운드 + x%", -3, 3, 0) / 100
+    st.caption("3차 진입가가 좁은 구간에 몰려 있을수록 원래 기법에 가까움")
 
     st.markdown("**② 자금 관리**")
-    buy1_cap_pct = st.slider("1차 매수 비중 (전체 자본 %)", 5, 20, 10) / 100
-    add_drop_pct = st.slider("추가매수 트리거 하락폭 (%)", 5, 20, 10) / 100
-    st.caption("2차 = 1차 금액의 2배 / 3차 = 2차 금액과 동일 (책 고정값)")
+    st.caption("1·2·3차 균등 분할 (전체의 각 1/3)")
+    position_size_pct = st.slider("종목당 투자 비중 (%)", 5, 30, 10) / 100
 
     st.markdown("**③ 청산 조건**")
-    target_pct   = st.slider("목표 수익률: 평균단가 + x%", 5, 40, 20) / 100
+    target_pct   = st.slider("목표 수익률: 평균단가 + x%", 5, 40, 15) / 100
     stoploss_pct = st.slider("손절 기준: 평균단가 - x%", 3, 30, 10) / 100
 
     # ── 손익비 계산기 ──────────────────────────────────────
-    rr_ratio      = target_pct / stoploss_pct
-    breakeven_wr  = stoploss_pct / (target_pct + stoploss_pct) * 100
+    rr_ratio     = target_pct / stoploss_pct
+    breakeven_wr = stoploss_pct / (target_pct + stoploss_pct) * 100
     color = "🟢" if rr_ratio >= 2.0 else ("🟡" if rr_ratio >= 1.5 else "🔴")
     st.markdown(
-        f"""
-        **손익비 분석** {color}
-        | 항목 | 값 |
-        |---|---|
-        | 손익비 (R/R) | **{rr_ratio:.1f} : 1** |
-        | 손익분기 승률 | **{breakeven_wr:.0f}%** |
-        | 현재 목표 승률 | 70%+ |
-        """
+        f"**손익비 분석** {color}\n"
+        f"| 항목 | 값 |\n|---|---|\n"
+        f"| 손익비 (R/R) | **{rr_ratio:.1f} : 1** |\n"
+        f"| 손익분기 승률 | **{breakeven_wr:.0f}%** |"
     )
     if rr_ratio >= 2.0:
-        st.success(f"✅ 승률 {breakeven_wr:.0f}%만 넘으면 수익 구조")
+        st.success(f"✅ 승률 {breakeven_wr:.0f}%만 넘으면 수익")
     elif rr_ratio >= 1.5:
         st.warning(f"⚠️ 승률 {breakeven_wr:.0f}% 이상 필요")
     else:
-        st.error(f"❌ 손익비 불리 — 손절폭을 줄이거나 목표를 높이세요")
+        st.error("❌ 손익비 불리 — 목표↑ 또는 손절↓ 권장")
 
     st.divider()
     st.markdown("**라운드넘버 단위 (자동)**")
@@ -73,16 +71,6 @@ with st.sidebar:
         "~500,000원  → 50,000원 단위\n"
         " 500,000원~ → 100,000원 단위",
         language=None
-    )
-    buy2_cap = buy1_cap_pct * 2
-    buy3_cap = buy1_cap_pct * 2
-    total_max = buy1_cap_pct + buy2_cap + buy3_cap
-    st.info(
-        f"💰 최대 투입 비중\n"
-        f"- 1차: {buy1_cap_pct*100:.0f}%\n"
-        f"- 2차: {buy2_cap*100:.0f}% (1차 ×2)\n"
-        f"- 3차: {buy3_cap*100:.0f}% (2차 동일)\n"
-        f"- **합계: {total_max*100:.0f}%**"
     )
 
 # ────────────────────────────────────────────────────────────
@@ -155,131 +143,116 @@ def fetch_ticker_name(ticker: str) -> str:
 # ────────────────────────────────────────────────────────────
 def backtest_one(ticker: str, df: pd.DataFrame) -> list:
     """
-    자금관리 구조:
-      1차 매수: 전체 자본 × buy1_cap_pct  (라운드넘버존 진입)
-      2차 매수: 1차 매수가 × (1 - add_drop_pct) 도달 시  → 1차 금액 × 2
-      3차 매수: 2차 매수가 × (1 - add_drop_pct) 도달 시  → 2차 금액과 동일
-      매도    : 평균단가 × (1 + target_pct) 전량 매도
-      손절    : 평균단가 × (1 - stoploss_pct) 전량 청산
+    자금관리: 종목당 position_size_pct 균등 3분할
+      1차 매수: 이전 라운드 × (1 + buy1_pct)
+      2차 매수: 이전 라운드 × (1 + buy2_pct)
+      3차 매수: 이전 라운드 × (1 + buy3_pct)
+      매도    : 평균단가 × (1 + target_pct) 전량
+      손절    : 평균단가 × (1 - stoploss_pct) 전량
 
     상태: IDLE → TRIGGERED → IN_TRADE → IDLE
     """
-    buy1_amount = initial_capital * buy1_cap_pct   # 1차 투입금액
-    buy2_amount = buy1_amount * 2                   # 2차 = 1차 × 2
-    buy3_amount = buy2_amount                       # 3차 = 2차와 동일
-
-    trades = []
-    state  = "IDLE"
+    tranche_cap = initial_capital * position_size_pct / 3
+    trades  = []
+    state   = "IDLE"
     setup_prev_r = None
 
-    # 포지션 변수
     pos_shares     = 0
     pos_avg_cost   = 0.0
     pos_tranches   = 0
     pos_entry_date = None
-    pos_buy1_price = None   # 1차 실제 체결가 → 2차 트리거 계산용
-    pos_buy2_price = None   # 2차 실제 체결가 → 3차 트리거 계산용
+    pos_buy1 = pos_buy2 = pos_buy3 = 0.0
 
     for date, row in df.iterrows():
         h, l, c = row["고가"], row["저가"], row["종가"]
         if c <= 0 or h <= 0 or l <= 0:
             continue
 
-        # ── IN_TRADE: 청산 먼저, 그 다음 추가매수 ────────────
+        # ── IN_TRADE: 청산 우선, 이후 추가매수 ──────────────
         if state == "IN_TRADE":
             avg  = pos_avg_cost
             tgt  = avg * (1 + target_pct)
             stop = avg * (1 - stoploss_pct)
 
-            # 손절 (저가 ≤ 손절가)
+            # 손절
             if l <= stop:
                 pnl = (stop - avg) * pos_shares
                 trades.append({
                     "종목코드": ticker,
                     "진입일":   pos_entry_date,
                     "청산일":   date,
+                    "1차매수가": round(pos_buy1),
                     "평균단가": round(avg),
                     "청산가":   round(stop),
                     "수익률":   -stoploss_pct,
                     "손익(원)": pnl,
                     "청산사유": "손절",
                     "매수횟수": pos_tranches,
-                    "1차매수가": round(pos_buy1_price) if pos_buy1_price else 0,
                 })
                 state = "IDLE"; pos_shares = 0; pos_tranches = 0
-                pos_buy1_price = None; pos_buy2_price = None
                 continue
 
-            # 목표 수익 (고가 ≥ 목표가)
+            # 목표수익
             if h >= tgt:
                 pnl = (tgt - avg) * pos_shares
                 trades.append({
                     "종목코드": ticker,
                     "진입일":   pos_entry_date,
                     "청산일":   date,
+                    "1차매수가": round(pos_buy1),
                     "평균단가": round(avg),
                     "청산가":   round(tgt),
                     "수익률":   target_pct,
                     "손익(원)": pnl,
                     "청산사유": "목표수익",
                     "매수횟수": pos_tranches,
-                    "1차매수가": round(pos_buy1_price) if pos_buy1_price else 0,
                 })
                 state = "IDLE"; pos_shares = 0; pos_tranches = 0
-                pos_buy1_price = None; pos_buy2_price = None
                 continue
 
-            # 2차 매수: 1차 매수가 × (1 - add_drop_pct)
-            if pos_tranches == 1 and pos_buy1_price:
-                buy2_trigger = pos_buy1_price * (1 - add_drop_pct)
-                if l <= buy2_trigger:
-                    bp = buy2_trigger
-                    new_shares = int(buy2_amount / bp)
-                    if new_shares > 0:
-                        total_cost   = pos_avg_cost * pos_shares + bp * new_shares
-                        pos_shares  += new_shares
-                        pos_avg_cost = total_cost / pos_shares
-                        pos_tranches = 2
-                        pos_buy2_price = bp
+            # 2차 추가매수
+            if pos_tranches == 1 and l <= pos_buy2:
+                ns = int(tranche_cap / pos_buy2)
+                if ns > 0:
+                    pos_avg_cost = (pos_avg_cost * pos_shares + pos_buy2 * ns) / (pos_shares + ns)
+                    pos_shares  += ns
+                    pos_tranches = 2
 
-            # 3차 매수: 2차 매수가 × (1 - add_drop_pct)
-            elif pos_tranches == 2 and pos_buy2_price:
-                buy3_trigger = pos_buy2_price * (1 - add_drop_pct)
-                if l <= buy3_trigger:
-                    bp = buy3_trigger
-                    new_shares = int(buy3_amount / bp)
-                    if new_shares > 0:
-                        total_cost   = pos_avg_cost * pos_shares + bp * new_shares
-                        pos_shares  += new_shares
-                        pos_avg_cost = total_cost / pos_shares
-                        pos_tranches = 3
+            # 3차 추가매수
+            elif pos_tranches == 2 and l <= pos_buy3:
+                ns = int(tranche_cap / pos_buy3)
+                if ns > 0:
+                    pos_avg_cost = (pos_avg_cost * pos_shares + pos_buy3 * ns) / (pos_shares + ns)
+                    pos_shares  += ns
+                    pos_tranches = 3
 
-        # ── IDLE: 라운드넘버존 트리거 탐색 ──────────────────
+        # ── IDLE: 트리거 탐색 ────────────────────────────────
         elif state == "IDLE":
             pr, nr = get_round_numbers(c)
             if h >= nr * (1 - trigger_pct):
                 state        = "TRIGGERED"
                 setup_prev_r = pr
 
-        # ── TRIGGERED: 1차 매수 진입 대기 ───────────────────
+        # ── TRIGGERED: 1차 진입 대기 ─────────────────────────
         if state == "TRIGGERED":
             cur_pr, _ = get_round_numbers(c)
-            # 가격 구간이 바뀌면 신호 리셋
-            if cur_pr != setup_prev_r:
+            if cur_pr != setup_prev_r:          # 구간 이탈 시 리셋
                 state = "IDLE"
                 continue
 
-            buy1_price = setup_prev_r * (1 + buy1_pct)
-            if l <= buy1_price:
-                new_shares = int(buy1_amount / buy1_price)
-                if new_shares > 0:
+            b1 = setup_prev_r * (1 + buy1_pct)
+            b2 = setup_prev_r * (1 + buy2_pct)
+            b3 = setup_prev_r * (1 + buy3_pct)
+
+            if l <= b1:
+                ns = int(tranche_cap / b1)
+                if ns > 0:
                     state          = "IN_TRADE"
-                    pos_shares     = new_shares
-                    pos_avg_cost   = buy1_price
+                    pos_shares     = ns
+                    pos_avg_cost   = b1
                     pos_tranches   = 1
                     pos_entry_date = date
-                    pos_buy1_price = buy1_price
-                    pos_buy2_price = None
+                    pos_buy1, pos_buy2, pos_buy3 = b1, b2, b3
 
     return trades
 
@@ -303,7 +276,7 @@ if run_btn:
     tickers = tickers[:max_stocks]
     st.info(f"✅ 분석 대상 {len(tickers)}개 종목 (시총 {min_cap_억:,}억 이상 KOSPI)")
 
-    capital_per_stock = initial_capital * buy1_cap_pct  # 참고용 (함수 내부에서 직접 계산)
+    capital_per_stock = initial_capital * position_size_pct / 3  # 참고용
     all_trades = []
 
     prog_bar  = st.progress(0, text="백테스트 진행 중...")
@@ -513,12 +486,11 @@ if run_btn:
             "최소시총(억)": min_cap_억,
             "분석종목수": max_stocks,
             "초기자본(만원)": initial_capital // 10000,
-            "1차매수비중(%)": buy1_cap_pct * 100,
-            "2차매수비중(%)": buy1_cap_pct * 2 * 100,
-            "3차매수비중(%)": buy1_cap_pct * 2 * 100,
-            "추가매수트리거하락(%)": add_drop_pct * 100,
+            "종목당비중(%)": position_size_pct * 100,
             "트리거(다음라운드-%)": trigger_pct * 100,
             "1차매수(이전라운드+%)": buy1_pct * 100,
+            "2차매수(이전라운드+%)": buy2_pct * 100,
+            "3차매수(이전라운드+%)": buy3_pct * 100,
             "목표수익률(%)": target_pct * 100,
             "손절기준(%)": stoploss_pct * 100,
         })

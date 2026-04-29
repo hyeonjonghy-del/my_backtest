@@ -33,7 +33,7 @@ st.set_page_config(
 )
 
 st.title("🐂 한국 Bull / Bull Mix / Bear 전략")
-st.caption("KOSPI200 추세 + TNX 금리 필터 · KODEX ETF 3종 자동 전환")
+st.caption("KODEX200 추세 + TNX 금리 필터 · KODEX ETF 3종 자동 전환")
 
 
 # ── KRX 로그인 ───────────────────────────────────────────────
@@ -114,7 +114,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("📊 추세 필터")
-    ma_trend = st.slider("KOSPI200 이평선 (일)", 60, 250, 60, 10)
+    ma_trend = st.slider("KODEX200 이평선 (일)", 60, 250, 60, 10)
 
     st.subheader("💹 금리 필터 (^TNX)")
     use_tnx = st.checkbox("금리 필터 사용", value=True)
@@ -179,11 +179,8 @@ def load_etf_price(ticker: str, start_str: str, end_str: str) -> pd.Series:
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_kospi200(start_str: str, end_str: str) -> pd.Series:
     try:
-        df = stock.get_index_ohlcv_by_date(start_str, end_str, "1028")
-        return df["종가"].rename("KOSPI200")
-    except Exception:
         df = stock.get_market_ohlcv_by_date(start_str, end_str, "069500")
-        return df["종가"].rename("KOSPI200")
+        return df["종가"].rename("KODEX200")
 
 
 @st.cache_data(show_spinner=False, ttl=3600)

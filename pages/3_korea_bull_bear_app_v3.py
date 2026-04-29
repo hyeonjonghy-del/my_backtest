@@ -156,9 +156,9 @@ if not st.session_state.get("krx_ok"):
         st.markdown("""
 | 상태 | 조건 | 포트폴리오 |
 |------|------|-----------|
-| 🐂 Bull Full | KOSPI200 > MA60 & TNX ≤ MA120 | KODEX200 100% + 레버리지 0% |
-| ⚠️ Bull Mix | KOSPI200 > MA60 & TNX > MA120 | 레버리지 50% + KODEX200 50% |
-| 🐻 Bear | KOSPI200 < MA60 | 현금 100% |
+| 🐂 Bull Full | KODEX200 > MA60 & TNX ≤ MA120 | KODEX200 100% + 레버리지 0% |
+| ⚠️ Bull Mix | KODEX200 > MA60 & TNX > MA120 | 레버리지 50% + KODEX200 50% |
+| 🐻 Bear | KODEX200 < MA60 | 현금 100% |
         """)
     st.stop()
 

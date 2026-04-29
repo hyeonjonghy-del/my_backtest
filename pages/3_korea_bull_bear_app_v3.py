@@ -1,18 +1,18 @@
 """
-한국판 Bull/Bull Mix/Bear 전략 v3
+한국판 Bull/Bull Mix/Bear 전략 v2
 ────────────────────────────────────────
-추세 기준 : KOSPI200 vs MA60
+추세 기준 : KOSPI200 vs MA150
 금리 기준 : ^TNX (미국 10년물) vs MA120
 
 상태 판단:
-  Bear     : KOSPI200 < MA60
-  Bull Mix : KOSPI200 > MA60 & TNX > TNX MA120 (금리 상승 위험)
-  Bull Full: KOSPI200 > MA60 & TNX ≤ TNX MA120 (최적 상승장)
+  Bear     : KOSPI200 < MA150
+  Bull Mix : KOSPI200 > MA150 & TNX > TNX MA120
+  Bull Full: KOSPI200 > MA150 & TNX ≤ TNX MA120
 
-포트폴리오 (사이드바에서 비중 조절 가능):
-  Bull Full → KODEX200 80% + KODEX 레버리지 20%
-  Bull Mix  → KODEX200 50% + KODEX 레버리지 50%
-  Bear      → KODEX 단기채권 100%
+포트폴리오:
+  Bull Full → KODEX 200 (069500) 100%
+  Bull Mix  → KODEX 레버리지 (122630) N% + KODEX 200 (100-N)%
+  Bear      → KODEX 단기채권 (153130) 100%
 """
 
 import os
@@ -110,7 +110,7 @@ with st.sidebar:
     with c1:
         start_date = st.date_input("시작", datetime(2016, 1, 4))
     with c2:
-        end_date = st.date_input("종료", TODAY)
+        end_date = st.date_input("종료", TODAY)   # ← 오늘이 기본값
 
     st.divider()
     st.subheader("📊 추세 필터")
@@ -121,29 +121,21 @@ with st.sidebar:
     ma_tnx  = st.slider("TNX 이평선 (일)", 60, 200, 120, 10, disabled=not use_tnx)
 
     st.divider()
-    st.subheader("📦 구간별 포트폴리오 비중")
+    st.subheader("📦 포트폴리오 비중")
 
-    # ── Bull Full 비중 ────────────────────────────────────────
     st.markdown("**🐂 Bull Full** (최적 상승장)")
-    bf_lev = st.slider("레버리지 비중 (%)", 0, 100, 20, 5, key="bf_lev")
-    bf_k200 = 100 - bf_lev
-    st.caption(f"→ KODEX200 {bf_k200}% + 레버리지 {bf_lev}%")
+    bf_lev_ratio = st.slider("Bull Full 레버리지 비중 (%)", 0, 70, 0, 5, key="bf_lev")
+    st.caption(f"→ KODEX200 {100-bf_lev_ratio}% + 레버리지 {bf_lev_ratio}%")
 
     st.markdown("---")
-
-    # ── Bull Mix 비중 ─────────────────────────────────────────
     st.markdown("**⚠️ Bull Mix** (상승장 + 금리 주의)")
-    bm_lev = st.slider("레버리지 비중 (%)", 0, 100, 50, 5, key="bm_lev")
-    bm_k200 = 100 - bm_lev
-    st.caption(f"→ KODEX200 {bm_k200}% + 레버리지 {bm_lev}%")
+    lev_ratio = st.slider("Bull Mix 레버리지 비중 (%)", 10, 70, 50, 5, key="bm_lev")
+    st.caption(f"→ KODEX200 {100-lev_ratio}% + 레버리지 {lev_ratio}%")
 
     st.markdown("---")
-
-    # ── Bear 비중 ─────────────────────────────────────────────
     st.markdown("**🐻 Bear** (하락장 방어)")
     st.caption("→ 현금 100% (채권 미운용)")
 
-    st.divider()
     st.subheader("💸 거래비용")
     fee = st.number_input("편도 수수료+슬리피지 (%)", value=0.15, step=0.05) / 100
 
@@ -162,24 +154,11 @@ if not st.session_state.get("krx_ok"):
     """)
     with st.expander("📋 전략 개요", expanded=True):
         st.markdown("""
-| 상태 | 진입 조건 | 기본 포트폴리오 | 의미 |
-|------|-----------|----------------|------|
-| 🐂 Bull Full | KOSPI200 > MA60 & TNX ≤ MA120 | KODEX200 100% | 최적 상승장 — 안정적 상승 추종 |
-| ⚠️ Bull Mix | KOSPI200 > MA60 & TNX > MA120 | 레버리지 50% + KODEX200 50% | 상승장이나 금리 위험 — 레버리지 제한 |
-| 🐻 Bear | KOSPI200 < MA60 | 현금 100% | 하락장 — 완전 방어 |
-
-**ETF 구성**
-
-| 역할 | 종목명 | 코드 |
-|------|--------|------|
-| 기본 | KODEX 200 | 069500 |
-| 레버리지 | KODEX 레버리지 (2배) | 122630 |
-| 방어 | KODEX 단기채권 | 153130 |
-
-**전략 핵심 원리**
-- Bear 구간에서 손실을 피하는 것이 장기 복리의 핵심입니다
-- Bull Full에서 레버리지를 높이면 수익↑ MDD↑ (트레이드오프)
-- 사이드바 슬라이더로 각 구간 비중을 자유롭게 조절해보세요
+| 상태 | 조건 | 포트폴리오 |
+|------|------|-----------|
+| 🐂 Bull Full | KOSPI200 > MA60 & TNX ≤ MA120 | KODEX200 100% + 레버리지 0% |
+| ⚠️ Bull Mix | KOSPI200 > MA60 & TNX > MA120 | 레버리지 50% + KODEX200 50% |
+| 🐻 Bear | KOSPI200 < MA60 | 현금 100% |
         """)
     st.stop()
 
@@ -197,9 +176,6 @@ def load_etf_price(ticker: str, start_str: str, end_str: str) -> pd.Series:
         return pd.Series(dtype=float)
 
 
-
-
-
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_kospi200(start_str: str, end_str: str) -> pd.Series:
     try:
@@ -213,7 +189,7 @@ def load_kospi200(start_str: str, end_str: str) -> pd.Series:
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_tnx(start_str: str, end_str: str) -> pd.Series:
     try:
-        s = datetime.strptime(start_str, "%Y%m%d") - timedelta(days=250)
+        s = datetime.strptime(start_str, "%Y%m%d") - timedelta(days=220)
         df = yf.download(
             "^TNX",
             start=s.strftime("%Y-%m-%d"),
@@ -247,15 +223,6 @@ if run_btn:
     START_STR = start_date.strftime("%Y%m%d")
     END_STR   = end_date.strftime("%Y%m%d")
     EXT_START = (start_date - timedelta(days=300)).strftime("%Y%m%d")
-
-    # 비중 변수
-    w_bf_lev  = bf_lev  / 100
-    w_bf_k200 = bf_k200 / 100
-    w_bm_lev  = bm_lev  / 100
-    w_bm_k200 = bm_k200 / 100
-    # Bear = 현금 100% (채권 미운용)
-    bear_bond = 0
-    bear_k200 = 0
 
     prog = st.progress(0, text="데이터 로딩 중...")
 
@@ -292,17 +259,20 @@ if run_btn:
         tnx_aligned = pd.Series(np.nan, index=common_idx)
         tnx_ma      = pd.Series(np.nan, index=common_idx)
 
-    # ── 수익률 데이터 준비 (종가→종가만 사용) ──────────────────
-    # T일 종가 반영: 신호 당일 종가에 즉시 전환 → open price 불필요
-    ret_200_cc  = etf_200.pct_change().reindex(common_idx).fillna(0)
-    ret_lev_cc  = etf_lev.pct_change().reindex(common_idx).fillna(0)
-    ret_bond_cc = etf_bond.pct_change().reindex(common_idx).fillna(0)
+    ret_200  = etf_200.pct_change().reindex(common_idx).fillna(0)
+    ret_lev  = etf_lev.pct_change().reindex(common_idx).fillna(0)
+    ret_bond = etf_bond.pct_change().reindex(common_idx).fillna(0)
+    k200     = kospi200.reindex(common_idx).ffill()
+    k200_ma  = kospi200_ma.reindex(common_idx).ffill()
 
-    k200    = kospi200.reindex(common_idx).ffill()
-    k200_ma = kospi200_ma.reindex(common_idx).ffill()
+    # ── 백테스트 루프 ─────────────────────────────────────────
+    nav        = 1.0
+    nav_list, state_list = [], []
+    trade_log  = []
+    prev_state = None
+    w          = lev_ratio / 100        # Bull Mix 레버리지 비중
+    bf_w       = bf_lev_ratio / 100     # Bull Full 레버리지 비중
 
-    # ── 신호 시계열 계산 ──────────────────────────────────────────
-    signals = []
     for date in common_idx:
         k  = k200[date]
         km = k200_ma[date]
@@ -310,59 +280,37 @@ if run_btn:
         tm = tnx_ma[date]
 
         if np.isnan(k) or np.isnan(km):
-            sig = signals[-1] if signals else "Bear"
+            state = prev_state or "Bear"
         elif k < km:
-            sig = "Bear"
+            state = "Bear"
         elif use_tnx and not np.isnan(t) and not np.isnan(tm) and t > tm:
-            sig = "Bull_Mix"
+            state = "Bull_Mix"
         else:
-            sig = "Bull_Full"
-        signals.append(sig)
+            state = "Bull_Full"
 
-    signal_s = pd.Series(signals, index=common_idx)
-
-    # ── 백테스트 루프 (T일 종가 반영) ────────────────────────────
-    # 로직:
-    # 신호 변경 당일(T): 이전 ETF로 하루 보유 (종가→종가) 후 종가에 전환 + 수수료
-    # 보유일: 현재 ETF 종가→종가 수익률
-    nav       = 1.0
-    nav_list, state_list = [], []
-    trade_log = []
-    prev_state = None
-
-    def get_ret(r200, rlev, rbond, state):
-        if state == "Bull_Full":
-            return w_bf_lev * rlev + w_bf_k200 * r200
-        elif state == "Bull_Mix":
-            return w_bm_lev * rlev + w_bm_k200 * r200
-        else:
-            return 0.0  # Bear = 현금 100%, 수익률 0
-
-    for date in common_idx:
-        cur_signal = signal_s[date]
-
-        if prev_state is not None and cur_signal != prev_state:
-            # 전환일: 이전 ETF로 당일 종가까지 보유 후 종가에 전환
-            daily_ret = get_ret(ret_200_cc[date], ret_lev_cc[date],
-                                ret_bond_cc[date], prev_state)
-            nav *= (1 + daily_ret)
-            nav *= (1 - fee * 2)  # 매도 + 매수 수수료
+        if prev_state is not None and state != prev_state:
+            nav *= (1 - fee * 2)
             trade_log.append({
                 "날짜": date.date(),
                 "이전": prev_state,
-                "전환": cur_signal,
+                "전환": state,
                 "NAV":  round(nav, 4),
             })
-        else:
-            # 보유일: 종가→종가 수익률
-            hold = prev_state if prev_state is not None else cur_signal
-            daily_ret = get_ret(ret_200_cc[date], ret_lev_cc[date],
-                                ret_bond_cc[date], hold)
-            nav *= (1 + daily_ret)
 
+        r200  = ret_200[date]
+        rlev  = ret_lev[date]
+
+        if state == "Bull_Full":
+            daily_ret = bf_w * rlev + (1 - bf_w) * r200
+        elif state == "Bull_Mix":
+            daily_ret = w * rlev + (1 - w) * r200
+        else:
+            daily_ret = 0.0  # Bear = 현금, 수익률 0
+
+        nav *= (1 + daily_ret)
         nav_list.append(nav)
-        state_list.append(cur_signal)
-        prev_state = cur_signal
+        state_list.append(state)
+        prev_state = state
 
     prog.progress(100, text="완료!")
     import time; time.sleep(0.3)
@@ -375,32 +323,19 @@ if run_btn:
     s       = calc_metrics(nav_s)
     sb      = calc_metrics(bm)
 
-    # ── 현재 상태 & 전략 설명 ─────────────────────────────────
+    # ── 현재 상태 ─────────────────────────────────────────────
     cur_state = state_s.iloc[-1]
     cur_date  = state_s.index[-1].date()
     emoji_map = {"Bull_Full": "🐂", "Bull_Mix": "⚠️", "Bear": "🐻"}
     label_map = {
-        "Bull_Full": f"Bull Full — KODEX200 {bf_k200}% + 레버리지 {bf_lev}%",
-        "Bull_Mix":  f"Bull Mix — KODEX200 {bm_k200}% + 레버리지 {bm_lev}%",
-        "Bear":      f"Bear — 단기채권 {bear_bond}% + KODEX200 {bear_k200}%",
+        "Bull_Full": f"Bull Full — KODEX200 {100-bf_lev_ratio}% + 레버리지 {bf_lev_ratio}%",
+        "Bull_Mix":  f"Bull Mix — 레버리지 {lev_ratio}% + KODEX200 {100-lev_ratio}%",
+        "Bear":      "Bear — 현금 100%",
     }
     color_map = {"Bull_Full": "success", "Bull_Mix": "warning", "Bear": "error"}
     getattr(st, color_map[cur_state])(
         f"{emoji_map[cur_state]} **현재 상태** ({cur_date}): {label_map[cur_state]}"
     )
-
-    # ── 전략 설명 (상단 고정) ─────────────────────────────────
-    with st.expander("📋 현재 전략 설정 확인", expanded=False):
-        st.markdown(f"""
-| 상태 | 조건 | 현재 포트폴리오 |
-|------|------|----------------|
-| 🐂 Bull Full | KOSPI200 > MA{ma_trend} & TNX ≤ MA{ma_tnx} | KODEX200 **{bf_k200}%** + 레버리지 **{bf_lev}%** |
-| ⚠️ Bull Mix | KOSPI200 > MA{ma_trend} & TNX > MA{ma_tnx} | KODEX200 **{bm_k200}%** + 레버리지 **{bm_lev}%** |
-| 🐻 Bear | KOSPI200 < MA{ma_trend} | 현금 100% |
-
-> 💡 **전략 핵심**: Bear에서 손실을 피하는 것이 장기 복리의 원천입니다.
-> Bull Full에서 레버리지를 높이면 수익↑ MDD↑ (트레이드오프)
-        """)
 
     # ── 성과 요약 ─────────────────────────────────────────────
     st.divider()
@@ -431,12 +366,14 @@ if run_btn:
 
     st.divider()
 
-    # ── 탭 ───────────────────────────────────────────────────
+    # ── 탭: Chart / Trade Logs / Monthly Returns ───────────────
     tab1, tab2, tab3 = st.tabs(["📈 Chart", "📋 Trade Logs", "📅 Monthly Returns"])
 
+    # ── Tab 1: Chart ──────────────────────────────────────────
     with tab1:
         import plotly.graph_objects as go
 
+        # 누적 수익률
         st.subheader("누적 수익률")
         fig_nav = go.Figure()
         fig_nav.add_trace(go.Scatter(
@@ -459,43 +396,54 @@ if run_btn:
         fig_nav.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
         st.plotly_chart(fig_nav, use_container_width=True)
 
+        # 연도별 수익률 비교 (그룹 막대)
         st.subheader("연도별 수익률 비교")
         ann    = nav_s.resample("YE").last().pct_change().dropna()
         bm_ann = bm.resample("YE").last().pct_change().dropna()
         ann_df = pd.DataFrame({"전략": ann, "KODEX200": bm_ann}).dropna()
         ann_df.index = ann_df.index.year
+
         fig_ann = go.Figure()
         fig_ann.add_trace(go.Bar(
-            x=ann_df.index.astype(str), y=(ann_df["전략"]*100).round(1),
-            name="전략", marker_color="#185FA5",
-            text=(ann_df["전략"]*100).round(1).astype(str)+"%", textposition="outside",
+            x=ann_df.index.astype(str),
+            y=(ann_df["전략"] * 100).round(1),
+            name="전략",
+            marker_color="#185FA5",
+            text=(ann_df["전략"] * 100).round(1).astype(str) + "%",
+            textposition="outside",
         ))
         fig_ann.add_trace(go.Bar(
-            x=ann_df.index.astype(str), y=(ann_df["KODEX200"]*100).round(1),
-            name="KODEX200 B&H", marker_color="#85B7EB",
-            text=(ann_df["KODEX200"]*100).round(1).astype(str)+"%", textposition="outside",
+            x=ann_df.index.astype(str),
+            y=(ann_df["KODEX200"] * 100).round(1),
+            name="KODEX200 B&H",
+            marker_color="#85B7EB",
+            text=(ann_df["KODEX200"] * 100).round(1).astype(str) + "%",
+            textposition="outside",
         ))
         fig_ann.update_layout(
-            barmode="group", height=360, margin=dict(l=0, r=0, t=30, b=0),
+            barmode="group",
+            height=360, margin=dict(l=0, r=0, t=30, b=0),
             yaxis=dict(ticksuffix="%", zeroline=True, zerolinecolor="rgba(128,128,128,0.4)"),
             legend=dict(orientation="h", y=1.08),
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
             bargap=0.2, bargroupgap=0.05,
         )
         fig_ann.update_xaxes(showgrid=False)
         fig_ann.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
         st.plotly_chart(fig_ann, use_container_width=True)
 
+        # MDD 비교
         st.subheader("낙폭 (MDD) 비교")
         fig_dd = go.Figure()
         fig_dd.add_trace(go.Scatter(
-            x=s["dd"].index, y=(s["dd"]*100).round(2),
+            x=s["dd"].index, y=(s["dd"] * 100).round(2),
             name="전략 DD", fill="tozeroy",
             line=dict(color="#185FA5", width=1.5),
             fillcolor="rgba(24,95,165,0.15)",
         ))
         fig_dd.add_trace(go.Scatter(
-            x=sb["dd"].index, y=(sb["dd"]*100).round(2),
+            x=sb["dd"].index, y=(sb["dd"] * 100).round(2),
             name="KODEX200 DD", fill="tozeroy",
             line=dict(color="#E24B4A", width=1.5, dash="dash"),
             fillcolor="rgba(226,75,74,0.1)",
@@ -505,74 +453,25 @@ if run_btn:
             yaxis=dict(ticksuffix="%"),
             legend=dict(orientation="h", y=1.12),
             hovermode="x unified",
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
         )
         fig_dd.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
         fig_dd.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
         st.plotly_chart(fig_dd, use_container_width=True)
 
-        # ── KOSPI200 + MA 차트 ────────────────────────────────
-        st.subheader(f"KOSPI200 & MA{ma_trend} (추세 신호)")
-        kospi_plot  = kospi200.reindex(common_idx).ffill()
-        kospi_ma_plot = kospi200_ma.reindex(common_idx).ffill()
-
-        fig_ma = go.Figure()
-        fig_ma.add_trace(go.Scatter(
-            x=kospi_plot.index, y=kospi_plot.round(1),
-            name="KOSPI200", line=dict(color="#378ADD", width=1.5)
-        ))
-        fig_ma.add_trace(go.Scatter(
-            x=kospi_ma_plot.index, y=kospi_ma_plot.round(1),
-            name=f"MA{ma_trend}", line=dict(color="#E24B4A", width=1.5, dash="dash")
-        ))
-
-        # 상태별 배경색 (Bear 구간 강조)
-        bear_periods = []
-        in_bear = False
-        bear_start = None
-        for date, st_val in state_s.items():
-            if st_val == "Bear" and not in_bear:
-                bear_start = date
-                in_bear = True
-            elif st_val != "Bear" and in_bear:
-                bear_periods.append((bear_start, date))
-                in_bear = False
-        if in_bear:
-            bear_periods.append((bear_start, state_s.index[-1]))
-
-        for bp_start, bp_end in bear_periods:
-            fig_ma.add_vrect(
-                x0=bp_start, x1=bp_end,
-                fillcolor="rgba(226,75,74,0.08)",
-                layer="below", line_width=0,
-            )
-
-        fig_ma.update_layout(
-            height=300, margin=dict(l=0, r=0, t=10, b=0),
-            legend=dict(orientation="h", y=1.08),
-            hovermode="x unified",
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
-            annotations=[dict(
-                text="🐻 Bear 구간 (빨간 배경)",
-                xref="paper", yref="paper",
-                x=0.01, y=0.02, showarrow=False,
-                font=dict(size=11, color="#E24B4A")
-            )]
-        )
-        fig_ma.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
-        fig_ma.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
-        st.plotly_chart(fig_ma, use_container_width=True)
-
         if use_tnx and not tnx_aligned.dropna().empty:
             st.subheader("TNX 금리 & 이평선")
             tnx_chart = pd.DataFrame({
-                "TNX": tnx_aligned, f"MA{ma_tnx}": tnx_ma,
+                "TNX": tnx_aligned,
+                f"MA{ma_tnx}": tnx_ma,
             }).dropna()
             st.line_chart(tnx_chart, height=200)
 
+    # ── Tab 2: Trade Logs ─────────────────────────────────────
     with tab2:
         st.subheader("상태 전환 이력")
+
         if trade_log:
             tr_df = pd.DataFrame(trade_log)
             tr_df["이전"] = tr_df["이전"].map(
@@ -580,22 +479,29 @@ if run_btn:
             tr_df["전환"] = tr_df["전환"].map(
                 lambda x: emoji_map.get(x,"") + " " + x.replace("_"," "))
             st.dataframe(tr_df, use_container_width=True, hide_index=True)
+
+            # 다음 리밸런싱 예정일 안내
             st.info(f"📌 총 전환 횟수: {len(tr_df)}회  |  "
                     f"현재 상태: {emoji_map[cur_state]} {cur_state.replace('_',' ')}")
+
             st.download_button(
                 "📥 Trade Log CSV 다운로드",
                 tr_df.to_csv(index=False).encode("utf-8-sig"),
-                "korea_bull_bear_trades.csv", "text/csv",
+                "korea_bull_bear_trades.csv",
+                "text/csv",
             )
         else:
             st.info("상태 전환이 없었습니다.")
 
+    # ── Tab 3: Monthly Returns ────────────────────────────────
     with tab3:
         st.subheader("월별 수익률")
-        monthly_nav = nav_s.resample("ME").last()
-        monthly_ret = monthly_nav.pct_change().dropna()
-        monthly_bm  = bm.resample("ME").last().pct_change().dropna()
 
+        monthly_nav  = nav_s.resample("ME").last()
+        monthly_ret  = monthly_nav.pct_change().dropna()
+        monthly_bm   = bm.resample("ME").last().pct_change().dropna()
+
+        # 연도 × 월 피벗 테이블
         mr_df = monthly_ret.to_frame("수익률")
         mr_df["연도"] = mr_df.index.year
         mr_df["월"]   = mr_df.index.month
@@ -603,8 +509,10 @@ if run_btn:
         pivot.columns = [f"{m}월" for m in pivot.columns]
         pivot["연간합계"] = (1 + monthly_ret).groupby(monthly_ret.index.year).prod() - 1
         pivot = pivot.map(lambda x: f"{x:.1%}" if pd.notna(x) else "-")
+
         st.dataframe(pivot, use_container_width=True)
 
+        # 연도별 수익률 비교 차트 (그룹 막대)
         st.subheader("연도별 수익률 비교")
         import plotly.graph_objects as go
         ann    = nav_s.resample("YE").last().pct_change().dropna()
@@ -623,7 +531,8 @@ if run_btn:
             text=(ann_df["KODEX200"]*100).round(1).astype(str)+"%", textposition="outside",
         ))
         fig_m.update_layout(
-            barmode="group", height=320, margin=dict(l=0,r=0,t=30,b=0),
+            barmode="group", height=320,
+            margin=dict(l=0,r=0,t=30,b=0),
             yaxis=dict(ticksuffix="%", zeroline=True, zerolinecolor="rgba(128,128,128,0.4)"),
             legend=dict(orientation="h", y=1.08),
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
@@ -633,13 +542,18 @@ if run_btn:
         fig_m.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
         st.plotly_chart(fig_m, use_container_width=True)
 
+        # 월별 수익률 vs 벤치마크
         st.subheader("월별 전략 vs BM 비교")
-        cmp_df = pd.DataFrame({"전략": monthly_ret, "KODEX200": monthly_bm}).dropna()
+        cmp_df = pd.DataFrame({
+            "전략":     monthly_ret,
+            "KODEX200": monthly_bm,
+        }).dropna()
         st.line_chart(cmp_df, height=220)
 
         st.download_button(
             "📥 Monthly Returns CSV 다운로드",
-            cmp_df.reset_index().rename(columns={"index":"날짜"})
+            cmp_df.reset_index().rename(columns={"index": "날짜"})
             .to_csv(index=False).encode("utf-8-sig"),
-            "korea_bull_bear_monthly.csv", "text/csv",
+            "korea_bull_bear_monthly.csv",
+            "text/csv",
         )

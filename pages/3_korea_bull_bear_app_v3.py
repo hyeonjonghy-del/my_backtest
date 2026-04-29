@@ -181,6 +181,9 @@ def load_kospi200(start_str: str, end_str: str) -> pd.Series:
     try:
         df = stock.get_market_ohlcv_by_date(start_str, end_str, "069500")
         return df["종가"].rename("KODEX200")
+    except Exception as e:
+        st.warning(f"KODEX200 로딩 실패: {e}")
+        return pd.Series(dtype=float)
 
 
 @st.cache_data(show_spinner=False, ttl=3600)

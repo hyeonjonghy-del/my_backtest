@@ -289,6 +289,25 @@ if run_btn:
             state = "Bull_Full"
 
         if prev_state is not None and state != prev_state:
+            # 당일은 이전 상태로 종가까지 보유 → 수익은 아래서 적용
+            pass
+
+        # 당일 수익: 이전 상태(종가 매수 전 보유 상태) 기준
+        hold_state = prev_state if prev_state is not None else state
+        r200  = ret_200[date]
+        rlev  = ret_lev[date]
+
+        if hold_state == "Bull_Full":
+            daily_ret = bf_w * rlev + (1 - bf_w) * r200
+        elif hold_state == "Bull_Mix":
+            daily_ret = w * rlev + (1 - w) * r200
+        else:
+            daily_ret = 0.0  # Bear = 현금, 수익률 0
+
+        nav *= (1 + daily_ret)
+
+        # 종가에 전환 + 수수료
+        if prev_state is not None and state != prev_state:
             nav *= (1 - fee * 2)
             trade_log.append({
                 "날짜": date.date(),
@@ -296,18 +315,6 @@ if run_btn:
                 "전환": state,
                 "NAV":  round(nav, 4),
             })
-
-        r200  = ret_200[date]
-        rlev  = ret_lev[date]
-
-        if state == "Bull_Full":
-            daily_ret = bf_w * rlev + (1 - bf_w) * r200
-        elif state == "Bull_Mix":
-            daily_ret = w * rlev + (1 - w) * r200
-        else:
-            daily_ret = 0.0  # Bear = 현금, 수익률 0
-
-        nav *= (1 + daily_ret)
         nav_list.append(nav)
         state_list.append(state)
         prev_state = state

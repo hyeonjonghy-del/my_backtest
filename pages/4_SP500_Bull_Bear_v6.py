@@ -12,7 +12,7 @@ warnings.filterwarnings('ignore')
 plt.style.use('ggplot')
 plt.rcParams['axes.unicode_minus'] = False
 
-st.set_page_config(page_title="Safe/Risky/Cash Mix Strategy v6", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Safe/Risky/Cash Mix Strategy v6.1", page_icon="🛡️", layout="wide")
 
 # ── 종목 옵션 정의 ────────────────────────────────────────────────────────────
 SAFE_OPTIONS  = {
@@ -30,51 +30,51 @@ RISKY_OPTIONS = {
 }
 CASH_TICKER   = "SGOV"
 
-# ── 레버리지 배율 정보 (참고용) ───────────────────────────────────────────────
 LEVERAGE_INFO = {
     "SPY": "1×", "QQQ": "1×", "SOXX": "1×",
     "UPRO": "3×", "TQQQ": "3×", "SOXL": "3×",
     "SSO": "2×", "QLD": "2×", "UDOW": "3×",
 }
 
-st.title("🛡️ Safe/Risky/Cash Mix Strategy v6 (종목 선택)")
+st.title("🛡️ Safe/Risky/Cash Mix Strategy v6.1 — 매매시점 비교")
 st.markdown("""
-**전략 개요 (v6 — 종목 선택 기능 추가):**
-- **로직:** 시그널 발생(T일) → 다음 날(T+1일) 장 마감(종가)에 매매
-- **자산 배분:**
-    - **Bear (하락장):** 안전자산 + SGOV 혼합
-    - **Bull Full (상승장 + 금리 안정):** 공격자산 100%
-    - **Bull Mix (상승장 + 금리 주의):** 공격자산 + 안전자산 혼합
+**v6.1 신규 기능: 매매시점(T+1 vs T) 비교 모드**
 
-| 파라미터 | 기본값 | 최적화 근거 |
-|---------|--------|------------|
-| Bull 진입 MA | **150일** | Top 전부 150일 |
-| Bear 퇴출 MA | **112일** | 진입 MA × 0.75 |
-| 금리 MA | **120일** | v4 최적화 결과 |
-| Whipsaw 필터 | **OFF** | confirm=1일이 압도적 |
-| Bear SGOV 비중 | **50%** | Sharpe 0.885, MDD -48% |
+- **T+1 모드 (기존 v6):** 시그널 확인(T) → 다음 영업일 종가에 매매. 가장 보수적·안전한 방식.
+- **T 모드 (코스피식 즉시매매):** 시그널 확인(T) → 같은 날 종가에 매매. 하루 일찍 반응.
+    - 실행 룰: 종가 5~10분 전(15:50) 임시 신호 확정 → MOC(Market-On-Close) 주문으로 종가 체결.
+    - 한국 KRX 동시호가에서 종가 매매하는 것과 동일한 구조 (코스피 Bull/Bear 전략과 일치).
+- **비교 모드:** 두 방식을 한 화면에서 동시 백테스트하여 CAGR·MDD·Sharpe 차이를 직접 확인.
 """)
-
-with st.expander("📊 v4 최적화 결과 요약 (12,000개 조합)"):
-    col1, col2, col3 = st.columns(3)
-    col1.metric("최고 Sharpe", "0.885", "Bear SGOV 50% + MA 150/112")
-    col2.metric("최고 CAGR",   "36.09%", "2020~2025 기준 (SPY/UPRO)")
-    col3.metric("MDD 개선",    "-48.0%", "v3 대비 약 5%p 개선")
-    st.markdown("""
-    **핵심 발견:**
-    - Bear SGOV 50% 시 Sharpe 최고 / 금리 MA 120일이 90일보다 안정적
-    - Bull Mix 비중(40~80%)은 발동 빈도 낮아 결과에 거의 영향 없음
-    - ⚠️ TQQQ/SOXL 등 섹터 레버리지는 수익률↑ MDD↑ — 백테스트 기간에 주의
-    """)
 
 st.markdown("---")
 
 # ── 사이드바 ──────────────────────────────────────────────────────────────────
 with st.sidebar:
 
+    # ── 0. 매매 시점 모드 (신규) ──────────────────────────────────────────────
+    st.header("0. ⏱️ 매매 시점 모드")
+    exec_mode = st.radio(
+        "신호 → 매매 시점",
+        options=["T+1 종가 (기존, 보수적)", "T 종가 (즉시, 코스피식)", "두 모드 비교"],
+        index=2,
+        help=(
+            "T+1: T일 종가 신호 → T+1일 종가 매매 (look-ahead bias 절대 없음)\n"
+            "T:   T일 종가 신호 → T일 종가 매매 (15:50 MOC 주문 가정)\n"
+            "비교: 두 모드를 동시에 백테스트하여 차이 시각화"
+        )
+    )
+    if exec_mode == "T+1 종가 (기존, 보수적)":
+        st.info("📌 기존 v6와 동일한 보수적 방식")
+    elif exec_mode == "T 종가 (즉시, 코스피식)":
+        st.warning("⚠️ 종가 5~10분 전 임시 신호 확정 후 MOC 주문 필요")
+    else:
+        st.success("📊 두 모드 동시 백테스트 (CAGR/MDD/Sharpe 비교)")
+
+    st.markdown("---")
+
     # ── 1. 종목 선택 ──────────────────────────────────────────────────────────
     st.header("1. 📌 종목 선택")
-
     safe_label  = st.selectbox("안전 자산 (Bear/BullMix)", list(SAFE_OPTIONS.keys()),  index=0)
     risky_label = st.selectbox("공격 자산 (BullFull/Mix)", list(RISKY_OPTIONS.keys()), index=0)
 
@@ -92,7 +92,6 @@ with st.sidebar:
         f"- 현금파킹: **{ticker_cash}**"
     )
 
-    # 섹터 ETF 경고
     if ticker_safe in ["SOXX"] or ticker_risky in ["SOXL"]:
         st.warning("⚠️ 반도체 ETF는 섹터 집중 리스크가 있으며 데이터가 2010년 이후부터만 존재합니다.")
     if ticker_risky in ["TQQQ", "SOXL", "UDOW"]:
@@ -107,16 +106,10 @@ with st.sidebar:
 
     # ── 3. 추세 이평선 ────────────────────────────────────────────────────────
     st.header("3. 추세 이평선")
-    ma_window = st.number_input(
-        "Bull 진입 이평선 (일)", value=150, min_value=5,
-        help="✅ 최적화 결과: 150일 (변경 불필요)"
-    )
+    ma_window = st.number_input("Bull 진입 이평선 (일)", value=150, min_value=5)
     use_asymmetric_ma = st.checkbox("비대칭 MA 사용 (빠른 퇴출)", value=True)
     if use_asymmetric_ma:
-        ma_exit_window = st.number_input(
-            "Bear 퇴출 이평선 (일)", value=112, min_value=5,
-            help="✅ 최적화 결과: 112일 = 150 × 0.75"
-        )
+        ma_exit_window = st.number_input("Bear 퇴출 이평선 (일)", value=112, min_value=5)
         st.caption(f"ℹ️ 진입 MA{int(ma_window)} / 퇴출 MA{int(ma_exit_window)}")
     else:
         ma_exit_window = ma_window
@@ -125,62 +118,36 @@ with st.sidebar:
     st.header("4. 금리 리스크 필터")
     use_rate_filter = st.checkbox("금리 필터 사용", value=True)
     ticker_rate     = st.text_input("금리 지표", value="^TNX")
-    rate_ma_window  = st.number_input(
-        "금리 이평선 (일)", value=120,
-        help="🆕 최적화 결과: 120일 (90일보다 우수)"
-    )
+    rate_ma_window  = st.number_input("금리 이평선 (일)", value=120)
 
     # ── 5. Whipsaw 필터 ───────────────────────────────────────────────────────
     st.header("5. Whipsaw 필터")
-    use_whipsaw  = st.checkbox("Whipsaw 필터 사용", value=False,
-                                help="✅ 최적화 결과: OFF가 압도적 1위")
+    use_whipsaw  = st.checkbox("Whipsaw 필터 사용", value=False)
     confirm_days = st.number_input("신호 확정 기간 (일)", value=1, min_value=1, max_value=10)
 
     # ── 6. Bear 구간 배분 ─────────────────────────────────────────────────────
-    st.header("6. 🆕 Bear 구간 배분")
-    bear_sgov_ratio = st.slider(
-        f"Bear 시 {ticker_cash} 비중", 0.0, 1.0, 0.5, 0.1,
-        help="🆕 최적화 결과: 50%가 Sharpe 최고 (MDD -48%)"
-    )
+    st.header("6. Bear 구간 배분")
+    bear_sgov_ratio = st.slider(f"Bear 시 {ticker_cash} 비중", 0.0, 1.0, 0.5, 0.1)
     bear_safe_ratio = 1.0 - bear_sgov_ratio
     st.caption(f"Bear 배분: {ticker_safe} {bear_safe_ratio*100:.0f}% / {ticker_cash} {bear_sgov_ratio*100:.0f}%")
-    if bear_sgov_ratio == 0.5:
-        st.success("✅ 최적화 권장 비중")
-    elif bear_sgov_ratio < 0.3:
-        st.warning(f"⚠️ {ticker_cash} 비중이 낮으면 Bear 구간 MDD가 커짐")
 
     # ── 7. Bull Full 구간 배분 ────────────────────────────────────────────────
     st.header("7. Bull Full 구간 배분")
-    bull_full_risky_ratio = st.slider(
-        f"Bull Full 시 {ticker_risky} 비중", 0.0, 1.0, 1.0, 0.1,
-        help="기본 100%. 낮출수록 MDD↓ 수익률↓"
-    )
+    bull_full_risky_ratio = st.slider(f"Bull Full 시 {ticker_risky} 비중", 0.0, 1.0, 1.0, 0.1)
     bull_full_safe_ratio = 1.0 - bull_full_risky_ratio
     st.caption(f"Bull Full: {ticker_risky} {bull_full_risky_ratio*100:.0f}% / {ticker_safe} {bull_full_safe_ratio*100:.0f}%")
-    if bull_full_risky_ratio == 1.0:
-        st.success("✅ 기본값 (최대 공격)")
-    elif bull_full_risky_ratio >= 0.7:
-        st.info(f"ℹ️ {ticker_risky} {bull_full_risky_ratio*100:.0f}% — 공격적")
-    else:
-        st.warning(f"⚠️ {ticker_risky} {bull_full_risky_ratio*100:.0f}% — 보수적 (수익률 크게 감소)")
 
     # ── 8. Bull Mix 구간 배분 ─────────────────────────────────────────────────
     st.header("8. Bull Mix 구간 배분")
-    bull_mix_risky_ratio = st.slider(
-        f"Bull Mix 시 {ticker_risky} 비중", 0.0, 1.0, 0.6, 0.1,
-        help="ℹ️ 최적화 결과: 40~80% 모두 동일 → 기본 60%"
-    )
+    bull_mix_risky_ratio = st.slider(f"Bull Mix 시 {ticker_risky} 비중", 0.0, 1.0, 0.6, 0.1)
     bull_mix_safe_ratio = 1.0 - bull_mix_risky_ratio
     st.caption(f"Bull Mix: {ticker_risky} {bull_mix_risky_ratio*100:.0f}% / {ticker_safe} {bull_mix_safe_ratio*100:.0f}%")
-    st.info("ℹ️ Bull Mix 비중은 결과에 거의 영향 없음 (발동 빈도 낮음)")
 
     # ── 9. 보조 시장 필터 ─────────────────────────────────────────────────────
     st.header("9. 보조 시장 필터")
     use_aux_signal = st.checkbox("보조 시장 신호 사용", value=False)
     ticker_aux     = st.text_input("보조 시장 티커", value="QQQ")
     aux_ma_window  = st.number_input("보조 이평선 (일)", value=120)
-    if use_aux_signal:
-        st.caption(f"ℹ️ {ticker_safe}+{ticker_aux} 모두 이평선 위일 때만 Bull_Full 진입")
 
 # ── 데이터 로드 ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600 * 24)
@@ -194,7 +161,7 @@ def load_data(safe, risky, rate, cash, aux):
     df = df.loc[~df.index.duplicated(keep='first')].sort_index()
     return df
 
-# ── 유틸 함수 ─────────────────────────────────────────────────────────────────
+# ── 유틸 ──────────────────────────────────────────────────────────────────────
 def sharpe_ratio(daily_returns, rf=0.05):
     excess = daily_returns - rf / 252
     return float(excess.mean() / excess.std() * np.sqrt(252)) if excess.std() != 0 else 0.0
@@ -216,9 +183,129 @@ def win_rate_and_avg_hold(res_df):
     total = len(switches) - 1
     return (wins / total * 100) if total > 0 else 0.0, int(np.mean(hold_days)) if hold_days else 0
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  핵심 백테스트 함수 (모드를 인자로 받음)
+# ─────────────────────────────────────────────────────────────────────────────
+def run_backtest(df_raw, raw_state, returns_df, sim_start, mode_label, *,
+                 ticker_safe, ticker_risky, ticker_cash,
+                 bear_safe_ratio, bear_sgov_ratio,
+                 bull_full_risky_ratio, bull_full_safe_ratio,
+                 bull_mix_risky_ratio, bull_mix_safe_ratio,
+                 cash_available, initial_capital, fee_rate,
+                 shift_signal: bool):
+    """
+    shift_signal=True  → T+1 종가 매매 (기존 v6: trade_state = raw_state.shift(1))
+    shift_signal=False → T 종가 매매   (코스피식 즉시매매: trade_state = raw_state)
+    """
+    if shift_signal:
+        trade_state = raw_state.shift(1)
+    else:
+        trade_state = raw_state.copy()
+
+    df_sim      = df_raw.loc[sim_start:].copy()
+    trade_state = trade_state.loc[sim_start:].fillna("Bear")
+    returns_sim = returns_df.loc[sim_start:]
+
+    def state_to_weights(state):
+        if state == "Bear":
+            w = {ticker_safe: bear_safe_ratio}
+            if bear_sgov_ratio > 1e-6 and cash_available:
+                w[ticker_cash] = bear_sgov_ratio
+            return w
+        elif state == "Bull_Full":
+            w = {ticker_risky: bull_full_risky_ratio}
+            if bull_full_safe_ratio > 1e-6:
+                w[ticker_safe] = bull_full_safe_ratio
+            return w
+        elif state == "Bull_Mix":
+            w = {ticker_risky: bull_mix_risky_ratio}
+            if bull_mix_safe_ratio > 1e-6:
+                w[ticker_safe] = bull_mix_safe_ratio
+            return w
+        return {ticker_safe: 1.0}
+
+    equity = float(initial_capital)
+    peak   = equity
+    history = []
+    curr_w  = {k: v for k, v in state_to_weights(trade_state.iloc[0]).items() if v > 0}
+    equity -= equity * fee_rate
+    REBAL_THRESH = 0.05
+
+    col_risky = f"{ticker_risky}_W(%)"
+    col_safe  = f"{ticker_safe}_W(%)"
+    col_cash  = f"{ticker_cash}_W(%)"
+
+    for i in range(len(df_sim)):
+        today    = df_sim.index[i]
+        state    = trade_state.iloc[i]
+        target_w = {k: v for k, v in state_to_weights(state).items() if v > 0}
+
+        day_ret = 0.0
+        if i > 0:
+            for tk, w in curr_w.items():
+                if tk in returns_sim.columns:
+                    r = returns_sim.loc[today, tk]
+                    day_ret += w * (0.0 if pd.isna(r) else float(r))
+
+        equity *= (1.0 + day_ret)
+
+        state_changed  = (curr_w.keys() != target_w.keys())
+        weight_changed = any(
+            abs(curr_w.get(k, 0) - target_w.get(k, 0)) >= REBAL_THRESH
+            for k in set(list(curr_w.keys()) + list(target_w.keys()))
+        )
+        action = ""
+        if state_changed or weight_changed:
+            action  = "SWITCH"
+            equity -= equity * fee_rate
+            curr_w  = target_w
+
+        if equity > peak: peak = equity
+        dd = (equity - peak) / peak if peak > 0 else 0.0
+
+        history.append({
+            "Date":            today,
+            "State":           state,
+            "Mode":            mode_label,
+            col_risky:         round(curr_w.get(ticker_risky, 0) * 100, 1),
+            col_safe:          round(curr_w.get(ticker_safe,  0) * 100, 1),
+            col_cash:          round(curr_w.get(ticker_cash,  0) * 100, 1),
+            "Action":          action,
+            "Equity":          round(equity),
+            "Daily_Return(%)": round(day_ret * 100, 4),
+            "Drawdown(%)":     round(dd * 100, 4),
+        })
+
+    res_df = pd.DataFrame(history).set_index("Date")
+
+    final_balance = float(res_df['Equity'].iloc[-1])
+    days   = (res_df.index[-1] - res_df.index[0]).days
+    cagr   = (final_balance / initial_capital) ** (365.0 / days) - 1 if days > 0 else 0.0
+    mdd    = res_df['Drawdown(%)'].min() / 100.0
+    daily_ret_series = res_df['Daily_Return(%)'] / 100.0
+    sharpe = sharpe_ratio(daily_ret_series)
+    calmar = calmar_ratio(cagr, mdd)
+    wr, avg_hold = win_rate_and_avg_hold(res_df)
+    n_trades = len(res_df[res_df['Action'] == 'SWITCH'])
+
+    return {
+        "label": mode_label,
+        "res_df": res_df,
+        "final_balance": final_balance,
+        "cagr": cagr,
+        "mdd": mdd,
+        "sharpe": sharpe,
+        "calmar": calmar,
+        "wr": wr,
+        "avg_hold": avg_hold,
+        "n_trades": n_trades,
+    }
+
+
 # ── 메인 실행 ─────────────────────────────────────────────────────────────────
-if st.button("🚀 Run Backtest v6", type="primary", use_container_width=True):
-    with st.spinner(f"v6 전략 분석 중... ({ticker_safe} / {ticker_risky} / {ticker_cash})"):
+if st.button("🚀 Run Backtest v6.1", type="primary", use_container_width=True):
+    with st.spinner(f"v6.1 전략 분석 중... ({ticker_safe} / {ticker_risky} / {ticker_cash})"):
 
         full_df = load_data(ticker_safe, ticker_risky, ticker_rate, ticker_cash, ticker_aux)
         missing = [c for c in [ticker_safe, ticker_risky, ticker_rate] if c not in full_df.columns]
@@ -262,7 +349,6 @@ if st.button("🚀 Run Backtest v6", type="primary", use_container_width=True):
         raw_hike = series_rate > ma_rate
         raw_aux  = (series_aux > ma_aux) if aux_available else pd.Series(True, index=df_raw.index)
 
-        # ── Whipsaw 필터 ──────────────────────────────────────────────────────
         if use_whipsaw:
             cd = int(confirm_days)
             is_bull_c = raw_bull.rolling(cd).min().fillna(0).astype(bool)
@@ -276,388 +362,189 @@ if st.button("🚀 Run Backtest v6", type="primary", use_container_width=True):
         is_hike = raw_hike
         is_aux  = raw_aux
 
-        # ── 상태 결정 (T+1 지연) ──────────────────────────────────────────────
         conditions = [
             ~is_bull,
             is_bull & is_aux & (~is_hike | ~use_rate_filter),
             is_bull & (~is_aux | (is_aux & is_hike & use_rate_filter)),
         ]
-        raw_state   = pd.Series(
+        raw_state = pd.Series(
             np.select(conditions, ["Bear", "Bull_Full", "Bull_Mix"], default="Bear"),
             index=df_raw.index
         )
-        trade_state = raw_state.shift(1)
 
-        sim_start   = max(pd.to_datetime(start_date), df_raw.index[0])
-        df_sim      = df_raw.loc[sim_start:].copy()
-        trade_state = trade_state.loc[sim_start:].fillna("Bear")
-        returns_sim = returns_df.loc[sim_start:]
+        sim_start = max(pd.to_datetime(start_date), df_raw.index[0])
 
-        # ── 포지션 가중치 계산 ────────────────────────────────────────────────
-        def state_to_weights(state):
-            if state == "Bear":
-                w = {ticker_safe: bear_safe_ratio}
-                if bear_sgov_ratio > 1e-6 and cash_available:
-                    w[ticker_cash] = bear_sgov_ratio
-                return w
-            elif state == "Bull_Full":
-                w = {ticker_risky: bull_full_risky_ratio}
-                if bull_full_safe_ratio > 1e-6:
-                    w[ticker_safe] = bull_full_safe_ratio
-                return w
-            elif state == "Bull_Mix":
-                w = {ticker_risky: bull_mix_risky_ratio}
-                if bull_mix_safe_ratio > 1e-6:
-                    w[ticker_safe] = bull_mix_safe_ratio
-                return w
-            return {ticker_safe: 1.0}
-
-        # ── 시뮬레이션 루프 ───────────────────────────────────────────────────
-        equity = float(initial_capital)
-        peak   = equity
-        history = []
-        curr_w  = {k: v for k, v in state_to_weights(trade_state.iloc[0]).items() if v > 0}
-        equity -= equity * fee_rate
-        REBAL_THRESH = 0.05
-
-        col_risky = f"{ticker_risky}_W(%)"
-        col_safe  = f"{ticker_safe}_W(%)"
-        col_cash  = f"{ticker_cash}_W(%)"
-
-        for i in range(len(df_sim)):
-            today    = df_sim.index[i]
-            state    = trade_state.iloc[i]
-            target_w = {k: v for k, v in state_to_weights(state).items() if v > 0}
-
-            day_ret = 0.0
-            if i > 0:
-                for tk, w in curr_w.items():
-                    if tk in returns_sim.columns:
-                        r = returns_sim.loc[today, tk]
-                        day_ret += w * (0.0 if pd.isna(r) else float(r))
-
-            equity *= (1.0 + day_ret)
-
-            state_changed  = (curr_w.keys() != target_w.keys())
-            weight_changed = any(
-                abs(curr_w.get(k, 0) - target_w.get(k, 0)) >= REBAL_THRESH
-                for k in set(list(curr_w.keys()) + list(target_w.keys()))
-            )
-            action = ""
-            if state_changed or weight_changed:
-                action  = "SWITCH"
-                equity -= equity * fee_rate
-                curr_w  = target_w
-
-            if equity > peak: peak = equity
-            dd = (equity - peak) / peak if peak > 0 else 0.0
-
-            if state == "Bear":
-                pos_label = f"Bear ({ticker_safe} {bear_safe_ratio*100:.0f}% / {ticker_cash} {bear_sgov_ratio*100:.0f}%)"
-            elif state == "Bull_Full":
-                pos_label = f"Bull Full ({ticker_risky} {bull_full_risky_ratio*100:.0f}% / {ticker_safe} {bull_full_safe_ratio*100:.0f}%)"
-            else:
-                pos_label = f"Bull Mix ({ticker_risky} {bull_mix_risky_ratio*100:.0f}% / {ticker_safe} {bull_mix_safe_ratio*100:.0f}%)"
-
-            history.append({
-                "Date":            today,
-                "State":           state,
-                "Position":        pos_label,
-                col_risky:         round(curr_w.get(ticker_risky, 0) * 100, 1),
-                col_safe:          round(curr_w.get(ticker_safe,  0) * 100, 1),
-                col_cash:          round(curr_w.get(ticker_cash,  0) * 100, 1),
-                "Action":          action,
-                "Equity":          round(equity),
-                "Daily_Return(%)": round(day_ret * 100, 4),
-                "Drawdown(%)":     round(dd * 100, 4),
-                "Safe_Price":      df_sim[ticker_safe].iloc[i],
-                "Safe_MA":         ma_safe.loc[today] if today in ma_safe.index else np.nan,
-            })
-
-        res_df = pd.DataFrame(history).set_index("Date")
-        bm_ret = returns_sim[ticker_safe].fillna(0)
-        res_df['Benchmark'] = (1 + bm_ret).cumprod() * initial_capital
-
-        # ── 오늘의 투자 가이드 ────────────────────────────────────────────────
-        st.divider()
-        st.markdown("### 📢 오늘의 투자 가이드")
-
-        last_date   = df_raw.index[-1]
-        last_safe_p = float(df_raw[ticker_safe].iloc[-1])
-        last_safe_m = float(ma_safe.iloc[-1])
-        last_rate_p = float(df_raw[ticker_rate].iloc[-1])
-        last_rate_m = float(ma_rate.iloc[-1])
-
-        is_bull_now = last_safe_p > last_safe_m
-        is_hike_now = last_rate_p > last_rate_m
-        is_aux_now  = float(df_raw[ticker_aux].iloc[-1]) > float(ma_aux.iloc[-1]) if aux_available else True
-
-        if is_bull_now:
-            current_state = "Bull_Mix" if (use_rate_filter and is_hike_now) else "Bull_Full"
-            if use_aux_signal and not is_aux_now:
-                current_state = "Bull_Mix"
-        else:
-            current_state = "Bear"
-
-        today_w   = state_to_weights(current_state)
-        risky_now = today_w.get(ticker_risky, 0)
-        safe_pct  = today_w.get(ticker_safe, 0)
-        cash_pct  = today_w.get(ticker_cash, 0)
-
-        st.caption(f"기준 데이터: {last_date.strftime('%Y-%m-%d')} 종가 | 종목: {ticker_safe} / {ticker_risky} / {ticker_cash}")
-        col_g1, col_g2, col_g3 = st.columns(3)
-        with col_g1:
-            st.metric(f"{ticker_safe} 추세", f"{last_safe_p:,.2f}", f"{last_safe_p - last_safe_m:.2f} (vs MA{int(ma_window)})")
-            st.text("📈 상승장" if is_bull_now else "📉 하락장")
-            st.text("🔥 금리 주의" if (is_hike_now and use_rate_filter) else "🍀 금리 안정")
-        with col_g2:
-            st.metric("현재 상태", current_state)
-            st.metric(f"{ticker_risky} 권고 비중", f"{risky_now*100:.0f}%")
-        with col_g3:
-            if current_state == "Bear":
-                st.error(
-                    f"🛑 **[하락장 방어]**\n\n"
-                    f"👉 {ticker_safe} {safe_pct*100:.0f}% / {ticker_cash} {cash_pct*100:.0f}%"
-                )
-            elif current_state == "Bull_Full":
-                st.success(
-                    f"🚀 **[강한 상승장]**\n\n"
-                    f"👉 {ticker_risky} {risky_now*100:.0f}%"
-                    + (f" / {ticker_safe} {safe_pct*100:.0f}%" if safe_pct > 0 else "")
-                )
-            else:
-                st.warning(
-                    f"⚠️ **[리스크 관리]**\n\n"
-                    f"👉 {ticker_risky} {risky_now*100:.0f}% / {ticker_safe} {safe_pct*100:.0f}%"
-                )
-
-        # ── 성과 지표 ─────────────────────────────────────────────────────────
-        final_pre_tax = float(res_df['Equity'].iloc[-1])
-        profit        = final_pre_tax - initial_capital
-        tax_amount    = max(profit, 0) * 0.22 if (apply_tax and profit > 0) else 0.0
-        final_balance = final_pre_tax - tax_amount
-        final_bm      = float(res_df['Benchmark'].iloc[-1])
-        days          = (res_df.index[-1] - res_df.index[0]).days
-
-        cagr   = (final_balance / initial_capital) ** (365.0 / days) - 1 if days > 0 else 0.0
-        cagr_b = (final_bm      / initial_capital) ** (365.0 / days) - 1 if days > 0 else 0.0
-        mdd    = res_df['Drawdown(%)'].min() / 100.0
-
-        daily_ret_series = res_df['Daily_Return(%)'] / 100.0
-        sharpe = sharpe_ratio(daily_ret_series)
-        calmar = calmar_ratio(cagr, mdd)
-        wr, avg_hold = win_rate_and_avg_hold(res_df)
-        n_trades = len(res_df[res_df['Action'] == 'SWITCH'])
-
-        state_counts = res_df['State'].value_counts()
-        total_days   = len(res_df)
-
-        st.divider()
-        st.markdown(f"### 📊 성과 요약 — {ticker_safe} / {ticker_risky}")
-        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-        label_bal = "Final Balance (After Tax)" if apply_tax else "Final Balance"
-        r1c1.metric(label_bal,       f"{final_balance:,.0f}", delta=f"세금: -{tax_amount:,.0f}" if tax_amount > 0 else None)
-        r1c2.metric("CAGR",          f"{cagr*100:.2f}%",      delta=f"{(cagr-cagr_b)*100:.2f}%p vs BM")
-        r1c3.metric("MDD",           f"{mdd*100:.2f}%")
-        r1c4.metric(f"BM CAGR ({ticker_safe})", f"{cagr_b*100:.2f}%")
-
-        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-        r2c1.metric("Sharpe Ratio",      f"{sharpe:.2f}", help="연환산 Sharpe (rf=5%)")
-        r2c2.metric("Calmar Ratio",      f"{calmar:.2f}", help="CAGR / |MDD|")
-        r2c3.metric("매매 승률",          f"{wr:.1f}%")
-        r2c4.metric("총 매매 / 평균보유", f"{n_trades}회 / {avg_hold}일")
-
-        st.markdown("#### 📋 상태별 체류 기간")
-        sc1, sc2, sc3 = st.columns(3)
-        bear_d = state_counts.get("Bear",      0)
-        bf_d   = state_counts.get("Bull_Full", 0)
-        bm_d   = state_counts.get("Bull_Mix",  0)
-        sc1.metric("🛑 Bear",      f"{bear_d}일", f"{bear_d/total_days*100:.1f}%")
-        sc2.metric("🚀 Bull Full", f"{bf_d}일",   f"{bf_d/total_days*100:.1f}%")
-        sc3.metric("⚠️ Bull Mix",  f"{bm_d}일",   f"{bm_d/total_days*100:.1f}%")
-        st.divider()
-
-        # ── 월별 수익률 피벗 ─────────────────────────────────────────────────
-        m_equity = res_df[['Equity']].resample('ME').last()
-
-        def calc_annual_returns(df_eq):
-            annual = {}
-            for yr in df_eq.index.year.unique():
-                yr_data   = df_eq[df_eq.index.year == yr]['Equity']
-                before    = df_eq[df_eq.index.year < yr]['Equity']
-                start_val = float(before.iloc[-1]) if len(before) > 0 else float(initial_capital)
-                annual[yr] = float(yr_data.iloc[-1]) / start_val - 1.0
-            return pd.Series(annual)
-
-        annual_ret  = calc_annual_returns(res_df[['Equity']])
-        m_ret       = m_equity['Equity'].pct_change()
-        pivot_table = m_ret.groupby([m_equity.index.year, m_equity.index.month]).sum().unstack()
-        pivot_table.columns = [calendar.month_abbr[i] for i in pivot_table.columns]
-        pivot_table['Total'] = annual_ret
-
-        def color_map(val):
-            if pd.isna(val): return ''
-            return f'color: {"red" if val < 0 else "green"}'
-
-        # ── 탭 ───────────────────────────────────────────────────────────────
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Chart", "📝 Trade Logs", "📅 Monthly Returns", "📋 배분 분석"])
-
-        with tab1:
-            fig = plt.figure(figsize=(14, 24))
-            gs  = gridspec.GridSpec(5, 1, height_ratios=[2, 1, 1, 1, 1], hspace=0.4)
-            ax  = [fig.add_subplot(gs[i]) for i in range(5)]
-
-            ax[0].plot(res_df.index, res_df['Equity'],    color='firebrick', lw=1.5, label=f'Strategy ({ticker_risky})')
-            ax[0].plot(res_df.index, res_df['Benchmark'], color='gray',      lw=1.0, ls='--', alpha=0.7, label=f'B&H {ticker_safe}')
-            ax[0].set_yscale('log')
-            ax[0].set_title(f"1. Equity Curve — {ticker_safe}/{ticker_risky}/{ticker_cash} (Bear SGOV {bear_sgov_ratio*100:.0f}%)", fontsize=12)
-            ax[0].legend()
-            ax[0].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
-
-            safe_cum  = (1 + returns_sim[ticker_safe].fillna(0)).cumprod()
-            safe_peak = safe_cum.cummax()
-            safe_dd   = ((safe_cum - safe_peak) / safe_peak * 100)
-
-            ax[1].fill_between(res_df.index, res_df['Drawdown(%)'], 0, color='blue', alpha=0.20)
-            ax[1].plot(res_df.index, res_df['Drawdown(%)'], color='blue', lw=1.0, label=f'Strategy (MDD {mdd*100:.1f}%)')
-            ax[1].plot(safe_dd.index, safe_dd, color='tomato', lw=1.0, ls='--', alpha=0.8,
-                       label=f'{ticker_safe} B&H (MDD {safe_dd.min():.1f}%)')
-            ax[1].set_title(f"2. Drawdown (%) — Strategy vs {ticker_safe}", fontsize=12)
-            ax[1].axhline(0, color='black', lw=0.5)
-            ax[1].legend(loc='lower left', fontsize=9)
-
-            # 상태 컬러 배경
-            state_colors = {"Bear": "salmon", "Bull_Full": "lightgreen", "Bull_Mix": "lightyellow"}
-            prev_state, prev_date = None, res_df.index[0]
-            for d, row in res_df.iterrows():
-                if row['State'] != prev_state:
-                    if prev_state is not None:
-                        ax[2].axvspan(prev_date, d, alpha=0.15, color=state_colors.get(prev_state, 'white'))
-                    prev_state, prev_date = row['State'], d
-            ax[2].axvspan(prev_date, res_df.index[-1], alpha=0.15, color=state_colors.get(prev_state, 'white'))
-
-            ax[2].plot(res_df.index, res_df['Safe_Price'], color='black',  lw=1.0, label=f'{ticker_safe} Price')
-            ax[2].plot(res_df.index, res_df['Safe_MA'],    color='orange', lw=1.5, ls='--', label=f'Entry MA{int(ma_window)}')
-            if use_asymmetric_ma:
-                ax[2].plot(res_df.index, ma_safe_exit.loc[res_df.index], color='red', lw=1.2, ls=':', label=f'Exit MA{int(ma_exit_window)}')
-            ax[2].set_title("3. Trend Signal  [녹색=BullFull / 노랑=BullMix / 빨강=Bear]", fontsize=12)
-            ax[2].legend(fontsize=9)
-
-            rate_s    = df_raw.loc[res_df.index, ticker_rate]
-            rate_ma_p = ma_rate.loc[res_df.index]
-            ax[3].plot(res_df.index, rate_s,    color='purple', lw=1.0, label=f'{ticker_rate}')
-            ax[3].plot(res_df.index, rate_ma_p, color='green',  lw=1.5, ls='--', label=f'MA{rate_ma_window}')
-            ax[3].set_title(f"4. Rate Signal ({ticker_rate}) — MA{rate_ma_window}일", fontsize=12)
-            ax[3].legend()
-
-            # 5. 자산별 비중 스택 (동적 컬럼명)
-            ax[4].stackplot(
-                res_df.index,
-                res_df[col_risky],
-                res_df[col_safe],
-                res_df[col_cash],
-                labels=[ticker_risky, ticker_safe, ticker_cash],
-                colors=['firebrick', 'steelblue', 'gold'],
-                alpha=0.7
-            )
-            ax[4].set_title(f"5. Asset Allocation — {ticker_risky} / {ticker_safe} / {ticker_cash}", fontsize=12)
-            ax[4].legend(loc='lower left', fontsize=9)
-            ax[4].set_ylim(0, 105)
-
-            st.pyplot(fig)
-
-        with tab2:
-            st.dataframe(res_df.sort_index(ascending=False), use_container_width=True)
-
-        with tab3:
-            st.dataframe(
-                pivot_table.style.map(color_map).format("{:.2%}", na_rep=""),
-                use_container_width=True
-            )
-
-        with tab4:
-            st.markdown(f"#### 📋 v6 배분 전략 분석 — {ticker_safe} / {ticker_risky}")
-
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                st.markdown("**🛑 Bear 구간**")
-                st.error(
-                    f"{ticker_safe}: **{bear_safe_ratio*100:.0f}%**\n\n"
-                    f"{ticker_cash}: **{bear_sgov_ratio*100:.0f}%**\n\n"
-                    f"→ SGOV {bear_sgov_ratio*100:.0f}%가 하락 완충"
-                )
-            with col_b:
-                st.markdown("**🚀 Bull Full 구간**")
-                st.success(
-                    f"{ticker_risky} ({lev_risky}): **{bull_full_risky_ratio*100:.0f}%**\n\n"
-                    f"{ticker_safe}: **{bull_full_safe_ratio*100:.0f}%**\n\n"
-                    f"→ {'최대 공격' if bull_full_risky_ratio == 1.0 else 'MDD 조절 모드'}"
-                )
-            with col_c:
-                st.markdown("**⚠️ Bull Mix 구간**")
-                st.warning(
-                    f"{ticker_risky}: **{bull_mix_risky_ratio*100:.0f}%**\n\n"
-                    f"{ticker_safe}: **{bull_mix_safe_ratio*100:.0f}%**\n\n"
-                    f"→ 발동 빈도 낮아 결과 영향 미미"
-                )
-
-            st.markdown("---")
-            st.markdown("**상태별 수익 기여도**")
-            for st_name, icon in [("Bear","🛑"), ("Bull_Full","🚀"), ("Bull_Mix","⚠️")]:
-                mask    = res_df['State'] == st_name
-                seg_ret = res_df.loc[mask, 'Daily_Return(%)']
-                days_c  = mask.sum()
-                if days_c > 0:
-                    total_ret = seg_ret.sum()
-                    st.metric(
-                        f"{icon} {st_name} ({days_c}일 / {days_c/total_days*100:.1f}%)",
-                        f"누적 기여: {total_ret:.2f}%",
-                        delta=f"일평균: {total_ret/days_c:.3f}%"
-                    )
-
-            # 종목 비교 안내
-            st.markdown("---")
-            st.markdown("**📌 종목 조합별 특성 참고**")
-            combo_table = pd.DataFrame({
-                "안전자산": ["SPY", "SPY",  "QQQ",  "QQQ"],
-                "공격자산": ["UPRO","TQQQ", "TQQQ", "SOXL"],
-                "레버리지": ["3×S&P", "3×나스닥", "3×나스닥", "3×반도체"],
-                "특성":     ["균형형 기본", "나스닥 집중 고수익", "나스닥 일관성", "섹터 집중 고변동"],
-                "MDD 예상": ["중간", "높음", "높음", "매우 높음"],
-            })
-            st.dataframe(combo_table, use_container_width=True, hide_index=True)
-
-        # ── 엑셀 다운로드 ─────────────────────────────────────────────────────
-        output = io.BytesIO()
-        try:
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                res_df.to_excel(writer, sheet_name='Daily_Log')
-                pivot_table.to_excel(writer, sheet_name='Monthly_Returns')
-                summary = pd.DataFrame({
-                    'Metric': ['안전자산', '공격자산', '현금파킹',
-                               'CAGR', 'MDD', 'Sharpe', 'Calmar', '승률', '매매횟수', '평균보유일',
-                               'Bear_Safe비중', 'Bear_SGOV비중',
-                               'BullFull_Risky비중', 'BullFull_Safe비중',
-                               'BullMix_Risky비중',  'BullMix_Safe비중',
-                               'Bull_진입MA', 'Bear_퇴출MA', '금리MA'],
-                    'Value':  [ticker_safe, ticker_risky, ticker_cash,
-                               f"{cagr*100:.2f}%", f"{mdd*100:.2f}%",
-                               f"{sharpe:.2f}", f"{calmar:.2f}",
-                               f"{wr:.1f}%", n_trades, avg_hold,
-                               f"{bear_safe_ratio*100:.0f}%", f"{bear_sgov_ratio*100:.0f}%",
-                               f"{bull_full_risky_ratio*100:.0f}%", f"{bull_full_safe_ratio*100:.0f}%",
-                               f"{bull_mix_risky_ratio*100:.0f}%",  f"{bull_mix_safe_ratio*100:.0f}%",
-                               f"{int(ma_window)}일", f"{int(ma_exit_window)}일", f"{int(rate_ma_window)}일"]
-                })
-                summary.to_excel(writer, sheet_name='Summary_v6', index=False)
-        except Exception:
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                res_df.to_excel(writer, sheet_name='Daily_Log')
-                pivot_table.to_excel(writer, sheet_name='Monthly_Returns')
-
-        st.download_button(
-            "📥 엑셀 결과 다운로드",
-            data=output.getvalue(),
-            file_name=f"Mix_Strategy_v6_{ticker_safe}_{ticker_risky}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        # ── 모드 분기 ─────────────────────────────────────────────────────────
+        common_kw = dict(
+            ticker_safe=ticker_safe, ticker_risky=ticker_risky, ticker_cash=ticker_cash,
+            bear_safe_ratio=bear_safe_ratio, bear_sgov_ratio=bear_sgov_ratio,
+            bull_full_risky_ratio=bull_full_risky_ratio, bull_full_safe_ratio=bull_full_safe_ratio,
+            bull_mix_risky_ratio=bull_mix_risky_ratio, bull_mix_safe_ratio=bull_mix_safe_ratio,
+            cash_available=cash_available,
+            initial_capital=initial_capital, fee_rate=fee_rate,
         )
+
+        results = []
+        if exec_mode == "T+1 종가 (기존, 보수적)":
+            results.append(run_backtest(df_raw, raw_state, returns_df, sim_start,
+                                        "T+1 (기존)", shift_signal=True, **common_kw))
+        elif exec_mode == "T 종가 (즉시, 코스피식)":
+            results.append(run_backtest(df_raw, raw_state, returns_df, sim_start,
+                                        "T (즉시)", shift_signal=False, **common_kw))
+        else:  # 비교
+            results.append(run_backtest(df_raw, raw_state, returns_df, sim_start,
+                                        "T+1 (기존)", shift_signal=True, **common_kw))
+            results.append(run_backtest(df_raw, raw_state, returns_df, sim_start,
+                                        "T (즉시)",   shift_signal=False, **common_kw))
+
+        bm_ret = returns_df.loc[sim_start:][ticker_safe].fillna(0)
+        benchmark_eq = (1 + bm_ret).cumprod() * initial_capital
+        bm_cagr = (float(benchmark_eq.iloc[-1]) / initial_capital) ** (365.0 / (benchmark_eq.index[-1] - benchmark_eq.index[0]).days) - 1
+        bm_dd = (benchmark_eq / benchmark_eq.cummax() - 1).min()
+
+        # ── 결과 출력 ─────────────────────────────────────────────────────────
+        st.divider()
+
+        if len(results) == 1:
+            r = results[0]
+            st.markdown(f"### 📊 성과 요약 — {r['label']}")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Final Balance", f"{r['final_balance']:,.0f}")
+            c2.metric("CAGR", f"{r['cagr']*100:.2f}%", delta=f"{(r['cagr']-bm_cagr)*100:.2f}%p vs BM")
+            c3.metric("MDD",  f"{r['mdd']*100:.2f}%")
+            c4.metric(f"BM CAGR ({ticker_safe})", f"{bm_cagr*100:.2f}%")
+
+            c5, c6, c7, c8 = st.columns(4)
+            c5.metric("Sharpe", f"{r['sharpe']:.2f}")
+            c6.metric("Calmar", f"{r['calmar']:.2f}")
+            c7.metric("승률",   f"{r['wr']:.1f}%")
+            c8.metric("매매/평균보유", f"{r['n_trades']}회 / {r['avg_hold']}일")
+        else:
+            # ── 비교 테이블 ───────────────────────────────────────────────────
+            st.markdown("### 📊 매매시점 비교 — T+1 vs T")
+
+            r1, r2 = results[0], results[1]
+            comp_df = pd.DataFrame({
+                "지표":           ["Final Balance", "CAGR", "MDD", "Sharpe", "Calmar", "승률", "매매횟수", "평균보유일"],
+                "T+1 (기존)":     [f"{r1['final_balance']:,.0f}", f"{r1['cagr']*100:.2f}%",
+                                  f"{r1['mdd']*100:.2f}%", f"{r1['sharpe']:.2f}",
+                                  f"{r1['calmar']:.2f}", f"{r1['wr']:.1f}%",
+                                  f"{r1['n_trades']}회", f"{r1['avg_hold']}일"],
+                "T (즉시)":       [f"{r2['final_balance']:,.0f}", f"{r2['cagr']*100:.2f}%",
+                                  f"{r2['mdd']*100:.2f}%", f"{r2['sharpe']:.2f}",
+                                  f"{r2['calmar']:.2f}", f"{r2['wr']:.1f}%",
+                                  f"{r2['n_trades']}회", f"{r2['avg_hold']}일"],
+                "차이 (T - T+1)": [
+                    f"{r2['final_balance']-r1['final_balance']:+,.0f}",
+                    f"{(r2['cagr']-r1['cagr'])*100:+.2f}%p",
+                    f"{(r2['mdd']-r1['mdd'])*100:+.2f}%p",
+                    f"{r2['sharpe']-r1['sharpe']:+.2f}",
+                    f"{r2['calmar']-r1['calmar']:+.2f}",
+                    f"{r2['wr']-r1['wr']:+.1f}%p",
+                    f"{r2['n_trades']-r1['n_trades']:+d}회",
+                    f"{r2['avg_hold']-r1['avg_hold']:+d}일",
+                ],
+            })
+            st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+            # ── 해석 가이드 ───────────────────────────────────────────────────
+            cagr_diff = (r2['cagr']-r1['cagr'])*100
+            mdd_diff  = (r2['mdd']-r1['mdd'])*100
+            sharpe_diff = r2['sharpe']-r1['sharpe']
+
+            interp = []
+            if cagr_diff > 0.5:
+                interp.append(f"✅ T 즉시매매가 CAGR을 {cagr_diff:+.2f}%p 개선 (하루 일찍 추세 진입 효과)")
+            elif cagr_diff < -0.5:
+                interp.append(f"⚠️ T 즉시매매가 CAGR을 {cagr_diff:+.2f}%p 악화 (Whipsaw 비용이 추세 효과 초과)")
+            else:
+                interp.append(f"➖ CAGR 차이 미미 ({cagr_diff:+.2f}%p)")
+
+            if mdd_diff > 1.0:
+                interp.append(f"⚠️ T 즉시매매 MDD가 {mdd_diff:+.2f}%p 악화 (일찍 진입한 포지션이 단기 되돌림에 노출)")
+            elif mdd_diff < -1.0:
+                interp.append(f"✅ T 즉시매매 MDD가 {mdd_diff:+.2f}%p 개선 (Bear 진입을 하루 빨리 해서 갭다운 회피)")
+            else:
+                interp.append(f"➖ MDD 차이 미미 ({mdd_diff:+.2f}%p)")
+
+            if sharpe_diff > 0.05:
+                interp.append(f"✅ Sharpe 개선 ({sharpe_diff:+.2f}) — 위험조정수익률 우위")
+            elif sharpe_diff < -0.05:
+                interp.append(f"⚠️ Sharpe 악화 ({sharpe_diff:+.2f}) — 변동성 증가가 수익보다 큼")
+            else:
+                interp.append(f"➖ Sharpe 차이 미미 ({sharpe_diff:+.2f})")
+
+            for line in interp:
+                st.markdown(f"- {line}")
+
+            # ── 비교 차트 ─────────────────────────────────────────────────────
+            tab1, tab2, tab3 = st.tabs(["📈 Equity Curve 비교", "📉 Drawdown 비교", "📊 연도별 수익률"])
+
+            with tab1:
+                fig, ax = plt.subplots(figsize=(14, 6))
+                ax.plot(r1['res_df'].index, r1['res_df']['Equity'], lw=1.5, label=f"T+1 (기존) — Final {r1['final_balance']:,.0f}", color='steelblue')
+                ax.plot(r2['res_df'].index, r2['res_df']['Equity'], lw=1.5, label=f"T (즉시) — Final {r2['final_balance']:,.0f}", color='firebrick')
+                ax.plot(benchmark_eq.index, benchmark_eq.values, lw=1.0, ls='--', alpha=0.6,
+                        label=f"B&H {ticker_safe}", color='gray')
+                ax.set_yscale('log')
+                ax.set_title(f"Equity Curve — {ticker_safe}/{ticker_risky}/{ticker_cash}")
+                ax.legend()
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+                st.pyplot(fig)
+
+            with tab2:
+                fig, ax = plt.subplots(figsize=(14, 5))
+                ax.fill_between(r1['res_df'].index, r1['res_df']['Drawdown(%)'], 0, alpha=0.2, color='steelblue')
+                ax.plot(r1['res_df'].index, r1['res_df']['Drawdown(%)'], lw=1.0, color='steelblue',
+                        label=f"T+1 (MDD {r1['mdd']*100:.1f}%)")
+                ax.fill_between(r2['res_df'].index, r2['res_df']['Drawdown(%)'], 0, alpha=0.2, color='firebrick')
+                ax.plot(r2['res_df'].index, r2['res_df']['Drawdown(%)'], lw=1.0, color='firebrick',
+                        label=f"T (MDD {r2['mdd']*100:.1f}%)")
+                ax.axhline(0, color='black', lw=0.5)
+                ax.set_title("Drawdown 비교 (%)")
+                ax.legend(loc='lower left')
+                st.pyplot(fig)
+
+            with tab3:
+                # 연도별 수익률 비교
+                def yearly_returns(res_df, init_cap):
+                    eq = res_df['Equity']
+                    yearly = {}
+                    for yr in eq.index.year.unique():
+                        yr_data = eq[eq.index.year == yr]
+                        before  = eq[eq.index.year < yr]
+                        start_v = float(before.iloc[-1]) if len(before) > 0 else float(init_cap)
+                        yearly[yr] = float(yr_data.iloc[-1]) / start_v - 1.0
+                    return pd.Series(yearly)
+
+                y1 = yearly_returns(r1['res_df'], initial_capital)
+                y2 = yearly_returns(r2['res_df'], initial_capital)
+
+                yearly_comp = pd.DataFrame({
+                    "T+1 (기존)": (y1 * 100).round(2).astype(str) + "%",
+                    "T (즉시)":   (y2 * 100).round(2).astype(str) + "%",
+                    "차이(%p)":   ((y2 - y1) * 100).round(2),
+                })
+                st.dataframe(yearly_comp, use_container_width=True)
+
+            # ── 일별 로그 (옵션) ─────────────────────────────────────────────
+            with st.expander("📝 일별 로그 보기"):
+                tabA, tabB = st.tabs(["T+1 모드", "T 모드"])
+                with tabA:
+                    st.dataframe(r1['res_df'].sort_index(ascending=False), use_container_width=True)
+                with tabB:
+                    st.dataframe(r2['res_df'].sort_index(ascending=False), use_container_width=True)
+
+            # ── 엑셀 다운로드 ─────────────────────────────────────────────────
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                comp_df.to_excel(writer, sheet_name='Comparison', index=False)
+                r1['res_df'].to_excel(writer, sheet_name='T+1_Daily')
+                r2['res_df'].to_excel(writer, sheet_name='T_Daily')
+
+            st.download_button(
+                "📥 비교 결과 엑셀 다운로드",
+                data=output.getvalue(),
+                file_name=f"Mix_Strategy_v6_1_Compare_{ticker_safe}_{ticker_risky}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )

@@ -372,7 +372,7 @@ cols[5].metric("월 승률", f"{strategy_metrics['win_m']:.1%}")
 trade_count = len(trade_log)
 backtest_years = max((nav_s.index[-1] - nav_s.index[0]).days / 365.25, 1 / 365.25)
 trades_per_year = trade_count / backtest_years
-latest_trade_date = trade_log["날짜"].iloc[-1] if trade_count else "-"
+latest_trade_date = str(trade_log["날짜"].iloc[-1]) if trade_count else "-"
 trade_cols = st.columns(3)
 trade_cols[0].metric("총 매매횟수", f"{trade_count:,}회")
 trade_cols[1].metric("연평균 매매횟수", f"{trades_per_year:.1f}회/년")

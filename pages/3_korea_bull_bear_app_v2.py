@@ -126,6 +126,29 @@ def state_from_signals(kodex_close: float, kodex_ma: float, tnx: float, tnx_ma: 
     return "Bull Full"
 
 
+def align_tnx_previous_day(
+    tnx: pd.Series,
+    target_index: pd.DatetimeIndex,
+    tnx_ma_window: int,
+) -> tuple[pd.Series, pd.Series]:
+    if tnx.empty:
+        return (
+            pd.Series(np.nan, index=target_index, name="TNX_PREV"),
+            pd.Series(np.nan, index=target_index, name="TNX_MA_PREV"),
+        )
+
+    tnx_daily_idx = pd.date_range(tnx.index.min(), target_index[-1], freq="D")
+    tnx_daily = tnx.reindex(tnx_daily_idx).ffill()
+    tnx_ma_daily = tnx.rolling(tnx_ma_window).mean().reindex(tnx_daily_idx).ffill()
+
+    previous_calendar_day = target_index - pd.Timedelta(days=1)
+    previous_tnx = tnx_daily.reindex(previous_calendar_day, method="ffill")
+    previous_tnx_ma = tnx_ma_daily.reindex(previous_calendar_day, method="ffill")
+    previous_tnx.index = target_index
+    previous_tnx_ma.index = target_index
+    return previous_tnx.rename("TNX_PREV"), previous_tnx_ma.rename("TNX_MA_PREV")
+
+
 def weight_dict(cash: float, kodex: float, lev: float) -> dict[str, float]:
     return {
         "cash": cash / 100,
@@ -347,298 +370,6 @@ def make_state_chart(kodex: pd.Series, kodex_ma: pd.Series, states: pd.Series) -
         hovermode="x unified",
         legend=dict(orientation="h", y=1.08),
         plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)
     )
     return fig
-
-
-with st.sidebar:
-    st.header("설정")
-
-    st.subheader("기간")
-    col_start, col_end = st.columns(2)
-    with col_start:
-        start_date = st.date_input("시작", datetime(2016, 1, 4))
-    with col_end:
-        end_date = st.date_input("종료", datetime.today().date())
-
-    st.subheader("신호")
-    kodex_ma_window = st.slider("KODEX 200 MA", 20, 250, 120, 5)
-    tnx_ma_window = st.slider("TNX MA", 20, 250, 120, 5)
-
-    st.subheader("체결 방식")
-    execution_mode = st.radio(
-        "신호 확인 및 체결",
-        ["당일 종가 신호확인 및 종가 매수/매도", "당일 종가 신호확인 후 다음날 시가 매수/매도"],
-        index=0,
-    )
-
-    st.subheader("비중 프리셋")
-    preset = st.selectbox(
-        "프리셋",
-        ["요청 기본값", "MDD 완화 추천", "공격형"],
-        index=0,
-    )
-
-    defaults = {
-        "요청 기본값": {
-            "bear_cash": 100,
-            "mix_lev": 50,
-            "full_lev": 0,
-        },
-        "MDD 완화 추천": {
-            "bear_cash": 90,
-            "mix_lev": 20,
-            "full_lev": 25,
-        },
-        "공격형": {
-            "bear_cash": 80,
-            "mix_lev": 50,
-            "full_lev": 40,
-        },
-    }[preset]
-
-    st.subheader("Bear 비중")
-    bear_cash = st.slider("현금 (%)", 0, 100, defaults["bear_cash"], 5)
-    bear_kodex = 100 - bear_cash
-    st.caption(f"현금 {bear_cash}% + KODEX 200 {bear_kodex}%")
-
-    st.subheader("Bull Mix 비중")
-    mix_lev = st.slider("Bull Mix 레버리지 (%)", 0, 100, defaults["mix_lev"], 5)
-    mix_kodex = 100 - mix_lev
-    st.caption(f"KODEX 200 {mix_kodex}% + 레버리지 {mix_lev}%")
-
-    st.subheader("Bull Full 비중")
-    full_lev = st.slider("Bull Full 레버리지 (%)", 0, 100, defaults["full_lev"], 5)
-    full_kodex = 100 - full_lev
-    st.caption(f"KODEX 200 {full_kodex}% + 레버리지 {full_lev}%")
-
-    st.subheader("거래비용")
-    fee = st.number_input("거래대금당 비용 (%)", value=0.15, step=0.05, min_value=0.0) / 100
-
-    run_btn = st.button("백테스트 실행", type="primary", use_container_width=True)
-
-
-with st.expander("전략 조건", expanded=False):
-    st.markdown(
-        f"""
-| 상태 | 조건 | 보유 비중 |
-|---|---|---|
-| Bear | KODEX 200 < MA{kodex_ma_window} | 현금 {bear_cash}% + KODEX 200 {bear_kodex}% |
-| Bull Mix | KODEX 200 > MA{kodex_ma_window} and TNX > MA{tnx_ma_window} | KODEX 200 {mix_kodex}% + 레버리지 {mix_lev}% |
-| Bull Full | KODEX 200 > MA{kodex_ma_window} and TNX <= MA{tnx_ma_window} | KODEX 200 {full_kodex}% + 레버리지 {full_lev}% |
-"""
-    )
-
-if not run_btn:
-    st.info("왼쪽 설정을 확인한 뒤 백테스트를 실행하세요.")
-    st.stop()
-
-
-start_str = start_date.strftime("%Y%m%d")
-end_str = end_date.strftime("%Y%m%d")
-warmup_days = max(kodex_ma_window, tnx_ma_window) * 3
-extended_start_str = (start_date - timedelta(days=warmup_days)).strftime("%Y%m%d")
-
-progress = st.progress(0, text="데이터를 불러오는 중...")
-
-progress.progress(15, text="KODEX 200 데이터를 불러오는 중...")
-kodex_200 = load_krx_ohlcv(KODEX_200, extended_start_str, end_str)
-
-progress.progress(35, text="KODEX 레버리지 데이터를 불러오는 중...")
-kodex_lev = load_krx_ohlcv(KODEX_LEVERAGE, extended_start_str, end_str)
-
-progress.progress(55, text="TNX 데이터를 불러오는 중...")
-tnx = load_tnx(start_str, end_str, warmup_days)
-
-if kodex_200.empty or kodex_lev.empty:
-    st.error("KODEX ETF 데이터를 불러오지 못했습니다. pykrx 또는 KRX 데이터 연결을 확인하세요.")
-    st.stop()
-
-common_idx = kodex_200.index.intersection(kodex_lev.index)
-common_idx = common_idx[(common_idx.date >= start_date) & (common_idx.date <= end_date)]
-
-if len(common_idx) < 30:
-    st.error("백테스트에 필요한 거래일 데이터가 부족합니다.")
-    st.stop()
-
-full_idx = kodex_200.index.intersection(kodex_lev.index)
-full_idx = full_idx[full_idx <= common_idx[-1]]
-
-kodex_close_full = kodex_200["close"].reindex(full_idx).ffill()
-kodex_ma_full = kodex_close_full.rolling(kodex_ma_window).mean()
-
-tnx_daily_idx = pd.date_range(tnx.index.min(), full_idx[-1], freq="D") if not tnx.empty else pd.DatetimeIndex([])
-if len(tnx_daily_idx) > 0:
-    tnx_aligned_full = tnx.reindex(tnx_daily_idx).ffill().reindex(full_idx).ffill()
-    tnx_ma_full = tnx.rolling(tnx_ma_window).mean().reindex(tnx_daily_idx).ffill().reindex(full_idx).ffill()
-else:
-    tnx_aligned_full = pd.Series(np.nan, index=full_idx, name="TNX")
-    tnx_ma_full = pd.Series(np.nan, index=full_idx, name="TNX_MA")
-    st.warning("TNX 데이터를 불러오지 못해 금리 위험 신호를 Bull Full로 처리합니다.")
-
-signals = pd.Series(
-    [
-        state_from_signals(
-            kodex_close_full.loc[date],
-            kodex_ma_full.loc[date],
-            tnx_aligned_full.loc[date],
-            tnx_ma_full.loc[date],
-        )
-        for date in full_idx
-    ],
-    index=full_idx,
-    name="신호",
-)
-
-state_weights = {
-    "Bear": normalize_weights(weight_dict(bear_cash, bear_kodex, 0)),
-    "Bull Mix": normalize_weights(weight_dict(0, mix_kodex, mix_lev)),
-    "Bull Full": normalize_weights(weight_dict(0, full_kodex, full_lev)),
-}
-
-ret_200_cc = kodex_200["close"].pct_change().reindex(common_idx).fillna(0)
-ret_lev_cc = kodex_lev["close"].pct_change().reindex(common_idx).fillna(0)
-
-ret_200_co = ((kodex_200["open"] - kodex_200["close"].shift(1)) / kodex_200["close"].shift(1)).reindex(common_idx).fillna(0)
-ret_lev_co = ((kodex_lev["open"] - kodex_lev["close"].shift(1)) / kodex_lev["close"].shift(1)).reindex(common_idx).fillna(0)
-ret_200_oc = ((kodex_200["close"] - kodex_200["open"]) / kodex_200["open"]).reindex(common_idx).fillna(0)
-ret_lev_oc = ((kodex_lev["close"] - kodex_lev["open"]) / kodex_lev["open"]).reindex(common_idx).fillna(0)
-
-progress.progress(80, text="백테스트 계산 중...")
-
-if execution_mode == "당일 종가 신호확인 및 종가 매수/매도":
-    nav_s, state_s, trade_log = backtest_same_day_close(
-        common_idx,
-        signals,
-        state_weights,
-        ret_200_cc,
-        ret_lev_cc,
-        fee,
-    )
-else:
-    nav_s, state_s, trade_log = backtest_next_open(
-        common_idx,
-        signals,
-        state_weights,
-        ret_200_co,
-        ret_lev_co,
-        ret_200_oc,
-        ret_lev_oc,
-        fee,
-    )
-
-benchmark = kodex_200["close"].reindex(common_idx).ffill()
-benchmark = benchmark / benchmark.iloc[0]
-
-strategy_metrics = calc_metrics(nav_s)
-benchmark_metrics = calc_metrics(benchmark)
-
-progress.progress(100, text="완료")
-progress.empty()
-
-current_state = state_s.iloc[-1]
-current_date = state_s.index[-1].date()
-current_weights = state_weights[current_state]
-
-st.success(
-    f"현재 상태 ({current_date}): {current_state} | "
-    f"현금 {current_weights['cash']:.0%}, KODEX 200 {current_weights['kodex200']:.0%}, "
-    f"레버리지 {current_weights['leverage']:.0%}"
-)
-
-metric_cols = st.columns(6)
-metric_cols[0].metric("총 수익률", f"{strategy_metrics['total']:.1%}", f"BM {benchmark_metrics['total']:.1%}")
-metric_cols[1].metric("연 수익률", f"{strategy_metrics['cagr']:.1%}", f"BM {benchmark_metrics['cagr']:.1%}")
-metric_cols[2].metric("MDD", f"{strategy_metrics['mdd']:.1%}", f"BM {benchmark_metrics['mdd']:.1%}")
-metric_cols[3].metric("Sharpe", f"{strategy_metrics['sharpe']:.2f}", f"BM {benchmark_metrics['sharpe']:.2f}")
-metric_cols[4].metric("Calmar", f"{strategy_metrics['calmar']:.2f}", f"BM {benchmark_metrics['calmar']:.2f}")
-metric_cols[5].metric("월 승률", f"{strategy_metrics['win_m']:.1%}")
-
-state_counts = state_s.value_counts().reindex(STATE_ORDER).fillna(0).astype(int)
-state_cols = st.columns(3)
-for col, state in zip(state_cols, STATE_ORDER):
-    count = state_counts.loc[state]
-    col.metric(state, f"{count}일", f"{count / len(state_s):.1%}")
-
-tab_chart, tab_signals, tab_trades, tab_monthly = st.tabs(
-    ["성과", "신호", "거래", "월별 수익률"]
-)
-
-with tab_chart:
-    st.subheader("누적 수익률")
-    st.plotly_chart(make_nav_chart(nav_s, benchmark), use_container_width=True)
-
-    st.subheader("낙폭")
-    st.plotly_chart(
-        make_dd_chart(strategy_metrics["dd"], benchmark_metrics["dd"]),
-        use_container_width=True,
-    )
-
-with tab_signals:
-    st.subheader("KODEX 200 추세와 상태")
-    st.plotly_chart(
-        make_state_chart(
-            kodex_200["close"].reindex(common_idx).ffill(),
-            kodex_ma_full.reindex(common_idx).ffill(),
-            state_s,
-        ),
-        use_container_width=True,
-    )
-
-    st.subheader("TNX 금리 신호")
-    tnx_chart = pd.DataFrame(
-        {
-            "TNX": tnx_aligned_full.reindex(common_idx).ffill(),
-            f"TNX MA{tnx_ma_window}": tnx_ma_full.reindex(common_idx).ffill(),
-        }
-    ).dropna()
-    if tnx_chart.empty:
-        st.info("표시할 TNX 데이터가 없습니다.")
-    else:
-        st.line_chart(tnx_chart, height=260)
-
-with tab_trades:
-    st.subheader("상태 전환 내역")
-    if trade_log.empty:
-        st.info("상태 전환이 없었습니다.")
-    else:
-        shown = trade_log.copy()
-        shown["거래회전율"] = shown["거래회전율"].map(lambda x: f"{x:.1%}")
-        shown["비용차감"] = shown["비용차감"].map(lambda x: f"{x:.4f}")
-        shown["NAV"] = shown["NAV"].map(lambda x: f"{x:.4f}")
-        st.dataframe(shown, use_container_width=True, hide_index=True)
-        st.download_button(
-            "Trade Log CSV",
-            trade_log.to_csv(index=False).encode("utf-8-sig"),
-            "kodex_bull_bear_trades.csv",
-            "text/csv",
-        )
-
-with tab_monthly:
-    monthly_strategy = nav_s.resample("M").last().pct_change().dropna()
-    monthly_benchmark = benchmark.resample("M").last().pct_change().dropna()
-    monthly = pd.DataFrame(
-        {
-            "전략": monthly_strategy,
-            "KODEX 200": monthly_benchmark,
-        }
-    ).dropna()
-
-    pivot_source = monthly_strategy.to_frame("수익률")
-    pivot_source["연도"] = pivot_source.index.year
-    pivot_source["월"] = pivot_source.index.month
-    pivot = pivot_source.pivot(index="연도", columns="월", values="수익률")
-    pivot.columns = [f"{month}월" for month in pivot.columns]
-    pivot["연간"] = (1 + monthly_strategy).groupby(monthly_strategy.index.year).prod() - 1
-    st.dataframe(pivot.map(lambda x: f"{x:.1%}" if pd.notna(x) else "-"), use_container_width=True)
-
-    st.subheader("월별 전략 vs KODEX 200")
-    st.line_chart(monthly, height=260)
-
-    st.download_button(
-        "Monthly Returns CSV",
-        monthly.reset_index().rename(columns={"index": "날짜"}).to_csv(index=False).encode("utf-8-sig"),
-        "kodex_bull_bear_monthly.csv",
-        "text/csv",
-    )

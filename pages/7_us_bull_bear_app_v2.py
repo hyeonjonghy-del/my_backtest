@@ -207,6 +207,42 @@ def backtest_same_day_close(
     return pd.Series(nav_rows, index=dates, name="전략"), pd.Series(state_rows, index=dates, name="상태"), pd.DataFrame(trades)
 
 
+def backtest_next_close(
+    dates: pd.DatetimeIndex,
+    signals: pd.Series,
+    state_weights: dict[str, dict[str, float]],
+    ret_200_cc: pd.Series,
+    ret_lev_cc: pd.Series,
+    fee_rate: float,
+) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
+    nav = 1.0
+    nav_rows: list[float] = []
+    state_rows: list[str] = []
+    trades: list[dict[str, object]] = []
+
+    executable_signals = signals.shift(1).reindex(dates).ffill().fillna("Bear")
+    current_state = executable_signals.shift(1).ffill().fillna("Bear").iloc[0]
+    current_weights = state_weights[current_state]
+
+    for i, date in enumerate(dates):
+        nav *= 1 + portfolio_return(current_weights, ret_200_cc.loc[date], ret_lev_cc.loc[date])
+
+        new_state = executable_signals.loc[date]
+        new_weights = state_weights[new_state]
+        turnover = traded_notional(current_weights, new_weights)
+        if i > 0 and turnover > 0:
+            before_fee = nav
+            nav = apply_fee(nav, fee_rate, turnover)
+            trades.append({"날짜": date.date(), "체결": "다음날 종가", "이전 상태": current_state, "신규 상태": new_state, "거래회전율": turnover, "비용차감": before_fee - nav, "NAV": nav})
+
+        current_state = new_state
+        current_weights = new_weights
+        nav_rows.append(nav)
+        state_rows.append(current_state)
+
+    return pd.Series(nav_rows, index=dates, name="전략"), pd.Series(state_rows, index=dates, name="상태"), pd.DataFrame(trades)
+
+
 def backtest_next_open(
     dates: pd.DatetimeIndex,
     signals: pd.Series,
@@ -262,7 +298,11 @@ with st.sidebar:
     st.subheader("체결 방식")
     execution_mode = st.radio(
         "신호 확인 및 체결",
-        ["당일 종가 신호확인 및 종가 매수/매도", "당일 종가 신호확인 후 다음날 시가 매수/매도"],
+        [
+            "당일 종가 신호확인 및 종가 매수/매도",
+            "당일 종가 신호확인 후 다음날 시가 매수/매도",
+            "당일 종가 신호확인 후 다음날 종가 매수/매도",
+        ],
         index=1,
     )
 
@@ -363,6 +403,8 @@ ret_lev_oc = ((upro_data["close"] - upro_data["open"]) / upro_data["open"]).rein
 progress.progress(80, text="백테스트 계산 중...")
 if execution_mode == "당일 종가 신호확인 및 종가 매수/매도":
     nav_s, state_s, trade_log = backtest_same_day_close(common_idx, signals, state_weights, ret_200_cc, ret_lev_cc, fee)
+elif execution_mode == "당일 종가 신호확인 후 다음날 종가 매수/매도":
+    nav_s, state_s, trade_log = backtest_next_close(common_idx, signals, state_weights, ret_200_cc, ret_lev_cc, fee)
 else:
     nav_s, state_s, trade_log = backtest_next_open(common_idx, signals, state_weights, ret_200_co, ret_lev_co, ret_200_oc, ret_lev_oc, fee)
 

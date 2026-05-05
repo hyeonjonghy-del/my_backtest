@@ -356,9 +356,14 @@ st.success(
 if not trade_log.empty:
     latest_trade = trade_log.iloc[-1]
     if latest_trade["날짜"] == current_date:
+        target_state = latest_trade["신규 상태"]
+        target_weights = state_weights[target_state]
         st.warning(
             f"구성종목 변경 알림: 전략을 "
-            f"{latest_trade['이전 상태']} -> {latest_trade['신규 상태']}로 바꾸세요."
+            f"{latest_trade['이전 상태']} -> {target_state}로 바꾸세요.\n\n"
+            f"목표 비중: 현금 {target_weights['cash']:.0%}, "
+            f"KODEX 200 {target_weights['kodex200']:.0%}, "
+            f"KODEX 레버리지 {target_weights['leverage']:.0%}"
         )
 
 cols = st.columns(6)

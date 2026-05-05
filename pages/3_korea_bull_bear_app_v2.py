@@ -372,6 +372,18 @@ with tab_chart:
     st.subheader("누적 수익률")
     nav_chart = pd.DataFrame({"전략": nav_s / nav_s.iloc[0] - 1, "KODEX 200 B&H": benchmark / benchmark.iloc[0] - 1}) * 100
     st.line_chart(nav_chart, height=360)
+
+    st.subheader("연도별 수익률 비교")
+    yearly_strategy = (1 + nav_s.pct_change().fillna(0)).groupby(nav_s.index.year).prod() - 1
+    yearly_benchmark = (1 + benchmark.pct_change().fillna(0)).groupby(benchmark.index.year).prod() - 1
+    yearly_returns = pd.DataFrame(
+        {
+            "전략": yearly_strategy,
+            "KODEX 200 B&H": yearly_benchmark,
+        }
+    ).dropna(how="all") * 100
+    yearly_returns.index = yearly_returns.index.astype(str)
+    st.bar_chart(yearly_returns, height=320)
     st.subheader("낙폭")
     dd_chart = pd.DataFrame({"전략 DD": strategy_metrics["dd"], "KODEX 200 DD": benchmark_metrics["dd"]}) * 100
     st.line_chart(dd_chart, height=260)

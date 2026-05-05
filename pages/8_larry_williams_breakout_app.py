@@ -22,7 +22,7 @@ ETF_OPTIONS = {
 
 st.set_page_config(page_title="Larry Williams Breakout", page_icon="KR", layout="wide")
 st.title("Larry Williams 변동성 돌파 전략")
-st.caption("국내 KODEX ETF 일봉 + K값 최적화 + 당일 돌파 매수 / 당일 종가 청산")
+st.caption("국내 KODEX ETF 일봉 + K값 최적화 + 당일 돌파 매수 / 청산 방식 선택")
 
 
 def normalize_index(obj: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
@@ -70,6 +70,7 @@ def run_breakout(
     df: pd.DataFrame,
     k: float,
     fee_rate: float,
+    exit_mode: str,
     ma_window: int | None = None,
 ) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
     data = df.copy()
@@ -83,14 +84,21 @@ def run_breakout(
 
     data["entry"] = valid & (data["high"] >= data["target"])
     data["daily_ret"] = 0.0
-    gross_ret = data["close"] / data["target"] - 1
-    data.loc[data["entry"], "daily_ret"] = gross_ret.loc[data["entry"]] - fee_rate
+    if exit_mode == "다음날 시가 청산":
+        data["exit_price"] = data["open"].shift(-1)
+        entry_mask = data["entry"] & data["exit_price"].notna()
+    else:
+        data["exit_price"] = data["close"]
+        entry_mask = data["entry"]
+    gross_ret = data["exit_price"] / data["target"] - 1
+    data.loc[entry_mask, "daily_ret"] = gross_ret.loc[entry_mask] - fee_rate
     data["nav"] = (1 + data["daily_ret"].fillna(0)).cumprod()
-    data["state"] = np.where(data["entry"], "매수", "현금")
+    data["state"] = np.where(entry_mask, "매수", "현금")
 
-    trades = data.loc[data["entry"], ["target", "close", "daily_ret"]].copy()
-    trades = trades.rename(columns={"target": "매수가", "close": "청산가", "daily_ret": "수익률"})
+    trades = data.loc[entry_mask, ["target", "exit_price", "daily_ret"]].copy()
+    trades = trades.rename(columns={"target": "매수가", "exit_price": "청산가", "daily_ret": "수익률"})
     trades.insert(0, "날짜", trades.index.date)
+    trades["청산 방식"] = exit_mode
     trades["K"] = k
     return data["nav"].rename("전략"), data["state"].rename("상태"), trades.reset_index(drop=True)
 
@@ -100,11 +108,12 @@ def optimize_k(
     k_values: list[float],
     fee_rate: float,
     metric: str,
+    exit_mode: str,
     ma_window: int | None,
 ) -> pd.DataFrame:
     rows: list[dict[str, float]] = []
     for k in k_values:
-        nav, _, trades = run_breakout(df, k, fee_rate, ma_window)
+        nav, _, trades = run_breakout(df, k, fee_rate, exit_mode, ma_window)
         metrics = calc_metrics(nav)
         rows.append(
             {
@@ -147,6 +156,9 @@ with st.sidebar:
     k_step = st.number_input("최적화 K 간격", min_value=0.01, max_value=0.25, value=0.05, step=0.01)
     optimize_metric = st.selectbox("최적화 기준", ["연수익률", "Sharpe", "Calmar", "총수익률", "MDD 최소"], index=1)
 
+    st.subheader("청산 방식")
+    exit_mode = st.radio("매도 기준", ["다음날 시가 청산", "당일 종가 청산"], index=0)
+
     st.subheader("필터")
     use_ma_filter = st.checkbox("이동평균 상승장 필터 사용", value=False)
     ma_window = st.slider("MA", 20, 250, 120, 5) if use_ma_filter else None
@@ -163,7 +175,7 @@ with st.expander("전략 조건", expanded=False):
 |---|---|
 | 매수 기준가 | 당일 시가 + 전일 변동폭(고가-저가) × K |
 | 진입 조건 | 당일 고가가 매수 기준가 이상 |
-| 청산 조건 | 당일 종가 청산 |
+| 청산 조건 | {exit_mode} |
 | 대상 종목 | {selected_name} ({ticker}) |
 | K 최적화 | 종료일 기준 최근 3년 |
 """
@@ -200,7 +212,7 @@ opt_df = ohlcv[(ohlcv.index >= opt_start) & (ohlcv.index.date <= end_date)].copy
 k_values = np.round(np.arange(k_min, k_max + k_step / 2, k_step), 4).tolist()
 
 progress.progress(60, text="최근 3년 K값 최적화 중...")
-opt_table = optimize_k(opt_df, k_values, fee, optimize_metric, ma_window)
+opt_table = optimize_k(opt_df, k_values, fee, optimize_metric, exit_mode, ma_window)
 if opt_table.empty:
     st.error("K값 최적화 결과를 만들지 못했습니다.")
     st.stop()
@@ -209,7 +221,7 @@ best_k = float(opt_table.iloc[0]["K"])
 selected_k = best_k if use_optimized_k else manual_k
 
 progress.progress(80, text="전체 기간 시뮬레이션 계산 중...")
-nav_s, state_s, trade_log = run_breakout(df, selected_k, fee, ma_window)
+nav_s, state_s, trade_log = run_breakout(df, selected_k, fee, exit_mode, ma_window)
 benchmark = df["close"] / df["close"].iloc[0]
 strategy_metrics = calc_metrics(nav_s)
 benchmark_metrics = calc_metrics(benchmark)
@@ -218,7 +230,7 @@ progress.empty()
 
 st.success(
     f"선택 종목: {selected_name} ({ticker}) | 적용 K: {selected_k:.2f} "
-    f"| 최근 3년 최적 K: {best_k:.2f} ({optimize_metric} 기준)"
+    f"| 청산: {exit_mode} | 최근 3년 최적 K: {best_k:.2f} ({optimize_metric} 기준)"
 )
 
 cols = st.columns(6)

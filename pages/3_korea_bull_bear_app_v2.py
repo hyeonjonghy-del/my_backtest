@@ -369,6 +369,15 @@ cols[3].metric("Sharpe", f"{strategy_metrics['sharpe']:.2f}", f"BM {benchmark_me
 cols[4].metric("Calmar", f"{strategy_metrics['calmar']:.2f}", f"BM {benchmark_metrics['calmar']:.2f}")
 cols[5].metric("월 승률", f"{strategy_metrics['win_m']:.1%}")
 
+trade_count = len(trade_log)
+backtest_years = max((nav_s.index[-1] - nav_s.index[0]).days / 365.25, 1 / 365.25)
+trades_per_year = trade_count / backtest_years
+latest_trade_date = trade_log["날짜"].iloc[-1] if trade_count else "-"
+trade_cols = st.columns(3)
+trade_cols[0].metric("총 매매횟수", f"{trade_count:,}회")
+trade_cols[1].metric("연평균 매매횟수", f"{trades_per_year:.1f}회/년")
+trade_cols[2].metric("최근 매매일", latest_trade_date)
+
 state_counts = state_s.value_counts().reindex(["Bear", "Bull Mix", "Bull Full"]).fillna(0).astype(int)
 state_cols = st.columns(3)
 for col, state in zip(state_cols, ["Bear", "Bull Mix", "Bull Full"]):

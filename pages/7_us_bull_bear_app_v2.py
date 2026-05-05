@@ -42,13 +42,30 @@ def normalize_index(obj: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
 def load_yfinance_ohlcv(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
     start = datetime.strptime(start_str, "%Y%m%d")
     end = datetime.strptime(end_str, "%Y%m%d") + timedelta(days=1)
-    df = yf.download(
-        ticker,
-        start=start.strftime("%Y-%m-%d"),
-        end=end.strftime("%Y-%m-%d"),
-        auto_adjust=True,
-        progress=False,
-    )
+    try:
+        df = yf.download(
+            ticker,
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            auto_adjust=True,
+            group_by="column",
+            progress=False,
+            threads=False,
+        )
+    except Exception:
+        df = pd.DataFrame()
+    if isinstance(df.columns, pd.MultiIndex):
+        if ticker in df.columns.get_level_values(-1):
+            df = df.xs(ticker, axis=1, level=-1)
+        else:
+            df.columns = df.columns.get_level_values(0)
+    if df.empty or "Open" not in df or "Close" not in df:
+        try:
+            import FinanceDataReader as fdr
+
+            df = fdr.DataReader(ticker, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        except Exception:
+            return pd.DataFrame(columns=["open", "close"])
     if df.empty or "Open" not in df or "Close" not in df:
         return pd.DataFrame(columns=["open", "close"])
     out = pd.DataFrame(
@@ -69,8 +86,15 @@ def load_tnx(start_str: str, end_str: str, warmup_days: int) -> pd.Series:
         start=start.strftime("%Y-%m-%d"),
         end=end.strftime("%Y-%m-%d"),
         auto_adjust=True,
+        group_by="column",
         progress=False,
+        threads=False,
     )
+    if isinstance(df.columns, pd.MultiIndex):
+        if "^TNX" in df.columns.get_level_values(-1):
+            df = df.xs("^TNX", axis=1, level=-1)
+        else:
+            df.columns = df.columns.get_level_values(0)
     if df.empty or "Close" not in df:
         return pd.Series(dtype=float, name="TNX")
     return normalize_index(df["Close"].squeeze().rename("TNX")).dropna()
@@ -299,7 +323,7 @@ progress.progress(55, text="TNX 데이터를 불러오는 중...")
 tnx = load_tnx(start_str, end_str, warmup_days)
 
 if spy_data.empty or upro_data.empty:
-    st.error("SPY/UPRO ETF 데이터를 불러오지 못했습니다. yfinance 데이터 연결을 확인하세요.")
+    st.error("SPY/UPRO ETF 데이터를 불러오지 못했습니다. yfinance 또는 FinanceDataReader 데이터 연결을 확인하세요.")
     st.stop()
 
 common_idx = spy_data.index.intersection(upro_data.index)

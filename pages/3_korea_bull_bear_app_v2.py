@@ -232,13 +232,13 @@ with st.sidebar:
     execution_mode = st.radio(
         "신호 확인 및 체결",
         ["당일 종가 신호확인 및 종가 매수/매도", "당일 종가 신호확인 후 다음날 시가 매수/매도"],
-        index=0,
+        index=1,
     )
 
     st.subheader("비중 프리셋")
     preset = st.selectbox("프리셋", ["요청 기본값", "MDD 완화 추천", "공격형"], index=0)
     defaults = {
-        "요청 기본값": {"bear_cash": 100, "mix_lev": 50, "full_lev": 0},
+        "요청 기본값": {"bear_cash": 100, "mix_lev": 50, "full_lev": 20},
         "MDD 완화 추천": {"bear_cash": 90, "mix_lev": 20, "full_lev": 25},
         "공격형": {"bear_cash": 80, "mix_lev": 50, "full_lev": 40},
     }[preset]
@@ -351,6 +351,14 @@ st.success(
     f"현금 {current_weights['cash']:.0%}, KODEX 200 {current_weights['kodex200']:.0%}, "
     f"레버리지 {current_weights['leverage']:.0%}"
 )
+
+if not trade_log.empty:
+    latest_trade = trade_log.iloc[-1]
+    if latest_trade["날짜"] == current_date:
+        st.warning(
+            f"구성종목 변경 알림: 전략을 "
+            f"{latest_trade['이전 상태']} -> {latest_trade['신규 상태']}로 바꾸세요."
+        )
 
 cols = st.columns(6)
 cols[0].metric("총 수익률", f"{strategy_metrics['total']:.1%}", f"BM {benchmark_metrics['total']:.1%}")

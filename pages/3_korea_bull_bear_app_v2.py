@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
@@ -391,7 +392,37 @@ with tab_chart:
         }
     ).dropna(how="all") * 100
     yearly_returns.index = yearly_returns.index.astype(str)
-    st.bar_chart(yearly_returns, height=320)
+    fig_yearly = go.Figure()
+    fig_yearly.add_trace(
+        go.Bar(
+            x=yearly_returns.index,
+            y=yearly_returns["전략"],
+            name="전략",
+            marker_color="#1f77b4",
+            text=[f"{v:.1f}%" for v in yearly_returns["전략"]],
+            textposition="outside",
+        )
+    )
+    fig_yearly.add_trace(
+        go.Bar(
+            x=yearly_returns.index,
+            y=yearly_returns["KODEX 200 B&H"],
+            name="KODEX 200 B&H",
+            marker_color="#ff7f0e",
+            text=[f"{v:.1f}%" for v in yearly_returns["KODEX 200 B&H"]],
+            textposition="outside",
+        )
+    )
+    fig_yearly.add_hline(y=0, line_dash="dash", line_color="gray")
+    fig_yearly.update_layout(
+        barmode="group",
+        yaxis_title="수익률 (%)",
+        yaxis_ticksuffix="%",
+        legend=dict(orientation="h", y=1.08, x=1, xanchor="right"),
+        height=360,
+        margin=dict(t=50, b=20),
+    )
+    st.plotly_chart(fig_yearly, use_container_width=True)
     st.subheader("낙폭")
     dd_chart = pd.DataFrame({"전략 DD": strategy_metrics["dd"], "KODEX 200 DD": benchmark_metrics["dd"]}) * 100
     st.line_chart(dd_chart, height=260)

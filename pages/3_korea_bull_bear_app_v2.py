@@ -38,6 +38,15 @@ def normalize_index(obj: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
     return out.sort_index()
 
 
+def finite_return(ret: pd.Series) -> pd.Series:
+    return ret.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
+def safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    clean_denominator = denominator.where(denominator > 0)
+    return finite_return(numerator / clean_denominator)
+
+
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_krx_ohlcv(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
     from pykrx import stock
@@ -51,7 +60,8 @@ def load_krx_ohlcv(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
             "close": pd.to_numeric(df["종가"], errors="coerce"),
         }
     )
-    return normalize_index(out).dropna(how="all")
+    out = normalize_index(out).dropna(how="all")
+    return out.where(out > 0)
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -127,9 +137,10 @@ def apply_fee(nav: float, fee_rate: float, turnover: float) -> float:
 
 
 def calc_metrics(nav: pd.Series) -> dict[str, object]:
-    nav = nav.dropna()
-    ret = nav.pct_change().dropna()
-    if len(nav) < 2:
+    nav = nav.replace([np.inf, -np.inf], np.nan).dropna()
+    nav = nav[nav > 0]
+    ret = finite_return(nav.pct_change()).dropna()
+    if len(nav) < 2 or nav.iloc[0] <= 0:
         return {"total": 0.0, "cagr": 0.0, "mdd": 0.0, "sharpe": 0.0, "calmar": 0.0, "win_m": 0.0, "dd": pd.Series(dtype=float)}
 
     years = len(nav) / TRADING_DAYS
@@ -323,12 +334,12 @@ state_weights = {
     "Bull Full": weight_dict(0, full_kodex, full_lev),
 }
 
-ret_200_cc = kodex_200["close"].pct_change().reindex(common_idx).fillna(0)
-ret_lev_cc = kodex_lev["close"].pct_change().reindex(common_idx).fillna(0)
-ret_200_co = ((kodex_200["open"] - kodex_200["close"].shift(1)) / kodex_200["close"].shift(1)).reindex(common_idx).fillna(0)
-ret_lev_co = ((kodex_lev["open"] - kodex_lev["close"].shift(1)) / kodex_lev["close"].shift(1)).reindex(common_idx).fillna(0)
-ret_200_oc = ((kodex_200["close"] - kodex_200["open"]) / kodex_200["open"]).reindex(common_idx).fillna(0)
-ret_lev_oc = ((kodex_lev["close"] - kodex_lev["open"]) / kodex_lev["open"]).reindex(common_idx).fillna(0)
+ret_200_cc = finite_return(kodex_200["close"].pct_change()).reindex(common_idx).fillna(0)
+ret_lev_cc = finite_return(kodex_lev["close"].pct_change()).reindex(common_idx).fillna(0)
+ret_200_co = safe_divide(kodex_200["open"] - kodex_200["close"].shift(1), kodex_200["close"].shift(1)).reindex(common_idx).fillna(0)
+ret_lev_co = safe_divide(kodex_lev["open"] - kodex_lev["close"].shift(1), kodex_lev["close"].shift(1)).reindex(common_idx).fillna(0)
+ret_200_oc = safe_divide(kodex_200["close"] - kodex_200["open"], kodex_200["open"]).reindex(common_idx).fillna(0)
+ret_lev_oc = safe_divide(kodex_lev["close"] - kodex_lev["open"], kodex_lev["open"]).reindex(common_idx).fillna(0)
 
 progress.progress(80, text="백테스트 계산 중...")
 if execution_mode == "당일 종가 신호확인 및 종가 매수/매도":

@@ -41,6 +41,7 @@ def static_line_chart(
     yaxis_title: str = "",
     percent_axis: bool = False,
     height: int = 340,
+    mdd_info: dict[str, object] | None = None,
 ) -> go.Figure:
     fig = go.Figure()
     palette = [
@@ -75,6 +76,36 @@ def static_line_chart(
     )
     if percent_axis:
         fig.update_yaxes(ticksuffix="%")
+    if mdd_info is not None:
+        mdd_date = mdd_info["date"]
+        peak_date = mdd_info["peak_date"]
+        mdd_value = mdd_info["value"]
+        peak_value = mdd_info["peak_value"]
+        trough_value = mdd_info["trough_value"]
+        fig.add_trace(
+            go.Scatter(
+                x=[peak_date, mdd_date],
+                y=[peak_value, trough_value],
+                mode="markers+lines",
+                name=f"MDD {mdd_value:.1%}",
+                line=dict(color=COLORS["dd"], width=2, dash="dot"),
+                marker=dict(color=COLORS["dd"], size=8),
+                showlegend=True,
+            )
+        )
+        fig.add_annotation(
+            x=mdd_date,
+            y=trough_value,
+            text=f"MDD {mdd_value:.1%}",
+            showarrow=True,
+            arrowhead=2,
+            arrowcolor=COLORS["dd"],
+            ax=32,
+            ay=42,
+            bgcolor="rgba(255,255,255,0.92)",
+            bordercolor=COLORS["dd"],
+            font=dict(color=COLORS["dd"], size=12),
+        )
     return fig
 
 
@@ -155,12 +186,20 @@ def calc_metrics(daily_ret: pd.Series) -> dict[str, object]:
     cagr = nav.iloc[-1] ** (1 / years) - 1 if years > 0 and nav.iloc[-1] > 0 else -1.0
     dd = nav / nav.cummax() - 1
     mdd = dd.min()
+    mdd_date = dd.idxmin()
+    peak_nav = nav.cummax()
+    peak_value = peak_nav.loc[mdd_date]
+    peak_date = nav.loc[:mdd_date].idxmax()
     sharpe = daily_ret.mean() / daily_ret.std() * np.sqrt(TRADING_DAYS) if daily_ret.std() > 0 else 0.0
     calmar = cagr / abs(mdd) if mdd < 0 else 0.0
     win_m = (nav.resample("ME").last().pct_change().dropna() > 0).mean()
     return {
         "nav": nav,
         "dd": dd,
+        "mdd_date": mdd_date,
+        "mdd_peak_date": peak_date,
+        "mdd_peak_value": peak_value,
+        "mdd_trough_value": nav.loc[mdd_date],
         "total": total,
         "cagr": cagr,
         "mdd": mdd,
@@ -393,7 +432,19 @@ with tab_perf:
         }
     )
     st.plotly_chart(
-        static_line_chart(nav_df, "Cumulative NAV", yaxis_title="NAV", height=360),
+        static_line_chart(
+            nav_df,
+            "Cumulative NAV with Strategy MDD",
+            yaxis_title="NAV",
+            height=380,
+            mdd_info={
+                "date": strategy_metrics["mdd_date"],
+                "peak_date": strategy_metrics["mdd_peak_date"],
+                "value": strategy_metrics["mdd"],
+                "peak_value": strategy_metrics["mdd_peak_value"],
+                "trough_value": strategy_metrics["mdd_trough_value"],
+            },
+        ),
         use_container_width=True,
         config=STATIC_CHART_CONFIG,
     )
@@ -406,7 +457,13 @@ with tab_perf:
         }
     ) * 100
     st.plotly_chart(
-        static_line_chart(dd_df, "Drawdown", yaxis_title="Drawdown", percent_axis=True, height=280),
+        static_line_chart(
+            dd_df,
+            f"Drawdown | Strategy MDD {strategy_metrics['mdd']:.1%}",
+            yaxis_title="Drawdown",
+            percent_axis=True,
+            height=280,
+        ),
         use_container_width=True,
         config=STATIC_CHART_CONFIG,
     )

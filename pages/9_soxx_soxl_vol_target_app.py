@@ -284,6 +284,36 @@ def build_strategy_weights(
     return rebalance_weights(weights, rebalance)
 
 
+def calc_target_weight(
+    is_bull: bool,
+    current_vol: float,
+    target_vol: float,
+    soxl_cap: float,
+    max_risk_exposure: float,
+    allocation_mode: str,
+    bear_soxx: float,
+) -> pd.Series:
+    if not is_bull or pd.isna(current_vol) or current_vol <= 0:
+        return pd.Series({"SOXX": bear_soxx, "SOXL": 0.0})
+
+    desired_risk = min(target_vol / current_vol, max_risk_exposure)
+    if allocation_mode == "Risk-adjusted":
+        soxl_w = min(desired_risk / 3, soxl_cap)
+        soxx_w = min(max(desired_risk - soxl_w * 3, 0.0), 1 - soxl_w)
+    elif allocation_mode == "Capital-first":
+        capital = min(desired_risk, 1.0)
+        soxl_w = min(capital, soxl_cap)
+        soxx_w = min(max(capital - soxl_w, 0.0), 1 - soxl_w)
+    else:
+        soxl_w = soxl_cap
+        soxx_w = 1 - soxl_cap
+
+    target = pd.Series({"SOXX": soxx_w, "SOXL": soxl_w}).clip(0, 1)
+    if target.sum() > 1:
+        target = target / target.sum()
+    return target
+
+
 def backtest(weights: pd.DataFrame, ret_soxx: pd.Series, ret_soxl: pd.Series, cost_rate: float) -> pd.Series:
     turnover = weights.diff().abs().sum(axis=1).fillna(weights.abs().sum(axis=1))
     daily_ret = weights["SOXX"] * ret_soxx + weights["SOXL"] * ret_soxl - turnover * cost_rate
@@ -394,12 +424,17 @@ full_idx = common_idx.union(soxx.index[soxx.index < common_idx[0]])
 soxx = soxx.reindex(full_idx).sort_index()
 soxl = soxl.reindex(full_idx).sort_index()
 price = soxx["adjclose"].ffill()
-ret_soxx_full = soxx["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-ret_soxl_full = soxl["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+soxx_adj_factor = (soxx["adjclose"] / soxx["close"]).replace([np.inf, -np.inf], np.nan).ffill()
+soxl_adj_factor = (soxl["adjclose"] / soxl["close"]).replace([np.inf, -np.inf], np.nan).ffill()
+soxx_adjopen = (soxx["open"] * soxx_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()
+soxl_adjopen = (soxl["open"] * soxl_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()
+close_ret_soxx_full = soxx["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+ret_soxx_full = (soxx_adjopen.shift(-1) / soxx_adjopen - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+ret_soxl_full = (soxl_adjopen.shift(-1) / soxl_adjopen - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 fast_ma = price.rolling(fast_window).mean()
 slow_ma = price.rolling(slow_window).mean()
-vol = ret_soxx_full.rolling(vol_window).std() * np.sqrt(TRADING_DAYS)
+vol = close_ret_soxx_full.rolling(vol_window).std() * np.sqrt(TRADING_DAYS)
 trend_signal = build_trend_signal(price, fast_ma, slow_ma, trend_rule)
 
 weights_full = build_strategy_weights(
@@ -442,6 +477,15 @@ latest = weights.iloc[-1]
 latest_date = weights.index[-1].date()
 latest_trend = bool(trend_signal.reindex(weights.index).ffill().iloc[-1])
 latest_vol = vol.reindex(weights.index).ffill().iloc[-1]
+next_target = calc_target_weight(
+    latest_trend,
+    latest_vol,
+    target_vol,
+    soxl_cap,
+    max_risk_exposure,
+    allocation_mode,
+    bear_soxx,
+)
 latest_prices = pd.Series(
     {
         "SOXX": soxx["adjclose"].reindex(weights.index).ffill().iloc[-1],
@@ -450,7 +494,7 @@ latest_prices = pd.Series(
 )
 current_shares = pd.Series({"SOXX": current_soxx_shares, "SOXL": current_soxl_shares})
 execution_plan, target_cash = build_execution_plan(
-    latest,
+    next_target,
     latest_prices,
     account_value,
     current_shares,
@@ -458,8 +502,8 @@ execution_plan, target_cash = build_execution_plan(
 )
 
 st.success(
-    f"Current signal ({latest_date}): {'Bull' if latest_trend else 'Bear'} | "
-    f"SOXX {latest['SOXX']:.1%}, SOXL {latest['SOXL']:.1%}, Cash {1 - latest.sum():.1%} | "
+    f"Next-open target from close signal ({latest_date}): {'Bull' if latest_trend else 'Bear'} | "
+    f"SOXX {next_target['SOXX']:.1%}, SOXL {next_target['SOXL']:.1%}, Cash {1 - next_target.sum():.1%} | "
     f"SOXX {vol_window}D volatility {latest_vol:.1%}"
 )
 
@@ -524,8 +568,8 @@ with tab_perf:
 with tab_execute:
     st.subheader("Next Trade Plan")
     st.caption(
-        "Use the latest available adjusted close as the reference price. "
-        "For live trading, place orders near the next session open or close and re-run after fills."
+        "Signal uses the latest close. Backtest returns assume rebalancing at the next regular-session open. "
+        "The table uses the latest adjusted close only as a sizing estimate because the next open is not known yet."
     )
     exec_shown = execution_plan.copy()
     for col in ["Latest Price", "Target Value", "Estimated Order Value"]:
@@ -537,11 +581,11 @@ with tab_execute:
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Target Cash", f"${target_cash:,.2f}")
-    c2.metric("Reference Date", str(latest_date))
-    c3.metric("Target Invested", f"{latest.sum():.1%}")
+    c2.metric("Signal Date", str(latest_date))
+    c3.metric("Target Invested", f"{next_target.sum():.1%}")
     st.info(
-        "Practical rule: buy positive Order Shares, sell negative Order Shares, and hold zero. "
-        "Round down is used so the plan does not require margin by default."
+        "Practical rule: after the signal date closes, prepare these orders for the next regular-session open. "
+        "Buy positive Order Shares, sell negative Order Shares, and re-run after fills if the opening price differs a lot."
     )
 
 with tab_signal:

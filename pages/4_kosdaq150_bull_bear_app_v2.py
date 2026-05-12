@@ -65,19 +65,37 @@ def load_krx_ohlcv(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def load_tnx(start_str: str, end_str: str, warmup_days: int) -> pd.Series:
+def load_tnx(start_str: str, end_str: str, warmup_days: int) -> tuple[pd.Series, str]:
     start = datetime.strptime(start_str, "%Y%m%d") - timedelta(days=warmup_days)
     end = datetime.strptime(end_str, "%Y%m%d") + timedelta(days=2)
-    df = yf.download(
-        "^TNX",
-        start=start.strftime("%Y-%m-%d"),
-        end=end.strftime("%Y-%m-%d"),
-        auto_adjust=True,
-        progress=False,
-    )
-    if df.empty or "Close" not in df:
-        return pd.Series(dtype=float, name="TNX")
-    return normalize_index(df["Close"].squeeze().rename("TNX")).dropna()
+
+    try:
+        df = yf.download(
+            "^TNX",
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+        if not df.empty and "Close" in df:
+            close = normalize_index(df["Close"].squeeze().rename("TNX")).dropna()
+            if not close.empty:
+                return close, "Yahoo Finance ^TNX"
+    except Exception:
+        pass
+
+    try:
+        fred = pd.read_csv("https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10", parse_dates=["observation_date"])
+        fred = fred.rename(columns={"observation_date": "Date", "DGS10": "TNX"})
+        fred["TNX"] = pd.to_numeric(fred["TNX"].replace(".", np.nan), errors="coerce")
+        close = normalize_index(fred.set_index("Date")["TNX"]).loc[start:end].dropna()
+        if not close.empty:
+            return close.rename("TNX"), "FRED DGS10"
+    except Exception:
+        pass
+
+    return pd.Series(dtype=float, name="TNX"), ""
 
 
 def align_tnx_previous_day(
@@ -301,7 +319,7 @@ kodex_200 = load_krx_ohlcv(KODEX_200, extended_start_str, end_str)
 progress.progress(35, text="KODEX 코스닥150레버리지 데이터를 불러오는 중...")
 kodex_lev = load_krx_ohlcv(KODEX_LEVERAGE, extended_start_str, end_str)
 progress.progress(55, text="TNX 데이터를 불러오는 중...")
-tnx = load_tnx(start_str, end_str, warmup_days)
+tnx, tnx_source = load_tnx(start_str, end_str, warmup_days)
 
 if kodex_200.empty or kodex_lev.empty:
     st.error("KODEX 코스닥150 ETF 데이터를 불러오지 못했습니다. pykrx 또는 KRX 데이터 연결을 확인하세요.")
@@ -320,7 +338,10 @@ kodex_close_full = kodex_200["close"].reindex(full_idx).ffill()
 kodex_ma_full = kodex_close_full.rolling(kodex_ma_window).mean()
 tnx_prev_full, tnx_ma_prev_full = align_tnx_previous_day(tnx, full_idx, tnx_ma_window)
 if tnx.empty:
-    st.warning("TNX 데이터를 불러오지 못해 금리 위험 신호를 Bull Full로 처리합니다.")
+    st.error("TNX/FRED 금리 데이터를 불러오지 못했습니다. 금리 필터 없이 Bull Full로 처리하면 결과가 왜곡될 수 있어 백테스트를 중단합니다.")
+    st.stop()
+elif tnx_source == "FRED DGS10":
+    st.info("Yahoo Finance ^TNX를 불러오지 못해 FRED DGS10 금리 데이터로 대체했습니다.")
 
 signals = pd.Series(
     [state_from_signals(kodex_close_full.loc[d], kodex_ma_full.loc[d], tnx_prev_full.loc[d], tnx_ma_prev_full.loc[d]) for d in full_idx],

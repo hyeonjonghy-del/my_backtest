@@ -290,6 +290,37 @@ def backtest(weights: pd.DataFrame, ret_soxx: pd.Series, ret_soxl: pd.Series, co
     return daily_ret.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 
+def build_execution_plan(
+    target_weights: pd.Series,
+    prices: pd.Series,
+    account_value: float,
+    current_shares: pd.Series,
+    current_cash: float,
+) -> tuple[pd.DataFrame, float]:
+    current_values = current_shares * prices
+    effective_value = account_value if account_value > 0 else current_values.sum() + current_cash
+    rows = []
+    for symbol in ["SOXX", "SOXL"]:
+        target_value = effective_value * target_weights[symbol]
+        target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
+        order_shares = target_shares - current_shares[symbol]
+        rows.append(
+            {
+                "Symbol": symbol,
+                "Latest Price": prices[symbol],
+                "Target Weight": target_weights[symbol],
+                "Target Value": target_value,
+                "Target Shares": target_shares,
+                "Current Shares": current_shares[symbol],
+                "Order": "Buy" if order_shares > 0 else "Sell" if order_shares < 0 else "Hold",
+                "Order Shares": order_shares,
+                "Estimated Order Value": abs(order_shares) * prices[symbol],
+            }
+        )
+    target_cash = effective_value * max(0.0, 1 - target_weights.sum())
+    return pd.DataFrame(rows), target_cash
+
+
 with st.sidebar:
     st.header("Settings")
     col1, col2 = st.columns(2)
@@ -314,6 +345,12 @@ with st.sidebar:
     bear_soxx = st.slider("Bear-regime SOXX weight (%)", 0, 100, 0, 5) / 100
     rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=0, horizontal=True)
     cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.05, step=0.01) / 100
+
+    st.subheader("Execution")
+    account_value = st.number_input("Account value ($)", min_value=0.0, value=10000.0, step=1000.0)
+    current_soxx_shares = st.number_input("Current SOXX shares", min_value=0.0, value=0.0, step=1.0)
+    current_soxl_shares = st.number_input("Current SOXL shares", min_value=0.0, value=0.0, step=1.0)
+    current_cash = st.number_input("Current cash ($)", min_value=0.0, value=10000.0, step=1000.0)
     run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 
 with st.expander("Default Strategy", expanded=False):
@@ -405,6 +442,20 @@ latest = weights.iloc[-1]
 latest_date = weights.index[-1].date()
 latest_trend = bool(trend_signal.reindex(weights.index).ffill().iloc[-1])
 latest_vol = vol.reindex(weights.index).ffill().iloc[-1]
+latest_prices = pd.Series(
+    {
+        "SOXX": soxx["adjclose"].reindex(weights.index).ffill().iloc[-1],
+        "SOXL": soxl["adjclose"].reindex(weights.index).ffill().iloc[-1],
+    }
+)
+current_shares = pd.Series({"SOXX": current_soxx_shares, "SOXL": current_soxl_shares})
+execution_plan, target_cash = build_execution_plan(
+    latest,
+    latest_prices,
+    account_value,
+    current_shares,
+    current_cash,
+)
 
 st.success(
     f"Current signal ({latest_date}): {'Bull' if latest_trend else 'Bear'} | "
@@ -420,7 +471,9 @@ cols[3].metric("Sharpe", f"{strategy_metrics['sharpe']:.2f}")
 cols[4].metric("Calmar", f"{strategy_metrics['calmar']:.2f}")
 cols[5].metric("Monthly Win", f"{strategy_metrics['win_m']:.1%}")
 
-tab_perf, tab_signal, tab_table, tab_monthly = st.tabs(["Performance", "Signal / Weights", "Comparison", "Monthly"])
+tab_perf, tab_execute, tab_signal, tab_table, tab_monthly = st.tabs(
+    ["Performance", "Execution", "Signal / Weights", "Comparison", "Monthly"]
+)
 
 with tab_perf:
     nav_df = pd.DataFrame(
@@ -466,6 +519,29 @@ with tab_perf:
         ),
         use_container_width=True,
         config=STATIC_CHART_CONFIG,
+    )
+
+with tab_execute:
+    st.subheader("Next Trade Plan")
+    st.caption(
+        "Use the latest available adjusted close as the reference price. "
+        "For live trading, place orders near the next session open or close and re-run after fills."
+    )
+    exec_shown = execution_plan.copy()
+    for col in ["Latest Price", "Target Value", "Estimated Order Value"]:
+        exec_shown[col] = exec_shown[col].map(lambda x: f"${x:,.2f}")
+    exec_shown["Target Weight"] = exec_shown["Target Weight"].map(lambda x: f"{x:.1%}")
+    for col in ["Target Shares", "Current Shares", "Order Shares"]:
+        exec_shown[col] = exec_shown[col].map(lambda x: f"{x:,.0f}")
+    st.dataframe(exec_shown, use_container_width=True, hide_index=True)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Target Cash", f"${target_cash:,.2f}")
+    c2.metric("Reference Date", str(latest_date))
+    c3.metric("Target Invested", f"{latest.sum():.1%}")
+    st.info(
+        "Practical rule: buy positive Order Shares, sell negative Order Shares, and hold zero. "
+        "Round down is used so the plan does not require margin by default."
     )
 
 with tab_signal:

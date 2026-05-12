@@ -8,15 +8,107 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 TRADING_DAYS = 252
 SOXX = "SOXX"
 SOXL = "SOXL"
+STATIC_CHART_CONFIG = {
+    "staticPlot": True,
+    "displayModeBar": False,
+    "responsive": True,
+}
+COLORS = {
+    "strategy": "#0F766E",
+    "soxx": "#2563EB",
+    "soxl": "#DC2626",
+    "benchmark": "#7C3AED",
+    "cash": "#64748B",
+    "ma_fast": "#F59E0B",
+    "ma_slow": "#111827",
+    "dd": "#B91C1C",
+}
 
 st.set_page_config(page_title="SOXX/SOXL Vol Target Backtest", page_icon="US", layout="wide")
 st.title("SOXX / SOXL Volatility Target Backtest")
 st.caption("Default: SOXX MA50 > MA200, target volatility 45%, SOXL cap 40%, cash in bear regimes")
+
+
+def static_line_chart(
+    data: pd.DataFrame,
+    title: str,
+    yaxis_title: str = "",
+    percent_axis: bool = False,
+    height: int = 340,
+) -> go.Figure:
+    fig = go.Figure()
+    palette = [
+        COLORS["strategy"],
+        COLORS["soxx"],
+        COLORS["soxl"],
+        COLORS["benchmark"],
+        COLORS["ma_fast"],
+        COLORS["ma_slow"],
+        COLORS["cash"],
+    ]
+    for i, column in enumerate(data.columns):
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data[column],
+                mode="lines",
+                name=str(column),
+                line=dict(color=palette[i % len(palette)], width=2.4 if i == 0 else 1.8),
+            )
+        )
+    fig.update_layout(
+        title=dict(text=title, x=0.01, xanchor="left"),
+        height=height,
+        margin=dict(l=10, r=10, t=46, b=20),
+        hovermode=False,
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", font=dict(size=12)),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        xaxis=dict(showgrid=False, rangeslider=dict(visible=False), fixedrange=True),
+        yaxis=dict(title=yaxis_title, showgrid=True, gridcolor="#E5E7EB", fixedrange=True),
+    )
+    if percent_axis:
+        fig.update_yaxes(ticksuffix="%")
+    return fig
+
+
+def static_area_chart(data: pd.DataFrame, title: str, height: int = 300) -> go.Figure:
+    fig = go.Figure()
+    area_colors = {
+        "SOXX": "rgba(37, 99, 235, 0.72)",
+        "SOXL": "rgba(220, 38, 38, 0.72)",
+        "Cash": "rgba(100, 116, 139, 0.55)",
+    }
+    for column in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data[column],
+                mode="lines",
+                name=str(column),
+                stackgroup="one",
+                line=dict(width=0.8, color=area_colors.get(column, "rgba(15, 118, 110, 0.65)")),
+                fillcolor=area_colors.get(column, "rgba(15, 118, 110, 0.65)"),
+            )
+        )
+    fig.update_layout(
+        title=dict(text=title, x=0.01, xanchor="left"),
+        height=height,
+        margin=dict(l=10, r=10, t=46, b=20),
+        hovermode=False,
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", font=dict(size=12)),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        xaxis=dict(showgrid=False, rangeslider=dict(visible=False), fixedrange=True),
+        yaxis=dict(showgrid=True, gridcolor="#E5E7EB", tickformat=".0%", fixedrange=True, range=[0, 1]),
+    )
+    return fig
 
 
 def normalize_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -300,8 +392,11 @@ with tab_perf:
             "80/20": calc_metrics(fixed_20)["nav"],
         }
     )
-    st.subheader("Cumulative NAV")
-    st.line_chart(nav_df, height=360)
+    st.plotly_chart(
+        static_line_chart(nav_df, "Cumulative NAV", yaxis_title="NAV", height=360),
+        use_container_width=True,
+        config=STATIC_CHART_CONFIG,
+    )
 
     dd_df = pd.DataFrame(
         {
@@ -310,8 +405,11 @@ with tab_perf:
             "SOXL DD": calc_metrics(bench_soxl)["dd"],
         }
     ) * 100
-    st.subheader("Drawdown")
-    st.line_chart(dd_df, height=260)
+    st.plotly_chart(
+        static_line_chart(dd_df, "Drawdown", yaxis_title="Drawdown", percent_axis=True, height=280),
+        use_container_width=True,
+        config=STATIC_CHART_CONFIG,
+    )
 
 with tab_signal:
     signal_df = pd.DataFrame(
@@ -321,13 +419,19 @@ with tab_signal:
             f"MA{slow_window}": slow_ma.reindex(common_idx),
         }
     )
-    st.subheader("SOXX Trend")
-    st.line_chart(signal_df, height=300)
+    st.plotly_chart(
+        static_line_chart(signal_df, "SOXX Trend", yaxis_title="Price", height=320),
+        use_container_width=True,
+        config=STATIC_CHART_CONFIG,
+    )
 
-    st.subheader("Weights")
     weight_df = weights.copy()
     weight_df["Cash"] = (1 - weight_df.sum(axis=1)).clip(0, 1)
-    st.area_chart(weight_df, height=280)
+    st.plotly_chart(
+        static_area_chart(weight_df, "Portfolio Weights", height=300),
+        use_container_width=True,
+        config=STATIC_CHART_CONFIG,
+    )
 
     st.subheader("Recent Signals")
     recent = pd.DataFrame(

@@ -598,10 +598,28 @@ with tab_table:
         formatted[col] = formatted[col].map(lambda x: "-" if pd.isna(x) else f"{x:.1%}")
     formatted["Sharpe"] = formatted["Sharpe"].map(lambda x: f"{x:.2f}")
     formatted["Calmar"] = formatted["Calmar"].map(lambda x: f"{x:.2f}")
+    st.subheader("Performance Summary")
     st.dataframe(formatted, use_container_width=True, hide_index=True)
 
     monthly = strategy_ret.add(1).resample("ME").prod().sub(1).to_frame("Strategy")
     monthly["SPY"] = bench_spy.add(1).resample("ME").prod().sub(1)
+    monthly["UPRO"] = bench_upro.add(1).resample("ME").prod().sub(1)
+    monthly["SPY 80% + UPRO 20%"] = fixed_80_20.add(1).resample("ME").prod().sub(1)
+    monthly["SPY 70% + UPRO 30%"] = fixed_70_30.add(1).resample("ME").prod().sub(1)
+
+    st.subheader("Monthly Returns")
+    monthly_pivot = monthly["Strategy"].to_frame("Return")
+    monthly_pivot["Year"] = monthly_pivot.index.year
+    monthly_pivot["Month"] = monthly_pivot.index.month
+    monthly_table = monthly_pivot.pivot(index="Year", columns="Month", values="Return")
+    monthly_table.columns = [f"{month}M" for month in monthly_table.columns]
+    monthly_table["Year"] = strategy_ret.add(1).groupby(strategy_ret.index.year).prod().sub(1)
+    st.dataframe(monthly_table.map(lambda x: "-" if pd.isna(x) else f"{x:.1%}"), use_container_width=True)
+
+    st.subheader("Yearly Returns")
+    yearly = monthly.add(1).groupby(monthly.index.year).prod().sub(1)
+    st.dataframe(yearly.map(lambda x: "-" if pd.isna(x) else f"{x:.1%}"), use_container_width=True)
+
     st.download_button(
         "Monthly Returns CSV",
         monthly.reset_index().rename(columns={"index": "Date"}).to_csv(index=False).encode("utf-8-sig"),

@@ -359,12 +359,18 @@ with st.sidebar:
     trend_rule = st.selectbox("Bull trend rule", ["MA Fast > MA Slow", "Close > MA Slow", "Close > MA Slow and Fast > Slow"], index=0)
 
     st.subheader("Volatility Target")
+    preset = st.selectbox("Preset", ["Balanced return", "Lower MDD", "Aggressive"], index=0)
+    defaults = {
+        "Balanced return": {"target_vol": 45, "max_beta": 180, "upro_cap": 50, "bear_spy": 20, "rebalance_index": 1},
+        "Lower MDD": {"target_vol": 30, "max_beta": 130, "upro_cap": 35, "bear_spy": 10, "rebalance_index": 1},
+        "Aggressive": {"target_vol": 55, "max_beta": 220, "upro_cap": 65, "bear_spy": 30, "rebalance_index": 1},
+    }[preset]
     vol_window = st.slider("SPY volatility window", 10, 80, 20, 5)
-    target_vol = st.slider("Target volatility (%)", 10, 60, 35, 5) / 100
-    max_beta = st.slider("Max SPY-equivalent exposure (%)", 50, 200, 140, 5) / 100
-    upro_cap = st.slider("UPRO max weight (%)", 0, 80, 40, 5) / 100
-    bear_spy = st.slider("Bear-regime SPY weight (%)", 0, 100, 20, 5) / 100
-    rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=1, horizontal=True)
+    target_vol = st.slider("Target volatility (%)", 10, 80, defaults["target_vol"], 5) / 100
+    max_beta = st.slider("Max SPY-equivalent exposure (%)", 50, 250, defaults["max_beta"], 5) / 100
+    upro_cap = st.slider("UPRO max weight (%)", 0, 80, defaults["upro_cap"], 5) / 100
+    bear_spy = st.slider("Bear-regime SPY weight (%)", 0, 100, defaults["bear_spy"], 5) / 100
+    rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=defaults["rebalance_index"], horizontal=True)
     cost_rate = st.number_input("Trading cost per turnover (%)", min_value=0.0, value=0.25, step=0.05) / 100
 
     st.subheader("Execution Plan")

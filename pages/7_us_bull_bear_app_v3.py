@@ -1,4 +1,4 @@
-"""SPY / UPRO trend, TNX filter, and volatility-target backtest."""
+"""SPY / UPRO trend and volatility-target backtest."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import streamlit as st
 
 SPY = "SPY"
 UPRO = "UPRO"
-TNX = "^TNX"
 TRADING_DAYS = 252
 STATIC_CHART_CONFIG = {
     "staticPlot": True,
@@ -32,7 +31,7 @@ COLORS = {
 
 st.set_page_config(page_title="SPY / UPRO Vol Target Bull/Bear", page_icon="US", layout="wide")
 st.title("SPY / UPRO Bull/Bear Volatility Target Backtest")
-st.caption("SPY trend + previous-day TNX filter + SPY-volatility target sizing")
+st.caption("SPY trend + SPY-volatility target sizing")
 
 
 def normalize_index(df: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
@@ -171,34 +170,10 @@ def static_area_chart(data: pd.DataFrame, title: str, height: int = 300) -> go.F
     return fig
 
 
-def align_tnx_previous_day(
-    tnx: pd.Series,
-    target_index: pd.DatetimeIndex,
-    tnx_ma_window: int,
-) -> tuple[pd.Series, pd.Series]:
-    if tnx.empty:
-        return (
-            pd.Series(np.nan, index=target_index, name="TNX Prev"),
-            pd.Series(np.nan, index=target_index, name="TNX MA Prev"),
-        )
-
-    calendar_index = pd.date_range(tnx.index.min(), target_index[-1], freq="D")
-    tnx_daily = tnx.reindex(calendar_index).ffill()
-    tnx_ma_daily = tnx.rolling(tnx_ma_window).mean().reindex(calendar_index).ffill()
-    previous_day = target_index - pd.Timedelta(days=1)
-    previous_tnx = tnx_daily.reindex(previous_day, method="ffill")
-    previous_tnx_ma = tnx_ma_daily.reindex(previous_day, method="ffill")
-    previous_tnx.index = target_index
-    previous_tnx_ma.index = target_index
-    return previous_tnx.rename("TNX Prev"), previous_tnx_ma.rename("TNX MA Prev")
-
-
 def build_regime(
     spy_close: pd.Series,
     fast_ma: pd.Series,
     slow_ma: pd.Series,
-    tnx_prev: pd.Series,
-    tnx_ma_prev: pd.Series,
     trend_rule: str,
 ) -> pd.Series:
     if trend_rule == "MA Fast > MA Slow":
@@ -208,10 +183,8 @@ def build_regime(
     else:
         trend = (spy_close > slow_ma) & (fast_ma > slow_ma)
 
-    high_rate_risk = tnx_prev > tnx_ma_prev
     regime = pd.Series("Bear", index=spy_close.index, dtype=object)
-    regime.loc[trend & high_rate_risk.fillna(False)] = "Bull Mix"
-    regime.loc[trend & ~high_rate_risk.fillna(False)] = "Bull Full"
+    regime.loc[trend.fillna(False)] = "Bull"
     return regime.rename("Regime")
 
 
@@ -253,7 +226,6 @@ def build_strategy_weights(
     upro_cap: float,
     max_beta: float,
     bear_spy: float,
-    bull_mix_scale: float,
     rebalance: str,
 ) -> pd.DataFrame:
     executable_regime = regime.shift(1).reindex(price.index).ffill().fillna("Bear")
@@ -266,9 +238,7 @@ def build_strategy_weights(
         if state == "Bear":
             spy_weight, upro_weight = bear_spy, 0.0
         else:
-            scale = bull_mix_scale if state == "Bull Mix" else 1.0
-            cap = upro_cap * scale
-            spy_weight, upro_weight = beta_to_weights(desired_beta.loc[date] * scale, cap)
+            spy_weight, upro_weight = beta_to_weights(desired_beta.loc[date], upro_cap)
         rows.append({"SPY": spy_weight, "UPRO": upro_weight, "Regime": state})
 
     weights = pd.DataFrame(rows, index=price.index)
@@ -284,13 +254,11 @@ def calc_target_weight(
     upro_cap: float,
     max_beta: float,
     bear_spy: float,
-    bull_mix_scale: float,
 ) -> pd.Series:
     if state == "Bear" or pd.isna(current_vol) or current_vol <= 0:
         return pd.Series({"SPY": bear_spy, "UPRO": 0.0})
-    scale = bull_mix_scale if state == "Bull Mix" else 1.0
-    target_beta = min(target_vol / current_vol, max_beta) * scale
-    spy_weight, upro_weight = beta_to_weights(target_beta, upro_cap * scale)
+    target_beta = min(target_vol / current_vol, max_beta)
+    spy_weight, upro_weight = beta_to_weights(target_beta, upro_cap)
     return pd.Series({"SPY": spy_weight, "UPRO": upro_weight})
 
 
@@ -385,18 +353,16 @@ with st.sidebar:
     with c2:
         end_date = st.date_input("End", datetime.today())
 
-    st.subheader("Trend / Rate Filter")
+    st.subheader("Trend Filter")
     fast_window = st.slider("SPY fast MA", 20, 120, 50, 5)
     slow_window = st.slider("SPY slow MA", 100, 250, 200, 5)
     trend_rule = st.selectbox("Bull trend rule", ["MA Fast > MA Slow", "Close > MA Slow", "Close > MA Slow and Fast > Slow"], index=0)
-    tnx_ma_window = st.slider("TNX MA", 20, 250, 120, 5)
 
     st.subheader("Volatility Target")
     vol_window = st.slider("SPY volatility window", 10, 80, 20, 5)
-    target_vol = st.slider("Target volatility (%)", 10, 60, 30, 5) / 100
-    max_beta = st.slider("Max SPY-equivalent exposure (%)", 50, 200, 130, 5) / 100
-    upro_cap = st.slider("UPRO max weight (%)", 0, 80, 35, 5) / 100
-    bull_mix_scale = st.slider("Bull Mix risk scale (%)", 20, 100, 65, 5) / 100
+    target_vol = st.slider("Target volatility (%)", 10, 60, 35, 5) / 100
+    max_beta = st.slider("Max SPY-equivalent exposure (%)", 50, 200, 140, 5) / 100
+    upro_cap = st.slider("UPRO max weight (%)", 0, 80, 40, 5) / 100
     bear_spy = st.slider("Bear-regime SPY weight (%)", 0, 100, 20, 5) / 100
     rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=1, horizontal=True)
     cost_rate = st.number_input("Trading cost per turnover (%)", min_value=0.0, value=0.25, step=0.05) / 100
@@ -414,11 +380,9 @@ with st.expander("Strategy Rules", expanded=False):
 | Item | Rule |
 |---|---|
 | Bull trend | {trend_rule} |
-| Bull Full | Bull trend and previous-day TNX <= previous-day TNX MA{tnx_ma_window} |
-| Bull Mix | Bull trend and previous-day TNX > previous-day TNX MA{tnx_ma_window} |
 | Bear | Bull trend is false |
 | Target volatility | {target_vol:.0%}, based on SPY {vol_window}D realized volatility |
-| UPRO cap | {upro_cap:.0%} in Bull Full, {upro_cap * bull_mix_scale:.0%} in Bull Mix |
+| UPRO cap | {upro_cap:.0%} |
 | Bear allocation | SPY {bear_spy:.0%}, Cash {1 - bear_spy:.0%} |
 """
     )
@@ -429,15 +393,13 @@ if not run_btn:
 
 progress = st.progress(0, text="Loading market data...")
 end_dt = datetime.combine(end_date, datetime.min.time())
-warmup_start = datetime.combine(start_date, datetime.min.time()) - timedelta(days=max(slow_window, tnx_ma_window, vol_window) * 3)
+warmup_start = datetime.combine(start_date, datetime.min.time()) - timedelta(days=max(slow_window, vol_window) * 3)
 
 try:
     progress.progress(20, text="Loading SPY data...")
     spy = load_yahoo_chart(SPY, warmup_start, end_dt)
     progress.progress(40, text="Loading UPRO data...")
     upro = load_yahoo_chart(UPRO, warmup_start, end_dt)
-    progress.progress(60, text="Loading TNX data...")
-    tnx_df = load_yahoo_chart(TNX, warmup_start, end_dt)
 except Exception as exc:
     st.error(f"Failed to load Yahoo data: {exc}")
     st.stop()
@@ -454,9 +416,7 @@ full_idx = full_idx[full_idx <= common_idx[-1]]
 price = spy["adjclose"].reindex(full_idx).ffill()
 fast_ma = price.rolling(fast_window).mean()
 slow_ma = price.rolling(slow_window).mean()
-tnx_close = tnx_df["adjclose"].reindex(tnx_df.index).dropna()
-tnx_prev, tnx_ma_prev = align_tnx_previous_day(tnx_close, full_idx, tnx_ma_window)
-regime_full = build_regime(price, fast_ma, slow_ma, tnx_prev, tnx_ma_prev, trend_rule)
+regime_full = build_regime(price, fast_ma, slow_ma, trend_rule)
 
 spy_ret_full = spy["adjclose"].pct_change().reindex(full_idx).fillna(0.0)
 vol = spy_ret_full.rolling(vol_window).std() * np.sqrt(TRADING_DAYS)
@@ -468,7 +428,6 @@ weights_full = build_strategy_weights(
     upro_cap,
     max_beta,
     bear_spy,
-    bull_mix_scale,
     rebalance,
 )
 
@@ -490,7 +449,7 @@ latest = weights.iloc[-1]
 latest_date = weights.index[-1].date()
 latest_regime = str(regime_full.reindex(weights.index).ffill().iloc[-1])
 latest_vol = vol.reindex(weights.index).ffill().iloc[-1]
-next_target = calc_target_weight(latest_regime, latest_vol, target_vol, upro_cap, max_beta, bear_spy, bull_mix_scale)
+next_target = calc_target_weight(latest_regime, latest_vol, target_vol, upro_cap, max_beta, bear_spy)
 latest_prices = pd.Series(
     {
         SPY: spy["adjclose"].reindex(weights.index).ffill().iloc[-1],
@@ -571,13 +530,6 @@ with tab_signal:
         }
     )
     st.plotly_chart(static_line_chart(signal_df, "SPY Trend", yaxis_title="Price", height=320), use_container_width=True, config=STATIC_CHART_CONFIG)
-    tnx_signal_df = pd.DataFrame(
-        {
-            "Prev TNX": tnx_prev.reindex(common_idx),
-            f"Prev TNX MA{tnx_ma_window}": tnx_ma_prev.reindex(common_idx),
-        }
-    ).dropna()
-    st.plotly_chart(static_line_chart(tnx_signal_df, "Previous-Day TNX Filter", yaxis_title="TNX", height=300), use_container_width=True, config=STATIC_CHART_CONFIG)
     st.dataframe(
         pd.DataFrame(
             {

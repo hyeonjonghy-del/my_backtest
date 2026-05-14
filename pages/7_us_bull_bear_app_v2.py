@@ -26,10 +26,33 @@ warnings.filterwarnings("ignore")
 SPY = "SPY"
 UPRO = "UPRO"
 TRADING_DAYS = 252
+CHART_CONFIG = {
+    "staticPlot": True,
+    "displayModeBar": False,
+}
 
 st.set_page_config(page_title="SPY / UPRO Bull/Bear Backtest", page_icon="US", layout="wide")
 st.title("SPY / UPRO Bull / Bull Mix / Bear Backtest")
 st.caption("SPY 추세 + 전일 TNX 금리 필터 + 종가/익일 시가 체결 선택")
+
+
+def make_line_chart(data: pd.DataFrame, height: int) -> go.Figure:
+    fig = go.Figure()
+    for column in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data[column],
+                name=str(column),
+                mode="lines",
+            )
+        )
+    fig.update_layout(
+        height=height,
+        margin=dict(t=20, b=20),
+        legend=dict(orientation="h", y=1.08, x=1, xanchor="right"),
+    )
+    return fig
 
 
 def normalize_index(obj: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
@@ -330,7 +353,7 @@ with st.sidebar:
     st.caption(f"SPY {full_spy}% + 레버리지 {full_lev}%")
 
     st.subheader("거래비용")
-    fee = st.number_input("거래대금당 비용 (%)", value=0.15, step=0.05, min_value=0.0) / 100
+    fee = st.number_input("거래대금당 비용 (%)", value=0.25, step=0.05, min_value=0.0) / 100
     run_btn = st.button("백테스트 실행", type="primary", use_container_width=True)
 
 
@@ -466,7 +489,7 @@ tab_chart, tab_signals, tab_trades, tab_monthly = st.tabs(["성과", "신호", "
 with tab_chart:
     st.subheader("누적 수익률")
     nav_chart = pd.DataFrame({"전략": nav_s / nav_s.iloc[0] - 1, "SPY B&H": benchmark / benchmark.iloc[0] - 1}) * 100
-    st.line_chart(nav_chart, height=360)
+    st.plotly_chart(make_line_chart(nav_chart, 360), use_container_width=True, config=CHART_CONFIG)
 
     st.subheader("연도별 수익률 비교")
     yearly_strategy = (1 + nav_s.pct_change().fillna(0)).groupby(nav_s.index.year).prod() - 1
@@ -508,21 +531,25 @@ with tab_chart:
         height=360,
         margin=dict(t=50, b=20),
     )
-    st.plotly_chart(fig_yearly, use_container_width=True)
+    st.plotly_chart(fig_yearly, use_container_width=True, config=CHART_CONFIG)
     st.subheader("낙폭")
     dd_chart = pd.DataFrame({"전략 DD": strategy_metrics["dd"], "SPY DD": benchmark_metrics["dd"]}) * 100
-    st.line_chart(dd_chart, height=260)
+    st.plotly_chart(make_line_chart(dd_chart, 260), use_container_width=True, config=CHART_CONFIG)
 
 with tab_signals:
     st.subheader("SPY 추세와 상태")
-    st.line_chart(pd.DataFrame({"SPY": spy_data["close"].reindex(common_idx).ffill(), f"MA{spy_ma_window}": spy_ma_full.reindex(common_idx).ffill()}), height=280)
+    st.plotly_chart(
+        make_line_chart(pd.DataFrame({"SPY": spy_data["close"].reindex(common_idx).ffill(), f"MA{spy_ma_window}": spy_ma_full.reindex(common_idx).ffill()}), 280),
+        use_container_width=True,
+        config=CHART_CONFIG,
+    )
     st.dataframe(pd.DataFrame({"신호": signals.reindex(common_idx).ffill(), "보유 상태": state_s}).tail(30), use_container_width=True)
     st.subheader("전일 TNX 금리 신호")
     tnx_chart = pd.DataFrame({"전일 TNX": tnx_prev_full.reindex(common_idx).ffill(), f"전일 TNX MA{tnx_ma_window}": tnx_ma_prev_full.reindex(common_idx).ffill()}).dropna()
     if tnx_chart.empty:
         st.info("표시할 TNX 데이터가 없습니다.")
     else:
-        st.line_chart(tnx_chart, height=260)
+        st.plotly_chart(make_line_chart(tnx_chart, 260), use_container_width=True, config=CHART_CONFIG)
 
 with tab_trades:
     st.subheader("상태 전환 내역")
@@ -548,5 +575,5 @@ with tab_monthly:
     pivot["연간"] = (1 + monthly_strategy).groupby(monthly_strategy.index.year).prod() - 1
     st.dataframe(pivot.map(lambda x: f"{x:.1%}" if pd.notna(x) else "-"), use_container_width=True)
     st.subheader("월별 전략 vs SPY")
-    st.line_chart(monthly, height=260)
+    st.plotly_chart(make_line_chart(monthly, 260), use_container_width=True, config=CHART_CONFIG)
     st.download_button("Monthly Returns CSV", monthly.reset_index().rename(columns={"index": "날짜"}).to_csv(index=False).encode("utf-8-sig"), "spy_upro_bull_bear_monthly.csv", "text/csv")

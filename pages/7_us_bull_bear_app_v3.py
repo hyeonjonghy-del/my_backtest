@@ -354,14 +354,14 @@ with st.sidebar:
         end_date = st.date_input("End", datetime.today())
 
     st.subheader("Trend Filter")
-    fast_window = st.slider("SPY fast MA", 20, 120, 50, 5)
+    fast_window = st.slider("SPY fast MA", 20, 120, 30, 5)
     slow_window = st.slider("SPY slow MA", 100, 250, 200, 5)
     trend_rule = st.selectbox("Bull trend rule", ["MA Fast > MA Slow", "Close > MA Slow", "Close > MA Slow and Fast > Slow"], index=0)
 
     st.subheader("Volatility Target")
     preset = st.selectbox("Preset", ["Balanced return", "Lower MDD", "Aggressive"], index=0)
     defaults = {
-        "Balanced return": {"target_vol": 45, "max_beta": 180, "upro_cap": 50, "bear_spy": 20, "rebalance_index": 1},
+        "Balanced return": {"target_vol": 35, "max_beta": 180, "upro_cap": 50, "bear_spy": 50, "rebalance_index": 0},
         "Lower MDD": {"target_vol": 30, "max_beta": 130, "upro_cap": 35, "bear_spy": 10, "rebalance_index": 1},
         "Aggressive": {"target_vol": 55, "max_beta": 220, "upro_cap": 65, "bear_spy": 30, "rebalance_index": 1},
     }[preset]

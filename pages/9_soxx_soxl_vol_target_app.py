@@ -32,7 +32,10 @@ COLORS = {
 
 st.set_page_config(page_title="SOXX/SOXL Vol Target Backtest", page_icon="US", layout="wide")
 st.title("SOXX / SOXL Volatility Target Backtest")
-st.caption("Default: SOXX MA50 > MA200, target volatility 45%, SOXL cap 40%, cash in bear regimes")
+st.caption(
+    "Default: SOXX MA30 > MA200, target volatility 45%, SOXL cap 50%, "
+    "max SOXX-equivalent risk exposure 1.5x, 20% SOXX in bear regimes"
+)
 
 
 def static_line_chart(
@@ -361,20 +364,20 @@ with st.sidebar:
 
     st.subheader("Trend Filter")
     trend_rule = st.selectbox("Rule", ["MA Fast > MA Slow", "Close > MA Slow", "Close > MA Slow + MA Fast > MA Slow"], index=0)
-    fast_window = st.slider("Fast MA", 20, 100, 50, 5)
+    fast_window = st.slider("Fast MA", 20, 100, 30, 5)
     slow_window = st.slider("Slow MA", 100, 250, 200, 5)
 
     st.subheader("Volatility Target")
     vol_window = st.slider("Volatility window", 10, 80, 20, 5)
     target_vol = st.slider("Target volatility (%)", 10, 80, 45, 5) / 100
-    soxl_cap = st.slider("SOXL max weight (%)", 0, 80, 40, 5) / 100
-    max_risk_exposure = st.slider("Max risk exposure", 0.5, 2.0, 1.2, 0.1)
+    soxl_cap = st.slider("SOXL max weight (%)", 0, 80, 50, 5) / 100
+    max_risk_exposure = st.slider("Max risk exposure", 0.5, 2.0, 1.5, 0.1)
     allocation_mode = st.selectbox("Allocation mode", ["Risk-adjusted", "Capital-first", "Fixed bull weights"], index=0)
 
     st.subheader("Bear / Trading")
-    bear_soxx = st.slider("Bear-regime SOXX weight (%)", 0, 100, 0, 5) / 100
+    bear_soxx = st.slider("Bear-regime SOXX weight (%)", 0, 100, 20, 5) / 100
     rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=0, horizontal=True)
-    cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.05, step=0.01) / 100
+    cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.25, step=0.01) / 100
 
     st.subheader("Execution")
     account_value = st.number_input("Account value ($)", min_value=0.0, value=10000.0, step=1000.0)
@@ -391,6 +394,7 @@ with st.expander("Default Strategy", expanded=False):
 | Bull regime | SOXX MA{fast_window} > MA{slow_window} |
 | Target volatility | {target_vol:.0%} |
 | SOXL cap | {soxl_cap:.0%} |
+| Max risk exposure | {max_risk_exposure:.1f}x SOXX-equivalent risk |
 | Allocation | Risk-adjusted: SOXL uses about 3x SOXX risk budget |
 | Bear regime | Cash {1 - bear_soxx:.0%} + SOXX {bear_soxx:.0%} |
 """

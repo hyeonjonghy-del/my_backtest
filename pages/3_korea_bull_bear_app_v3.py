@@ -21,6 +21,16 @@ warnings.filterwarnings("ignore")
 KODEX_200 = "069500"
 KODEX_LEVERAGE = "122630"
 TRADING_DAYS = 252
+STATIC_CHART_CONFIG = {"staticPlot": True, "displayModeBar": False, "responsive": True}
+COLORS = {
+    "strategy": "#0F766E",
+    "kodex200": "#2563EB",
+    "leverage": "#DC2626",
+    "ma": "#111827",
+    "vol": "#7C3AED",
+    "threshold": "#F59E0B",
+    "dd": "#B91C1C",
+}
 
 st.set_page_config(page_title="KODEX Trend + Vol Filter v3", page_icon="KR", layout="wide")
 st.title("KODEX 200 / 레버리지 추세 + 변동성 필터 v3")
@@ -67,15 +77,7 @@ def calc_metrics(nav: pd.Series) -> dict[str, object]:
     nav = nav[nav > 0]
     ret = finite_return(nav.pct_change()).dropna()
     if len(nav) < 2:
-        return {
-            "total": 0.0,
-            "cagr": 0.0,
-            "mdd": 0.0,
-            "sharpe": 0.0,
-            "calmar": 0.0,
-            "win_m": 0.0,
-            "dd": pd.Series(dtype=float),
-        }
+        return {"total": 0.0, "cagr": 0.0, "mdd": 0.0, "sharpe": 0.0, "calmar": 0.0, "win_m": 0.0, "dd": pd.Series(dtype=float)}
 
     years = len(nav) / TRADING_DAYS
     total = nav.iloc[-1] / nav.iloc[0] - 1
@@ -84,8 +86,68 @@ def calc_metrics(nav: pd.Series) -> dict[str, object]:
     mdd = dd.min()
     sharpe = ret.mean() / ret.std() * np.sqrt(TRADING_DAYS) if ret.std() > 0 else 0.0
     calmar = cagr / abs(mdd) if mdd < 0 else 0.0
-    win_m = (nav.resample("ME").last().pct_change().dropna() > 0).mean()
+    win_m = (nav.resample("M").last().pct_change().dropna() > 0).mean()
     return {"total": total, "cagr": cagr, "mdd": mdd, "sharpe": sharpe, "calmar": calmar, "win_m": win_m, "dd": dd}
+
+
+def fixed_line_chart(data: pd.DataFrame, title: str, height: int = 340, percent_axis: bool = False) -> go.Figure:
+    fig = go.Figure()
+    palette = [COLORS["strategy"], COLORS["kodex200"], COLORS["leverage"], COLORS["ma"], COLORS["vol"], COLORS["threshold"], COLORS["dd"]]
+    for i, column in enumerate(data.columns):
+        clean = data[column].replace([np.inf, -np.inf], np.nan).dropna()
+        fig.add_trace(
+            go.Scatter(
+                x=clean.index,
+                y=clean,
+                mode="lines",
+                name=str(column),
+                line=dict(color=palette[i % len(palette)], width=2.4 if i == 0 else 1.8),
+            )
+        )
+    fig.update_layout(
+        title=dict(text=title, x=0.01, xanchor="left"),
+        height=height,
+        margin=dict(l=10, r=10, t=46, b=20),
+        hovermode=False,
+        legend=dict(orientation="h", y=1.05, x=1, xanchor="right", font=dict(size=12)),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        xaxis=dict(showgrid=False, rangeslider=dict(visible=False), fixedrange=True),
+        yaxis=dict(showgrid=True, gridcolor="#E5E7EB", fixedrange=True),
+    )
+    if percent_axis:
+        fig.update_yaxes(ticksuffix="%")
+    return fig
+
+
+def fixed_yearly_chart(strategy_nav: pd.Series, kodex200_nav: pd.Series, leverage_nav: pd.Series) -> go.Figure:
+    yearly = pd.DataFrame(
+        {
+            "전략": (1 + strategy_nav.pct_change().fillna(0)).groupby(strategy_nav.index.year).prod() - 1,
+            "KODEX 200": (1 + kodex200_nav.pct_change().fillna(0)).groupby(kodex200_nav.index.year).prod() - 1,
+            "KODEX 레버리지": (1 + leverage_nav.pct_change().fillna(0)).groupby(leverage_nav.index.year).prod() - 1,
+        }
+    ).dropna(how="all") * 100
+    yearly.index = yearly.index.astype(str)
+
+    fig = go.Figure()
+    for name, color in [("전략", COLORS["strategy"]), ("KODEX 200", COLORS["kodex200"]), ("KODEX 레버리지", COLORS["leverage"])]:
+        fig.add_trace(go.Bar(x=yearly.index, y=yearly[name], name=name, marker_color=color, text=[f"{v:.1f}%" for v in yearly[name]], textposition="outside"))
+    fig.add_hline(y=0, line_dash="dash", line_color="gray")
+    fig.update_layout(
+        barmode="group",
+        yaxis_title="수익률 (%)",
+        yaxis_ticksuffix="%",
+        hovermode=False,
+        legend=dict(orientation="h", y=1.08, x=1, xanchor="right"),
+        height=380,
+        margin=dict(t=50, b=20),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        xaxis=dict(fixedrange=True),
+        yaxis=dict(fixedrange=True, gridcolor="#E5E7EB"),
+    )
+    return fig
 
 
 def backtest_next_open(
@@ -105,24 +167,12 @@ def backtest_next_open(
 
     for i, date in enumerate(dates):
         nav *= 1 + prev_weight * ret_lev_co.loc[date]
-
         new_weight = float(executable_weight.loc[date])
         turnover = abs(new_weight - prev_weight)
         if i > 0 and turnover > 0:
             before_fee = nav
             nav *= 1 - min(max(fee_rate * turnover, 0.0), 0.99)
-            trades.append(
-                {
-                    "날짜": date.date(),
-                    "체결": "다음날 시가",
-                    "이전 레버리지 비중": prev_weight,
-                    "신규 레버리지 비중": new_weight,
-                    "거래회전율": turnover,
-                    "비용차감": before_fee - nav,
-                    "NAV": nav,
-                }
-            )
-
+            trades.append({"날짜": date.date(), "체결": "다음날 시가", "이전 레버리지 비중": prev_weight, "신규 레버리지 비중": new_weight, "거래회전율": turnover, "비용차감": before_fee - nav, "NAV": nav})
         prev_weight = new_weight
         nav *= 1 + prev_weight * ret_lev_oc.loc[date]
         nav_rows.append(nav)
@@ -152,40 +202,12 @@ def backtest_close_to_close(
         if turnover > 0:
             before_fee = nav
             nav *= 1 - min(max(fee_rate * turnover, 0.0), 0.99)
-            trades.append(
-                {
-                    "날짜": date.date(),
-                    "체결": "당일 종가",
-                    "이전 레버리지 비중": prev_weight,
-                    "신규 레버리지 비중": new_weight,
-                    "거래회전율": turnover,
-                    "비용차감": before_fee - nav,
-                    "NAV": nav,
-                }
-            )
+            trades.append({"날짜": date.date(), "체결": "당일 종가", "이전 레버리지 비중": prev_weight, "신규 레버리지 비중": new_weight, "거래회전율": turnover, "비용차감": before_fee - nav, "NAV": nav})
         prev_weight = new_weight
         nav_rows.append(nav)
         weight_rows.append(prev_weight)
 
     return pd.Series(nav_rows, index=dates, name="전략"), pd.Series(weight_rows, index=dates, name="레버리지 비중"), pd.DataFrame(trades)
-
-
-def plot_yearly_returns(strategy_nav: pd.Series, kodex200_nav: pd.Series, leverage_nav: pd.Series) -> go.Figure:
-    yearly = pd.DataFrame(
-        {
-            "전략": (1 + strategy_nav.pct_change().fillna(0)).groupby(strategy_nav.index.year).prod() - 1,
-            "KODEX 200": (1 + kodex200_nav.pct_change().fillna(0)).groupby(kodex200_nav.index.year).prod() - 1,
-            "KODEX 레버리지": (1 + leverage_nav.pct_change().fillna(0)).groupby(leverage_nav.index.year).prod() - 1,
-        }
-    ).dropna(how="all") * 100
-    yearly.index = yearly.index.astype(str)
-
-    fig = go.Figure()
-    for name, color in [("전략", "#0F766E"), ("KODEX 200", "#2563EB"), ("KODEX 레버리지", "#DC2626")]:
-        fig.add_trace(go.Bar(x=yearly.index, y=yearly[name], name=name, marker_color=color, text=[f"{v:.1f}%" for v in yearly[name]], textposition="outside"))
-    fig.add_hline(y=0, line_dash="dash", line_color="gray")
-    fig.update_layout(barmode="group", yaxis_title="수익률 (%)", yaxis_ticksuffix="%", legend=dict(orientation="h", y=1.08, x=1, xanchor="right"), height=380, margin=dict(t=50, b=20))
-    return fig
 
 
 with st.sidebar:
@@ -310,7 +332,6 @@ trade_cols[2].metric("최근 매매일", str(trade_log["날짜"].iloc[-1]) if tr
 tab_chart, tab_signal, tab_trades, tab_monthly = st.tabs(["성과", "신호", "거래", "월별 수익률"])
 
 with tab_chart:
-    st.subheader("누적 수익률")
     nav_chart = pd.DataFrame(
         {
             "전략": nav_s / nav_s.iloc[0] - 1,
@@ -318,12 +339,9 @@ with tab_chart:
             "KODEX 레버리지 B&H": benchmark_lev / benchmark_lev.iloc[0] - 1,
         }
     ) * 100
-    st.line_chart(nav_chart, height=360)
+    st.plotly_chart(fixed_line_chart(nav_chart, "누적 수익률", 360, True), use_container_width=True, config=STATIC_CHART_CONFIG)
+    st.plotly_chart(fixed_yearly_chart(nav_s, benchmark_200, benchmark_lev), use_container_width=True, config=STATIC_CHART_CONFIG)
 
-    st.subheader("연도별 수익률")
-    st.plotly_chart(plot_yearly_returns(nav_s, benchmark_200, benchmark_lev), use_container_width=True)
-
-    st.subheader("낙폭")
     dd_chart = pd.DataFrame(
         {
             "전략 DD": strategy_metrics["dd"],
@@ -331,12 +349,14 @@ with tab_chart:
             "KODEX 레버리지 DD": benchmark_lev_metrics["dd"],
         }
     ) * 100
-    st.line_chart(dd_chart, height=260)
+    st.plotly_chart(fixed_line_chart(dd_chart, "낙폭", 280, True), use_container_width=True, config=STATIC_CHART_CONFIG)
 
 with tab_signal:
-    st.subheader("추세와 변동성")
-    st.line_chart(pd.DataFrame({"KODEX 200": kodex_close.reindex(common_idx), f"MA{ma_window}": ma.reindex(common_idx)}), height=280)
-    st.line_chart(pd.DataFrame({f"{vol_source} RV{vol_window}": realized_vol.reindex(common_idx) * 100, "상한": pd.Series(vol_threshold_pct, index=common_idx)}), height=260)
+    trend_chart = pd.DataFrame({"KODEX 200": kodex_close.reindex(common_idx), f"MA{ma_window}": ma.reindex(common_idx)})
+    st.plotly_chart(fixed_line_chart(trend_chart, "추세", 300, False), use_container_width=True, config=STATIC_CHART_CONFIG)
+
+    vol_chart = pd.DataFrame({f"{vol_source} RV{vol_window}": realized_vol.reindex(common_idx) * 100, "상한": pd.Series(vol_threshold_pct, index=common_idx)})
+    st.plotly_chart(fixed_line_chart(vol_chart, "연율화 실현 변동성", 280, True), use_container_width=True, config=STATIC_CHART_CONFIG)
 
     st.subheader("최근 신호")
     signal_table = pd.DataFrame(
@@ -376,5 +396,5 @@ with tab_monthly:
     pivot.columns = [f"{month}월" for month in pivot.columns]
     pivot["연간"] = (1 + monthly_strategy).groupby(monthly_strategy.index.year).prod() - 1
     st.dataframe(pivot.map(lambda x: f"{x:.1%}" if pd.notna(x) else "-"), use_container_width=True)
-    st.line_chart(monthly, height=260)
+    st.plotly_chart(fixed_line_chart(monthly * 100, "월별 전략 vs KODEX", 280, True), use_container_width=True, config=STATIC_CHART_CONFIG)
     st.download_button("Monthly Returns CSV", monthly.reset_index().rename(columns={"index": "날짜"}).to_csv(index=False).encode("utf-8-sig"), "kodex_trend_vol_v3_monthly.csv", "text/csv")

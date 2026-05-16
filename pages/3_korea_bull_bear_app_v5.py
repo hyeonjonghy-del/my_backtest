@@ -277,9 +277,10 @@ with st.sidebar:
     leverage_weight_pct = st.slider("KODEX Leverage weight when signal passes (%)", 0, 100, 100, 5)
     fee = st.number_input("Trading cost per turnover (%)", value=0.03, step=0.01, min_value=0.0) / 100
 
-    st.subheader("Sensitivity")
-    run_sensitivity = st.checkbox("Run sensitivity table", value=True)
-    recent_years = st.slider("Recent-period table years", 1, 5, 3, 1)
+    st.subheader("Diagnostics")
+    run_sensitivity = st.checkbox("Show sensitivity table", value=True)
+    recent_years = st.slider("Recent-period comparison years", 1, 5, 3, 1)
+    st.caption("These diagnostics do not change the main strategy result.")
     run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 
 vol_threshold = vol_threshold_pct / 100
@@ -427,7 +428,7 @@ with tab_periods:
 
 with tab_sensitivity:
     if not run_sensitivity:
-        st.info("Enable 'Run sensitivity table' in the sidebar to calculate this section.")
+        st.info("Enable 'Show sensitivity table' in the sidebar to calculate this section. This option does not change the main strategy result.")
     else:
         ma_values = sorted(set([80, 100, 120, ma_window]))
         vol_values = sorted(set([20, 30, vol_window]))

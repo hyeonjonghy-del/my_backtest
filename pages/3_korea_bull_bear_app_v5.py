@@ -362,6 +362,54 @@ def trade_diagnostics(weight: pd.Series, trade_log: pd.DataFrame, nav: pd.Series
     }
 
 
+def build_execution_plan(
+    target_weight: float,
+    after_close_fill_rate: float,
+    latest_close: float,
+    account_value: float,
+    current_shares: float,
+    current_cash: float,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    current_value = current_shares * latest_close
+    effective_value = account_value if account_value > 0 else current_value + current_cash
+    target_value = effective_value * target_weight
+    target_shares = np.floor(target_value / latest_close) if latest_close > 0 else 0.0
+    order_shares = target_shares - current_shares
+    after_close_order_shares = np.trunc(order_shares * after_close_fill_rate)
+    residual_shares = order_shares - after_close_order_shares
+    estimated_after_close_value = abs(after_close_order_shares) * latest_close
+    estimated_residual_value = abs(residual_shares) * latest_close
+    target_cash = effective_value - target_shares * latest_close
+
+    rows = [
+        {
+            "Step": "After-close fixed-price order",
+            "Action": "Buy" if after_close_order_shares > 0 else "Sell" if after_close_order_shares < 0 else "Hold",
+            "Shares": after_close_order_shares,
+            "Reference Price": latest_close,
+            "Estimated Value": estimated_after_close_value,
+        },
+        {
+            "Step": "Next-open residual order",
+            "Action": "Buy" if residual_shares > 0 else "Sell" if residual_shares < 0 else "Hold",
+            "Shares": residual_shares,
+            "Reference Price": latest_close,
+            "Estimated Value": estimated_residual_value,
+        },
+    ]
+    summary = {
+        "effective_value": effective_value,
+        "current_value": current_value,
+        "target_weight": target_weight,
+        "target_value": target_value,
+        "target_shares": target_shares,
+        "current_shares": current_shares,
+        "total_order_shares": order_shares,
+        "target_cash": target_cash,
+    }
+    return pd.DataFrame(rows), summary
+
+
 with st.sidebar:
     st.header("Strategy Settings")
     st.subheader("Period")
@@ -386,6 +434,11 @@ with st.sidebar:
     )
     after_close_fill_pct = st.slider("After-close fixed-price fill rate (%)", 0, 100, 70, 10)
     fee = st.number_input("Trading cost per turnover (%)", value=0.03, step=0.01, min_value=0.0) / 100
+
+    st.subheader("Execution Planner")
+    account_value = st.number_input("Account value (KRW)", min_value=0.0, value=0.0, step=1_000_000.0)
+    current_lev_shares = st.number_input("Current KODEX Leverage shares", min_value=0.0, value=0.0, step=1.0)
+    current_cash = st.number_input("Current cash (KRW)", min_value=0.0, value=0.0, step=1_000_000.0)
 
     st.subheader("Diagnostics")
     run_sensitivity = st.checkbox("Show sensitivity table", value=True)
@@ -490,6 +543,15 @@ latest_weight = weight_s.iloc[-1]
 latest_close = kodex_close.reindex(common_idx).iloc[-1]
 latest_ma = ma.reindex(common_idx).iloc[-1]
 latest_vol = realized_vol.reindex(common_idx).iloc[-1]
+target_weight_for_plan = float(signal.reindex(common_idx).iloc[-1]) * leverage_weight
+execution_plan, execution_summary = build_execution_plan(
+    target_weight_for_plan,
+    after_close_fill_pct / 100,
+    float(kodex_lev["close"].reindex(common_idx).ffill().iloc[-1]),
+    account_value,
+    current_lev_shares,
+    current_cash,
+)
 
 st.success(
     f"Current state ({current_date}): {'Hold leverage' if latest_weight > 0 else 'Cash'} | "
@@ -526,8 +588,8 @@ exec_comparison = metrics_table(
     ]
 )
 
-tab_perf, tab_periods, tab_sensitivity, tab_signal, tab_trades, tab_monthly = st.tabs(
-    ["Performance", "Periods", "Sensitivity", "Signal", "Trades", "Monthly"]
+tab_perf, tab_execution, tab_periods, tab_sensitivity, tab_signal, tab_trades, tab_monthly = st.tabs(
+    ["Performance", "Execution", "Periods", "Sensitivity", "Signal", "Trades", "Monthly"]
 )
 
 with tab_perf:
@@ -552,6 +614,30 @@ with tab_perf:
         }
     ) * 100
     render_static_line(dd_chart, "Drawdown", "%", 3.0, True)
+
+with tab_execution:
+    st.subheader("Practical Order Plan")
+    st.caption(
+        "The plan uses the latest KODEX Leverage close as the reference price. "
+        "After-close orders target the fixed closing price; any unfilled portion is planned as next-open residual."
+    )
+    exec_cols = st.columns(5)
+    exec_cols[0].metric("Target Weight", f"{execution_summary['target_weight']:.0%}")
+    exec_cols[1].metric("Target Shares", f"{execution_summary['target_shares']:,.0f}")
+    exec_cols[2].metric("Current Shares", f"{execution_summary['current_shares']:,.0f}")
+    exec_cols[3].metric("Total Order", f"{execution_summary['total_order_shares']:,.0f}")
+    exec_cols[4].metric("Target Cash", f"{execution_summary['target_cash']:,.0f} KRW")
+
+    shown_plan = execution_plan.copy()
+    shown_plan["Shares"] = shown_plan["Shares"].map(lambda x: f"{x:,.0f}")
+    shown_plan["Reference Price"] = shown_plan["Reference Price"].map(lambda x: f"{x:,.0f} KRW")
+    shown_plan["Estimated Value"] = shown_plan["Estimated Value"].map(lambda x: f"{x:,.0f} KRW")
+    st.dataframe(shown_plan, use_container_width=True, hide_index=True)
+
+    st.info(
+        "Operational sequence: calculate the signal after the 15:30 close, place the after-close fixed-price order from 15:40 to 16:00, "
+        "then handle any unfilled residual at the next open."
+    )
 
 with tab_periods:
     st.subheader("Execution Model Comparison")

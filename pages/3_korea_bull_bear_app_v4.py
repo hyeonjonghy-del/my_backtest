@@ -296,6 +296,25 @@ def backtest(weights: pd.DataFrame, ret_kodex: pd.Series, ret_lev: pd.Series, co
     return finite_return(daily_ret)
 
 
+def build_v3_style_returns(
+    close: pd.Series,
+    close_ret: pd.Series,
+    ret_lev: pd.Series,
+    dates: pd.DatetimeIndex,
+    cost_rate: float,
+    ma_window: int = 100,
+    vol_window: int = 20,
+    vol_threshold: float = 0.50,
+) -> tuple[pd.Series, pd.Series]:
+    ma = close.rolling(ma_window).mean()
+    vol = close_ret.rolling(vol_window).std() * np.sqrt(TRADING_DAYS)
+    signal = (close > ma) & (vol < vol_threshold)
+    weight = signal.shift(1).reindex(dates).fillna(False).astype(float)
+    turnover = weight.diff().abs().fillna(weight.abs())
+    daily_ret = weight * ret_lev - turnover * cost_rate
+    return finite_return(daily_ret), weight.rename("v3-style Leverage Weight")
+
+
 with st.sidebar:
     st.header("Strategy Settings")
     st.subheader("Period")
@@ -389,10 +408,12 @@ bench_kodex = ret_kodex
 bench_lev = ret_lev
 fixed_70_30 = 0.7 * ret_kodex + 0.3 * ret_lev
 fixed_50_50 = 0.5 * ret_kodex + 0.5 * ret_lev
+v3_style_ret, v3_style_weight = build_v3_style_returns(kodex_close, close_ret_kodex_full, ret_lev, common_idx, cost_rate)
 
 strategy_metrics = calc_metrics(strategy_ret)
 kodex_metrics = calc_metrics(bench_kodex)
 lev_metrics = calc_metrics(bench_lev)
+v3_style_metrics = calc_metrics(v3_style_ret)
 progress.empty()
 
 latest_date = common_idx[-1].date()
@@ -414,8 +435,8 @@ st.caption(
 )
 
 cols = st.columns(6)
-cols[0].metric("Total Return", f"{strategy_metrics['total']:.1%}", f"KODEX200 {kodex_metrics['total']:.1%}")
-cols[1].metric("CAGR", f"{strategy_metrics['cagr']:.1%}", f"LEV {lev_metrics['cagr']:.1%}")
+cols[0].metric("Total Return", f"{strategy_metrics['total']:.1%}", f"v3-style {v3_style_metrics['total']:.1%}")
+cols[1].metric("CAGR", f"{strategy_metrics['cagr']:.1%}", f"v3-style {v3_style_metrics['cagr']:.1%}")
 cols[2].metric("MDD", f"{strategy_metrics['mdd']:.1%}", f"LEV {lev_metrics['mdd']:.1%}")
 cols[3].metric("Sharpe", f"{strategy_metrics['sharpe']:.2f}", f"KODEX200 {kodex_metrics['sharpe']:.2f}")
 cols[4].metric("Calmar", f"{strategy_metrics['calmar']:.2f}")
@@ -434,6 +455,7 @@ with tab_perf:
     nav_df = pd.DataFrame(
         {
             "Strategy": strategy_metrics["nav"],
+            "v3-style ON/OFF": v3_style_metrics["nav"],
             KODEX_LABEL: kodex_metrics["nav"],
             LEV_LABEL: lev_metrics["nav"],
             "KODEX 70% + Leverage 30%": calc_metrics(fixed_70_30)["nav"],
@@ -499,12 +521,14 @@ with tab_weights:
     st.subheader("Recent Target Weights")
     recent_weights = weights[[KODEX_LABEL, LEV_LABEL, REGIME_LABEL]].tail(40).copy()
     recent_weights["Cash"] = (1 - weights[[KODEX_LABEL, LEV_LABEL]].sum(axis=1)).clip(0, 1).tail(40)
+    recent_weights["v3-style Leverage"] = v3_style_weight.tail(40)
     st.dataframe(recent_weights, use_container_width=True)
 
 with tab_table:
     comparison = pd.DataFrame(
         [
             metric_row("Strategy", strategy_ret, weights),
+            metric_row("v3-style ON/OFF", v3_style_ret),
             metric_row("KODEX 200 100%", bench_kodex),
             metric_row("KODEX Leverage 100%", bench_lev),
             metric_row("KODEX 70% + Leverage 30%", fixed_70_30),

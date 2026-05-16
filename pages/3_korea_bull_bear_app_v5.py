@@ -204,6 +204,110 @@ def backtest_next_open(
     return pd.Series(nav_rows, index=dates, name="Strategy"), pd.Series(weight_rows, index=dates, name="Leverage Weight"), pd.DataFrame(trades)
 
 
+def backtest_after_close_fill(
+    dates: pd.DatetimeIndex,
+    signal: pd.Series,
+    leverage_weight: float,
+    ret_lev_co: pd.Series,
+    ret_lev_oc: pd.Series,
+    fee_rate: float,
+    after_close_fill_rate: float,
+) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
+    nav = 1.0
+    close_weight = 0.0
+    open_weight = 0.0
+    nav_rows: list[float] = []
+    weight_rows: list[float] = []
+    trades: list[dict[str, object]] = []
+    close_signal_target = signal.reindex(dates).fillna(False).astype(float) * leverage_weight
+    open_target = close_signal_target.shift(1).fillna(0.0)
+
+    for i, date in enumerate(dates):
+        nav *= 1 + open_weight * ret_lev_co.loc[date]
+        intraday_target = float(open_target.loc[date])
+        intraday_turnover = abs(intraday_target - open_weight)
+        if i > 0 and intraday_turnover > 0:
+            before_fee = nav
+            nav *= 1 - min(max(fee_rate * intraday_turnover, 0.0), 0.99)
+            trades.append(
+                {
+                    "Date": date.date(),
+                    "Execution": "Next open residual",
+                    "Old Weight": open_weight,
+                    "New Weight": intraday_target,
+                    "Turnover": intraday_turnover,
+                    "Fee Cost": before_fee - nav,
+                    "NAV": nav,
+                }
+            )
+        nav *= 1 + intraday_target * ret_lev_oc.loc[date]
+
+        next_target = float(close_signal_target.loc[date])
+        desired_change = next_target - intraday_target
+        close_change = desired_change * after_close_fill_rate
+        close_weight = intraday_target + close_change
+        close_turnover = abs(close_change)
+        if close_turnover > 0:
+            before_fee = nav
+            nav *= 1 - min(max(fee_rate * close_turnover, 0.0), 0.99)
+            trades.append(
+                {
+                    "Date": date.date(),
+                    "Execution": "After-close fixed close",
+                    "Old Weight": intraday_target,
+                    "New Weight": close_weight,
+                    "Turnover": close_turnover,
+                    "Fee Cost": before_fee - nav,
+                    "NAV": nav,
+                }
+            )
+
+        open_weight = close_weight
+        nav_rows.append(nav)
+        weight_rows.append(close_weight)
+
+    return pd.Series(nav_rows, index=dates, name="After-close Fill Strategy"), pd.Series(weight_rows, index=dates, name="Leverage Weight"), pd.DataFrame(trades)
+
+
+def backtest_same_close(
+    dates: pd.DatetimeIndex,
+    signal: pd.Series,
+    leverage_weight: float,
+    ret_lev_cc: pd.Series,
+    fee_rate: float,
+) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
+    nav = 1.0
+    prev_weight = 0.0
+    nav_rows: list[float] = []
+    weight_rows: list[float] = []
+    trades: list[dict[str, object]] = []
+    target_weight = signal.reindex(dates).fillna(False).astype(float) * leverage_weight
+
+    for date in dates:
+        nav *= 1 + prev_weight * ret_lev_cc.loc[date]
+        new_weight = float(target_weight.loc[date])
+        turnover = abs(new_weight - prev_weight)
+        if turnover > 0:
+            before_fee = nav
+            nav *= 1 - min(max(fee_rate * turnover, 0.0), 0.99)
+            trades.append(
+                {
+                    "Date": date.date(),
+                    "Execution": "Ideal same close",
+                    "Old Weight": prev_weight,
+                    "New Weight": new_weight,
+                    "Turnover": turnover,
+                    "Fee Cost": before_fee - nav,
+                    "NAV": nav,
+                }
+            )
+        prev_weight = new_weight
+        nav_rows.append(nav)
+        weight_rows.append(prev_weight)
+
+    return pd.Series(nav_rows, index=dates, name="Ideal Same-Close Strategy"), pd.Series(weight_rows, index=dates, name="Leverage Weight"), pd.DataFrame(trades)
+
+
 def slice_nav(nav: pd.Series, start: pd.Timestamp | None) -> pd.Series:
     out = nav.dropna()
     if start is not None:
@@ -275,6 +379,12 @@ with st.sidebar:
 
     st.subheader("Position / Cost")
     leverage_weight_pct = st.slider("KODEX Leverage weight when signal passes (%)", 0, 100, 100, 5)
+    execution_model = st.selectbox(
+        "Execution model",
+        ["Next open", "After-close fill + next-open residual", "Ideal same-close"],
+        index=1,
+    )
+    after_close_fill_pct = st.slider("After-close fixed-price fill rate (%)", 0, 100, 70, 10)
     fee = st.number_input("Trading cost per turnover (%)", value=0.03, step=0.01, min_value=0.0) / 100
 
     st.subheader("Diagnostics")
@@ -295,7 +405,8 @@ with st.expander("Strategy Rules", expanded=False):
 | Trading asset | KODEX Leverage |
 | Entry / hold | KODEX 200 close > MA{ma_window} AND {vol_source} RV{vol_window} < {vol_threshold_pct}% |
 | Exit | Any condition fails |
-| Execution | Close signal, next regular-session open |
+| Execution | {execution_model} |
+| After-close fill assumption | {after_close_fill_pct}% of required trade at same-day close; residual at next open |
 | Position | KODEX Leverage {leverage_weight_pct}%, cash {100 - leverage_weight_pct}% |
 """
     )
@@ -338,9 +449,27 @@ signal, ma, realized_vol = build_signal(kodex_close, ma_window, vol_price, vol_w
 
 ret_lev_co = safe_divide(kodex_lev["open"] - kodex_lev["close"].shift(1), kodex_lev["close"].shift(1)).reindex(common_idx).fillna(0)
 ret_lev_oc = safe_divide(kodex_lev["close"] - kodex_lev["open"], kodex_lev["open"]).reindex(common_idx).fillna(0)
+ret_lev_cc = finite_return(kodex_lev["close"].pct_change()).reindex(common_idx).fillna(0)
 
 progress.progress(75, text="Calculating strategy...")
-nav_s, weight_s, trade_log = backtest_next_open(common_idx, signal, leverage_weight, ret_lev_co, ret_lev_oc, fee)
+nav_next_open, weight_next_open, trades_next_open = backtest_next_open(common_idx, signal, leverage_weight, ret_lev_co, ret_lev_oc, fee)
+nav_after_close, weight_after_close, trades_after_close = backtest_after_close_fill(
+    common_idx,
+    signal,
+    leverage_weight,
+    ret_lev_co,
+    ret_lev_oc,
+    fee,
+    after_close_fill_pct / 100,
+)
+nav_same_close, weight_same_close, trades_same_close = backtest_same_close(common_idx, signal, leverage_weight, ret_lev_cc, fee)
+
+if execution_model == "Ideal same-close":
+    nav_s, weight_s, trade_log = nav_same_close, weight_same_close, trades_same_close
+elif execution_model == "After-close fill + next-open residual":
+    nav_s, weight_s, trade_log = nav_after_close, weight_after_close, trades_after_close
+else:
+    nav_s, weight_s, trade_log = nav_next_open, weight_next_open, trades_next_open
 
 benchmark_200 = kodex_200["close"].reindex(common_idx).ffill()
 benchmark_200 = benchmark_200 / benchmark_200.iloc[0]
@@ -348,6 +477,9 @@ benchmark_lev = kodex_lev["close"].reindex(common_idx).ffill()
 benchmark_lev = benchmark_lev / benchmark_lev.iloc[0]
 
 strategy_metrics = calc_metrics(nav_s)
+next_open_metrics = calc_metrics(nav_next_open)
+after_close_metrics = calc_metrics(nav_after_close)
+same_close_metrics = calc_metrics(nav_same_close)
 benchmark_200_metrics = calc_metrics(benchmark_200)
 benchmark_lev_metrics = calc_metrics(benchmark_lev)
 progress.empty()
@@ -386,6 +518,14 @@ diag_cols[3].metric("Approx Round Trips", f"{diag['Approx Round Trips']:,}")
 diag_cols[4].metric("Negative Months", f"{diag['Negative Months']:,}")
 diag_cols[5].metric("Last Trade", str(trade_log["Date"].iloc[-1]) if len(trade_log) else "-")
 
+exec_comparison = metrics_table(
+    [
+        ("Next open", nav_next_open),
+        (f"After-close {after_close_fill_pct}% + residual", nav_after_close),
+        ("Ideal same-close", nav_same_close),
+    ]
+)
+
 tab_perf, tab_periods, tab_sensitivity, tab_signal, tab_trades, tab_monthly = st.tabs(
     ["Performance", "Periods", "Sensitivity", "Signal", "Trades", "Monthly"]
 )
@@ -393,7 +533,10 @@ tab_perf, tab_periods, tab_sensitivity, tab_signal, tab_trades, tab_monthly = st
 with tab_perf:
     nav_chart = pd.DataFrame(
         {
-            "Strategy": nav_s / nav_s.iloc[0],
+            "Selected Strategy": nav_s / nav_s.iloc[0],
+            "Next open": nav_next_open / nav_next_open.iloc[0],
+            f"After-close {after_close_fill_pct}%": nav_after_close / nav_after_close.iloc[0],
+            "Ideal same-close": nav_same_close / nav_same_close.iloc[0],
             "KODEX 200 B&H": benchmark_200 / benchmark_200.iloc[0],
             "KODEX Leverage B&H": benchmark_lev / benchmark_lev.iloc[0],
         }
@@ -411,6 +554,10 @@ with tab_perf:
     render_static_line(dd_chart, "Drawdown", "%", 3.0, True)
 
 with tab_periods:
+    st.subheader("Execution Model Comparison")
+    st.dataframe(format_metric_table(exec_comparison), use_container_width=True, hide_index=True)
+
+    st.subheader("Period Comparison")
     recent_start = common_idx[-1] - pd.DateOffset(years=recent_years)
     post_2025 = pd.Timestamp("2025-01-01")
     period_rows = []
@@ -438,13 +585,27 @@ with tab_sensitivity:
             for vol_w in vol_values:
                 for threshold_pct in threshold_values:
                     sig, _, _ = build_signal(kodex_close, ma_w, vol_price, vol_w, threshold_pct / 100)
-                    test_nav, test_weight, test_trades = backtest_next_open(common_idx, sig, leverage_weight, ret_lev_co, ret_lev_oc, fee)
+                    if execution_model == "Ideal same-close":
+                        test_nav, test_weight, test_trades = backtest_same_close(common_idx, sig, leverage_weight, ret_lev_cc, fee)
+                    elif execution_model == "After-close fill + next-open residual":
+                        test_nav, test_weight, test_trades = backtest_after_close_fill(
+                            common_idx,
+                            sig,
+                            leverage_weight,
+                            ret_lev_co,
+                            ret_lev_oc,
+                            fee,
+                            after_close_fill_pct / 100,
+                        )
+                    else:
+                        test_nav, test_weight, test_trades = backtest_next_open(common_idx, sig, leverage_weight, ret_lev_co, ret_lev_oc, fee)
                     m = calc_metrics(test_nav)
                     records.append(
                         {
                             "MA": ma_w,
                             "RV Window": vol_w,
                             "RV Cap": threshold_pct / 100,
+                            "Execution": execution_model,
                             "CAGR": m["cagr"],
                             "MDD": m["mdd"],
                             "Calmar": m["calmar"],

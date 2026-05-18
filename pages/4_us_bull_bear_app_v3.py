@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from chart_utils import static_area_chart as mpl_static_area_chart
+from chart_utils import static_line_chart as mpl_static_line_chart
 
 SPY = "SPY"
 UPRO = "UPRO"
@@ -168,6 +170,10 @@ def static_area_chart(data: pd.DataFrame, title: str, height: int = 300) -> go.F
         yaxis=dict(showgrid=True, gridcolor="#E5E7EB", tickformat=".0%", fixedrange=True, range=[0, 1]),
     )
     return fig
+
+
+static_line_chart = mpl_static_line_chart
+static_area_chart = mpl_static_area_chart
 
 
 def build_regime(
@@ -498,7 +504,7 @@ with tab_perf:
             "SPY 70% + UPRO 30%": calc_metrics(fixed_70_30)["nav"],
         }
     )
-    st.plotly_chart(
+    st.pyplot(
         static_line_chart(
             nav_df,
             "Cumulative NAV with Strategy MDD",
@@ -511,8 +517,7 @@ with tab_perf:
                 "trough_value": strategy_metrics["mdd_trough_value"],
             },
         ),
-        use_container_width=True,
-        config=STATIC_CHART_CONFIG,
+        clear_figure=True,
     )
     dd_df = pd.DataFrame(
         {
@@ -521,10 +526,9 @@ with tab_perf:
             "UPRO DD": calc_metrics(bench_upro)["dd"] * 100,
         }
     )
-    st.plotly_chart(
+    st.pyplot(
         static_line_chart(dd_df, f"Drawdown | Strategy MDD {strategy_metrics['mdd']:.1%}", percent_axis=True, height=320),
-        use_container_width=True,
-        config=STATIC_CHART_CONFIG,
+        clear_figure=True,
     )
 
 with tab_signal:
@@ -535,7 +539,7 @@ with tab_signal:
             f"MA{slow_window}": slow_ma.reindex(common_idx),
         }
     )
-    st.plotly_chart(static_line_chart(signal_df, "SPY Trend", yaxis_title="Price", height=320), use_container_width=True, config=STATIC_CHART_CONFIG)
+    st.pyplot(static_line_chart(signal_df, "SPY Trend", yaxis_title="Price", height=320), clear_figure=True)
     st.dataframe(
         pd.DataFrame(
             {
@@ -550,7 +554,7 @@ with tab_signal:
 with tab_weights:
     weight_df = weights[["SPY", "UPRO"]].copy()
     weight_df["Cash"] = (1 - weight_df.sum(axis=1)).clip(0, 1)
-    st.plotly_chart(static_area_chart(weight_df, "Portfolio Weights", height=320), use_container_width=True, config=STATIC_CHART_CONFIG)
+    st.pyplot(static_area_chart(weight_df, "Portfolio Weights", height=320), clear_figure=True)
     exposure_df = pd.DataFrame(
         {
             "SPY-equivalent exposure": weights["SPY"] + weights["UPRO"] * 3,
@@ -560,7 +564,7 @@ with tab_weights:
             "UPRO Weight": weights["UPRO"],
         }
     )
-    st.plotly_chart(static_line_chart(exposure_df, "Exposure and Volatility", height=340), use_container_width=True, config=STATIC_CHART_CONFIG)
+    st.pyplot(static_line_chart(exposure_df, "Exposure and Volatility", height=340), clear_figure=True)
 
 with tab_execution:
     c1, c2, c3 = st.columns(3)

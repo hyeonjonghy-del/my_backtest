@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from chart_utils import static_area_chart as mpl_static_area_chart
+from chart_utils import static_line_chart as mpl_static_line_chart
 
 TRADING_DAYS = 252
 SOXX = "SOXX"
@@ -143,6 +145,10 @@ def static_area_chart(data: pd.DataFrame, title: str, height: int = 300) -> go.F
         yaxis=dict(showgrid=True, gridcolor="#E5E7EB", tickformat=".0%", fixedrange=True, range=[0, 1]),
     )
     return fig
+
+
+static_line_chart = mpl_static_line_chart
+static_area_chart = mpl_static_area_chart
 
 
 def normalize_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -532,7 +538,7 @@ with tab_perf:
             "80/20": calc_metrics(fixed_20)["nav"],
         }
     )
-    st.plotly_chart(
+    st.pyplot(
         static_line_chart(
             nav_df,
             "Cumulative NAV with Strategy MDD",
@@ -546,8 +552,7 @@ with tab_perf:
                 "trough_value": strategy_metrics["mdd_trough_value"],
             },
         ),
-        use_container_width=True,
-        config=STATIC_CHART_CONFIG,
+        clear_figure=True,
     )
 
     dd_df = pd.DataFrame(
@@ -557,7 +562,7 @@ with tab_perf:
             "SOXL DD": calc_metrics(bench_soxl)["dd"],
         }
     ) * 100
-    st.plotly_chart(
+    st.pyplot(
         static_line_chart(
             dd_df,
             f"Drawdown | Strategy MDD {strategy_metrics['mdd']:.1%}",
@@ -565,8 +570,7 @@ with tab_perf:
             percent_axis=True,
             height=280,
         ),
-        use_container_width=True,
-        config=STATIC_CHART_CONFIG,
+        clear_figure=True,
     )
 
 with tab_execute:
@@ -600,18 +604,16 @@ with tab_signal:
             f"MA{slow_window}": slow_ma.reindex(common_idx),
         }
     )
-    st.plotly_chart(
+    st.pyplot(
         static_line_chart(signal_df, "SOXX Trend", yaxis_title="Price", height=320),
-        use_container_width=True,
-        config=STATIC_CHART_CONFIG,
+        clear_figure=True,
     )
 
     weight_df = weights.copy()
     weight_df["Cash"] = (1 - weight_df.sum(axis=1)).clip(0, 1)
-    st.plotly_chart(
+    st.pyplot(
         static_area_chart(weight_df, "Portfolio Weights", height=300),
-        use_container_width=True,
-        config=STATIC_CHART_CONFIG,
+        clear_figure=True,
     )
 
     st.subheader("Recent Signals")

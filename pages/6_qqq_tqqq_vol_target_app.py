@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from chart_utils import static_area_chart as mpl_static_area_chart
+from chart_utils import static_line_chart as mpl_static_line_chart
 
 TRADING_DAYS = 252
 QQQ = "QQQ"
@@ -101,6 +103,10 @@ def static_area_chart(data: pd.DataFrame, title: str, height: int = 300) -> go.F
         yaxis=dict(showgrid=True, gridcolor="#E5E7EB", tickformat=".0%", fixedrange=True, range=[0, 1]),
     )
     return fig
+
+
+static_line_chart = mpl_static_line_chart
+static_area_chart = mpl_static_area_chart
 
 
 def normalize_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -340,9 +346,9 @@ cols[5].metric("Monthly Win", f"{strategy_metrics['win_m']:.1%}")
 tab_perf, tab_execute, tab_signal, tab_table, tab_monthly = st.tabs(["Performance", "Execution", "Signal / Weights", "Comparison", "Monthly"])
 with tab_perf:
     nav_df = pd.DataFrame({"Strategy": strategy_metrics["nav"], "QQQ": calc_metrics(bench_qqq)["nav"], "TQQQ": calc_metrics(bench_tqqq)["nav"], "80/20": calc_metrics(fixed_20)["nav"]})
-    st.plotly_chart(static_line_chart(nav_df, "Cumulative NAV with Strategy MDD", yaxis_title="NAV", height=380, mdd_info={"date": strategy_metrics["mdd_date"], "peak_date": strategy_metrics["mdd_peak_date"], "value": strategy_metrics["mdd"], "peak_value": strategy_metrics["mdd_peak_value"], "trough_value": strategy_metrics["mdd_trough_value"]}), use_container_width=True, config=STATIC_CHART_CONFIG)
+    st.pyplot(static_line_chart(nav_df, "Cumulative NAV with Strategy MDD", yaxis_title="NAV", height=380, mdd_info={"date": strategy_metrics["mdd_date"], "peak_date": strategy_metrics["mdd_peak_date"], "value": strategy_metrics["mdd"], "peak_value": strategy_metrics["mdd_peak_value"], "trough_value": strategy_metrics["mdd_trough_value"]}), clear_figure=True)
     dd_df = pd.DataFrame({"Strategy DD": strategy_metrics["dd"], "QQQ DD": calc_metrics(bench_qqq)["dd"], "TQQQ DD": calc_metrics(bench_tqqq)["dd"]}) * 100
-    st.plotly_chart(static_line_chart(dd_df, f"Drawdown | Strategy MDD {strategy_metrics['mdd']:.1%}", yaxis_title="Drawdown", percent_axis=True, height=280), use_container_width=True, config=STATIC_CHART_CONFIG)
+    st.pyplot(static_line_chart(dd_df, f"Drawdown | Strategy MDD {strategy_metrics['mdd']:.1%}", yaxis_title="Drawdown", percent_axis=True, height=280), clear_figure=True)
 with tab_execute:
     st.subheader("Next Trade Plan")
     st.caption("Signal uses the latest close. Backtest returns assume rebalancing at the next regular-session open. The table uses the latest adjusted close only as a sizing estimate because the next open is not known yet.")
@@ -360,10 +366,10 @@ with tab_execute:
     st.info("Practical rule: after the signal date closes, prepare these orders for the next regular-session open. Buy positive Order Shares, sell negative Order Shares, and re-run after fills if the opening price differs a lot.")
 with tab_signal:
     signal_df = pd.DataFrame({"QQQ": price.reindex(common_idx), f"MA{fast_window}": fast_ma.reindex(common_idx), f"MA{slow_window}": slow_ma.reindex(common_idx)})
-    st.plotly_chart(static_line_chart(signal_df, "QQQ Trend", yaxis_title="Price", height=320), use_container_width=True, config=STATIC_CHART_CONFIG)
+    st.pyplot(static_line_chart(signal_df, "QQQ Trend", yaxis_title="Price", height=320), clear_figure=True)
     weight_df = weights.copy()
     weight_df["Cash"] = (1 - weight_df.sum(axis=1)).clip(0, 1)
-    st.plotly_chart(static_area_chart(weight_df, "Portfolio Weights", height=300), use_container_width=True, config=STATIC_CHART_CONFIG)
+    st.pyplot(static_area_chart(weight_df, "Portfolio Weights", height=300), clear_figure=True)
     st.subheader("Recent Signals")
     recent = pd.DataFrame({"QQQ": price.reindex(common_idx), f"MA{fast_window}": fast_ma.reindex(common_idx), f"MA{slow_window}": slow_ma.reindex(common_idx), f"Vol{vol_window}": vol.reindex(common_idx), "QQQ Weight": weights["QQQ"], "TQQQ Weight": weights["TQQQ"]}).tail(30)
     st.dataframe(recent, use_container_width=True)

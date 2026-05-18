@@ -1,37 +1,116 @@
-import streamlit as st
-import os
+from __future__ import annotations
 
-# 페이지 기본 설정
+from pathlib import Path
+
+import streamlit as st
+
+
+ROOT = Path(__file__).parent
+PAGES_DIR = ROOT / "pages"
+
+STRATEGIES = [
+    {
+        "page": "1_KOSPI_Momentum_v3.py",
+        "name": "KOSPI 200 Momentum v3",
+        "role": "Core candidate",
+        "decision": "Keep",
+        "note": "Use v3 as the practical KOSPI momentum version.",
+    },
+    {
+        "page": "2_SP500_Momentum_v3.py",
+        "name": "S&P 500 Momentum v3",
+        "role": "Core candidate",
+        "decision": "Keep",
+        "note": "Use v3 as the practical S&P 500 momentum version.",
+    },
+    {
+        "page": "3_korea_bull_bear_app_v5.py",
+        "name": "KODEX 200 Bull/Bear v5",
+        "role": "Defensive / regime candidate",
+        "decision": "Keep",
+        "note": "Use v5 as the practical Korea bull/bear strategy.",
+    },
+    {
+        "page": "7_us_bull_bear_app_v3.py",
+        "name": "SPY / UPRO Bull/Bear v3",
+        "role": "Defensive / regime candidate",
+        "decision": "Keep",
+        "note": "Use v3 as the practical US bull/bear strategy.",
+    },
+    {
+        "page": "10_qqq_tqqq_vol_target_app.py",
+        "name": "QQQ / TQQQ Vol Target",
+        "role": "Growth satellite",
+        "decision": "Keep",
+        "note": "Keep as the Nasdaq growth satellite sleeve.",
+    },
+    {
+        "page": "9_soxx_soxl_vol_target_app.py",
+        "name": "SOXX / SOXL Vol Target",
+        "role": "Aggressive satellite",
+        "decision": "Keep",
+        "note": "Keep as a small semiconductor satellite sleeve.",
+    },
+    {
+        "page": "5_dividend_screener.py",
+        "name": "Dividend Screener",
+        "role": "Research / screening",
+        "decision": "Keep",
+        "note": "Use as a supporting stock-screening tool, not a core allocation strategy.",
+    },
+    {
+        "page": "6_chartdoctor_bluechip.py",
+        "name": "Chart Doctor Bluechip",
+        "role": "Research",
+        "decision": "Keep",
+        "note": "Keep as a research strategy unless later performance review says otherwise.",
+    },
+]
+
+
 st.set_page_config(
-    page_title="Stock Auto Trading Bot",
+    page_title="my_backtest Strategy Dashboard",
     page_icon="📈",
-    layout="wide"
+    layout="wide",
 )
 
-# 메인 화면 디자인
-st.title("🤖 주식 자동매매 시스템 (Stock Bot)")
-st.markdown("### 새로운 PC에서의 시작을 환영합니다!")
+st.title("my_backtest Strategy Dashboard")
+st.caption("A simplified list of strategies to keep, replace, or review.")
+
+page_count = len(list(PAGES_DIR.glob("*.py"))) if PAGES_DIR.exists() else 0
+keep_count = sum(1 for item in STRATEGIES if item["decision"] == "Keep")
+satellite_count = sum(1 for item in STRATEGIES if "satellite" in item["role"].lower())
+
+c1, c2, c3 = st.columns(3)
+c1.metric("Current pages", page_count)
+c2.metric("Keep", keep_count)
+c3.metric("Satellite sleeves", satellite_count)
+
+st.markdown("### Strategy List")
+st.dataframe(
+    [
+        {
+            "Decision": item["decision"],
+            "Strategy": item["name"],
+            "Role": item["role"],
+            "File": f"pages/{item['page']}",
+            "Note": item["note"],
+        }
+        for item in STRATEGIES
+    ],
+    use_container_width=True,
+    hide_index=True,
+)
+
+st.markdown("### Next Questions")
+st.markdown(
+    """
+1. Confirm the simplified strategy set.
+2. Decide target allocation by strategy role: core, defensive, growth, and satellite.
+3. Add a simple allocation dashboard.
+4. Improve management only after the strategy set and weights are final.
+    """
+)
+
 st.markdown("---")
-
-# 안내 메시지
-st.info("👈 왼쪽 사이드바(> 화살표)를 열어 실행할 전략을 선택해주세요.")
-
-# 폴더 내 파일 확인 (디버깅용)
-st.subheader("📌 시스템 상태 확인")
-
-# pages 폴더가 잘 인식되는지 확인
-pages_dir = os.path.join(os.getcwd(), "pages")
-if os.path.exists(pages_dir):
-    file_count = len([f for f in os.listdir(pages_dir) if f.endswith(".py")])
-    st.success(f"✅ 'pages' 폴더가 감지되었습니다. (발견된 전략 파일: {file_count}개)")
-    st.markdown("""
-    **사용 가능한 기능:**
-    - **Momentum Strategy**: 실전 매매 전략
-    - **Momentum Backtest**: 과거 수익률 테스트
-    """)
-else:
-    st.error("⚠️ 'pages' 폴더를 찾을 수 없습니다. 현재 폴더 위치를 확인해주세요.")
-
-# 하단 푸터
-st.markdown("---")
-st.caption("Ver 2.0 | PC: OneDrive Sync Mode | Powered by Python & Streamlit")
+st.caption("Use the Pages menu in the sidebar to run each remaining strategy.")

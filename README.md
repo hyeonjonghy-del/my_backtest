@@ -16,11 +16,11 @@ streamlit run main.py
 | Keep | KOSPI 200 Momentum v3 | `pages/1_KOSPI_Momentum_v3.py` | Practical KOSPI momentum version |
 | Keep | S&P 500 Momentum v3 | `pages/2_SP500_Momentum_v3.py` | Practical S&P 500 momentum version |
 | Keep | KODEX 200 Bull/Bear v5 | `pages/3_korea_bull_bear_app_v5.py` | Practical Korea bull/bear version |
-| Keep | SPY / UPRO Bull/Bear v3 | `pages/7_us_bull_bear_app_v3.py` | Practical US bull/bear version |
-| Keep | QQQ / TQQQ Vol Target | `pages/10_qqq_tqqq_vol_target_app.py` | Nasdaq growth satellite |
-| Keep | SOXX / SOXL Vol Target | `pages/9_soxx_soxl_vol_target_app.py` | Semiconductor aggressive satellite |
-| Keep | Dividend Screener | `pages/5_dividend_screener.py` | Supporting screener |
-| Keep | Chart Doctor Bluechip | `pages/6_chartdoctor_bluechip.py` | Research strategy |
+| Keep | SPY / UPRO Bull/Bear v3 | `pages/4_us_bull_bear_app_v3.py` | Practical US bull/bear version |
+| Keep | SOXX / SOXL Vol Target | `pages/5_soxx_soxl_vol_target_app.py` | Semiconductor aggressive satellite |
+| Keep | QQQ / TQQQ Vol Target | `pages/6_qqq_tqqq_vol_target_app.py` | Nasdaq growth satellite |
+| Keep | Dividend Screener | `pages/7_dividend_screener.py` | Supporting screener |
+| Keep | Chart Doctor Bluechip | `pages/8_chartdoctor_bluechip.py` | Research strategy |
 
 ## Deleted From Active Workspace
 

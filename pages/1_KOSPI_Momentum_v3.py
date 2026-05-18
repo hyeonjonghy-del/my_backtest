@@ -32,6 +32,10 @@ import re
 import FinanceDataReader as fdr
 import time
 from math import ceil
+from pathlib import Path
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "kospi200_universe"
+UPLOAD_DIR = DATA_DIR / "uploads"
 
 # ─────────────────────────────────────────────────────────
 # 0. 한글 폰트 설정
@@ -218,6 +222,47 @@ def build_universe_auto(start_year: int, end_year: int) -> dict:
 # ─────────────────────────────────────────────────────────
 # 2-B. [파일업로드] KRX CSV 파싱
 # ─────────────────────────────────────────────────────────
+def get_saved_krx_files() -> list[Path]:
+    """Return saved KRX universe files from the local data folder."""
+    if not UPLOAD_DIR.exists():
+        return []
+    return sorted(
+        [
+            p for p in UPLOAD_DIR.iterdir()
+            if p.is_file() and p.suffix.lower() in {".csv", ".xlsx"}
+        ],
+        key=lambda p: p.name,
+    )
+
+
+def save_uploaded_krx_files(uploaded_files) -> list[Path]:
+    """Persist uploaded KRX files so they can be reused in later sessions."""
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+    for uploaded in uploaded_files or []:
+        target = UPLOAD_DIR / Path(uploaded.name).name
+        target.write_bytes(uploaded.getvalue())
+        saved_paths.append(target)
+    return saved_paths
+
+
+def read_krx_file(file_obj, file_name: str) -> pd.DataFrame:
+    """Read one saved or uploaded KRX CSV/XLSX file."""
+    if file_name.lower().endswith(".csv"):
+        try:
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(0)
+            return pd.read_csv(file_obj, encoding="cp949", dtype=str)
+        except UnicodeDecodeError:
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(0)
+            return pd.read_csv(file_obj, encoding="utf-8", dtype=str)
+
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+    return pd.read_excel(file_obj, dtype=str)
+
+
 def parse_krx_files(uploaded_files) -> dict:
     """
     KRX 정보데이터시스템 다운로드 CSV/XLSX → {날짜: [종목코드]} 딕셔너리
@@ -228,7 +273,8 @@ def parse_krx_files(uploaded_files) -> dict:
     for f in uploaded_files:
         try:
             # 파일명에서 날짜 추출 — 20XXXXXX / 19XXXXXX 패턴만 탐색
-            date_match = re.search(r'(?<!\d)(19|20)\d{6}(?!\d)', f.name)
+            file_name = Path(f).name if isinstance(f, (str, Path)) else f.name
+            date_match = re.search(r'(?<!\d)(19|20)\d{6}(?!\d)', file_name)
             if not date_match:
                 st.warning(
                     f"⚠️ 날짜 인식 실패: **{f.name}**  \n"
@@ -244,14 +290,7 @@ def parse_krx_files(uploaded_files) -> dict:
                 continue
 
             # 파일 읽기
-            if f.name.lower().endswith('.csv'):
-                try:
-                    df = pd.read_csv(f, encoding='cp949', dtype=str)
-                except UnicodeDecodeError:
-                    f.seek(0)
-                    df = pd.read_csv(f, encoding='utf-8', dtype=str)
-            else:
-                df = pd.read_excel(f, dtype=str)
+            df = read_krx_file(f, file_name)
 
             # 종목코드 컬럼 자동 탐색
             code_col = None
@@ -376,6 +415,8 @@ with st.sidebar:
     )
 
     uploaded_files = None
+    saved_krx_files = get_saved_krx_files()
+    use_saved_krx_files = False
 
     if universe_mode.startswith("🤖"):
         st.markdown("""
@@ -391,11 +432,24 @@ KRX API → WISE Index API 순서로 시도하여 반기별 KOSPI 200 구성종�
 4. 파일명에 날짜 포함 저장  
    예: `20200630_KOSPI200.csv`
         """)
-        uploaded_files = st.file_uploader(
+        if saved_krx_files:
+            use_saved_krx_files = st.checkbox(
+                "Use saved KRX files",
+                value=True,
+                help="Use files previously uploaded and saved under data/kospi200_universe/uploads.",
+            )
+            with st.expander("Saved KRX files"):
+                for path in saved_krx_files:
+                    st.write(path.name)
+
+        if use_saved_krx_files:
+            uploaded_files = saved_krx_files
+        else:
+            uploaded_files = st.file_uploader(
             "반기별 구성종목 파일 (복수 선택 가능)",
-            type=['csv', 'xlsx'],
-            accept_multiple_files=True
-        )
+                type=['csv', 'xlsx'],
+                accept_multiple_files=True
+            )
 
     st.markdown("---")
 
@@ -466,6 +520,9 @@ if run_btn:
             st.stop()
 
         with st.spinner("KRX 파일 파싱 중..."):
+            if not use_saved_krx_files:
+                uploaded_files = save_uploaded_krx_files(uploaded_files)
+                st.success(f"Saved {len(uploaded_files)} KRX file(s) for future runs.")
             universe_dict = parse_krx_files(uploaded_files)
 
         if not universe_dict:

@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from chart_utils import position_action_label, static_area_chart
 
 warnings.filterwarnings("ignore")
 
@@ -552,9 +553,10 @@ execution_plan, execution_summary = build_execution_plan(
     current_lev_shares,
     current_cash,
 )
+action_label = position_action_label(execution_summary["total_order_shares"], tolerance=0.5)
 
 st.success(
-    f"Current state ({current_date}): {'Hold leverage' if latest_weight > 0 else 'Cash'} | "
+    f"{action_label} | Current state ({current_date}): {'Hold leverage' if latest_weight > 0 else 'Cash'} | "
     f"KODEX Leverage {latest_weight:.0%}, Cash {1 - latest_weight:.0%}"
 )
 st.caption(
@@ -614,6 +616,14 @@ with tab_perf:
         }
     ) * 100
     render_static_line(dd_chart, "Drawdown", "%", 3.0, True)
+
+    weight_chart = pd.DataFrame(
+        {
+            "KODEX Leverage": weight_s.clip(0.0, 1.0),
+            "Cash": (1 - weight_s).clip(0.0, 1.0),
+        }
+    )
+    st.pyplot(static_area_chart(weight_chart, "Portfolio Weights", height=300), clear_figure=True)
 
 with tab_execution:
     st.subheader("Practical Order Plan")

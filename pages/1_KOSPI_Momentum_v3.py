@@ -33,6 +33,7 @@ import FinanceDataReader as fdr
 import time
 from math import ceil
 from pathlib import Path
+from chart_utils import static_area_chart
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "kospi200_universe"
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -607,6 +608,7 @@ if run_btn:
 
     # ── 5-6. 백테스트 루프 ──────────────────────────────
     portfolio_returns_list = []
+    portfolio_weight_list = []
     history_records        = []
     prog2   = st.progress(0)
     status2 = st.empty()
@@ -657,6 +659,7 @@ if run_btn:
                     ].index
                 )
                 portfolio_returns_list.append(cash_ret)
+                portfolio_weight_list.append(pd.Series(0.0, index=cash_ret.index))
                 continue
             universe_at = get_universe_at(curr_date, universe_dict)
             valid_cols  = [c for c in universe_at if c in df_price.columns]
@@ -724,6 +727,7 @@ if run_btn:
                 port_ret.iloc[0] -= transaction_cost
 
             portfolio_returns_list.append(port_ret)
+            portfolio_weight_list.append(pd.Series(1.0, index=port_ret.index))
 
         except Exception:
             continue
@@ -740,6 +744,15 @@ if run_btn:
         pd.concat(portfolio_returns_list)
         .sort_index()
         .pipe(lambda s: s[~s.index.duplicated(keep='first')])
+    )
+    equity_weight = (
+        pd.concat(portfolio_weight_list)
+        .sort_index()
+        .pipe(lambda s: s[~s.index.duplicated(keep='first')])
+        .reindex(full_returns.index)
+        .ffill()
+        .fillna(0.0)
+        .clip(0.0, 1.0)
     )
 
     cum_returns = (1 + full_returns).cumprod()
@@ -822,6 +835,12 @@ if run_btn:
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
+
+        weight_df = pd.DataFrame({
+            "Equity": equity_weight,
+            "Cash": 1 - equity_weight,
+        })
+        st.pyplot(static_area_chart(weight_df, "Portfolio Weights", height=300), clear_figure=True)
 
     # ── Tab 2: 현재 추천 종목 ───────────────────────────
     with tab2:

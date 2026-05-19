@@ -102,3 +102,7 @@ def static_area_chart(data: pd.DataFrame, title: str, height: int = 300):
     fig.autofmt_xdate(rotation=0)
     fig.tight_layout()
     return fig
+
+
+def position_action_label(order_abs_sum: float, tolerance: float = 1e-6) -> str:
+    return "기존보유비중 유지" if abs(order_abs_sum) <= tolerance else "포지션 및 보유비중 변경"

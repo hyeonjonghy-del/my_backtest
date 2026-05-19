@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from chart_utils import static_area_chart as mpl_static_area_chart
 from chart_utils import static_line_chart as mpl_static_line_chart
+from chart_utils import position_action_label
 
 SPY = "SPY"
 UPRO = "UPRO"
@@ -475,9 +476,10 @@ execution_plan, target_cash = build_execution_plan(
     pd.Series({SPY: current_spy_shares, UPRO: current_upro_shares}),
     current_cash,
 )
+action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 
 st.success(
-    f"Next target from close signal ({latest_date}): {latest_regime} | "
+    f"{action_label} | Next target from close signal ({latest_date}): {latest_regime} | "
     f"SPY {next_target[SPY]:.1%}, UPRO {next_target[UPRO]:.1%}, Cash {1 - next_target.sum():.1%} | "
     f"SPY {vol_window}D volatility {latest_vol:.1%}"
 )

@@ -30,6 +30,7 @@ import time
 import requests
 from math import ceil
 from datetime import datetime
+from chart_utils import static_area_chart
 
 # ─────────────────────────────────────────────────────────
 # 0. 한글 폰트 설정
@@ -400,6 +401,7 @@ if run_btn:
 
     # ── 5-7. 백테스트 루프 ──────────────────────────────
     portfolio_returns_list = []
+    portfolio_weight_list = []
     history_records        = []
     cash_periods           = 0
 
@@ -449,6 +451,7 @@ if run_btn:
                     entry_date = all_days[curr_loc + 1]
                     cash_ret = pd.Series(0.0, index=df_price.loc[entry_date:next_date].index)
                     portfolio_returns_list.append(cash_ret)
+                    portfolio_weight_list.append(pd.Series(0.0, index=cash_ret.index))
                 continue
 
             # ── 당시 S&P500 구성종목 ──────────────────────
@@ -528,6 +531,7 @@ if run_btn:
                 port_ret.iloc[0] -= transaction_cost
 
             portfolio_returns_list.append(port_ret)
+            portfolio_weight_list.append(pd.Series(1.0, index=port_ret.index))
 
         except Exception:
             continue
@@ -544,6 +548,15 @@ if run_btn:
         pd.concat(portfolio_returns_list)
         .sort_index()
         .pipe(lambda s: s[~s.index.duplicated(keep='first')])
+    )
+    equity_weight = (
+        pd.concat(portfolio_weight_list)
+        .sort_index()
+        .pipe(lambda s: s[~s.index.duplicated(keep='first')])
+        .reindex(full_returns.index)
+        .ffill()
+        .fillna(0.0)
+        .clip(0.0, 1.0)
     )
 
     cum_returns = (1 + full_returns).cumprod()
@@ -677,6 +690,12 @@ if run_btn:
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
+
+        weight_df = pd.DataFrame({
+            "Equity": equity_weight,
+            "Cash": 1 - equity_weight,
+        })
+        st.pyplot(static_area_chart(weight_df, "Portfolio Weights", height=300), clear_figure=True)
 
         if cash_periods_list:
             st.caption(

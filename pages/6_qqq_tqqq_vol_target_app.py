@@ -17,6 +17,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from chart_utils import static_area_chart as mpl_static_area_chart
 from chart_utils import static_line_chart as mpl_static_line_chart
+from chart_utils import position_action_label
 
 TRADING_DAYS = 252
 QQQ = "QQQ"
@@ -335,7 +336,8 @@ next_target = calc_target_weight(latest_trend, latest_vol, target_vol, tqqq_cap,
 latest_prices = pd.Series({"QQQ": qqq["adjclose"].reindex(weights.index).ffill().iloc[-1], "TQQQ": tqqq["adjclose"].reindex(weights.index).ffill().iloc[-1]})
 current_shares = pd.Series({"QQQ": current_qqq_shares, "TQQQ": current_tqqq_shares})
 execution_plan, target_cash = build_execution_plan(next_target, latest_prices, account_value, current_shares, current_cash)
-st.success(f"Next-open target from close signal ({latest_date}): {'Bull' if latest_trend else 'Bear'} | QQQ {next_target['QQQ']:.1%}, TQQQ {next_target['TQQQ']:.1%}, Cash {1 - next_target.sum():.1%} | QQQ {vol_window}D volatility {latest_vol:.1%}")
+action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
+st.success(f"{action_label} | Next-open target from close signal ({latest_date}): {'Bull' if latest_trend else 'Bear'} | QQQ {next_target['QQQ']:.1%}, TQQQ {next_target['TQQQ']:.1%}, Cash {1 - next_target.sum():.1%} | QQQ {vol_window}D volatility {latest_vol:.1%}")
 cols = st.columns(6)
 cols[0].metric("Total", f"{strategy_metrics['total']:.1%}")
 cols[1].metric("CAGR", f"{strategy_metrics['cagr']:.1%}")

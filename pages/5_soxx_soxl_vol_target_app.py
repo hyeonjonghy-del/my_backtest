@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from chart_utils import static_area_chart as mpl_static_area_chart
 from chart_utils import static_line_chart as mpl_static_line_chart
+from chart_utils import position_action_label
 
 TRADING_DAYS = 252
 SOXX = "SOXX"
@@ -510,9 +511,10 @@ execution_plan, target_cash = build_execution_plan(
     current_shares,
     current_cash,
 )
+action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 
 st.success(
-    f"Next-open target from close signal ({latest_date}): {'Bull' if latest_trend else 'Bear'} | "
+    f"{action_label} | Next-open target from close signal ({latest_date}): {'Bull' if latest_trend else 'Bear'} | "
     f"SOXX {next_target['SOXX']:.1%}, SOXL {next_target['SOXL']:.1%}, Cash {1 - next_target.sum():.1%} | "
     f"SOXX {vol_window}D volatility {latest_vol:.1%}"
 )

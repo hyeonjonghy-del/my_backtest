@@ -7,6 +7,9 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from chart_utils import static_line_chart
+from core.us_vol_runner import default_us_configs, run_us_vol_strategy
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data" / "integrated_runner"
@@ -127,6 +130,53 @@ def market_summary(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def metrics_frame(results: list[dict[str, object]], weights: dict[str, float]) -> pd.DataFrame:
+    rows = []
+    name_to_number = {item.name: str(item.number) for item in STRATEGIES}
+    for result in results:
+        metrics = result["metrics"]
+        strategy_number = name_to_number.get(str(result["name"]), "")
+        rows.append(
+            {
+                "Strategy": result["name"],
+                "Weight": weights.get(strategy_number, 0.0),
+                "Signal": result["current_signal"],
+                "Position": result["current_position"],
+                "Total": metrics["total"],
+                "CAGR": metrics["cagr"],
+                "MDD": metrics["mdd"],
+                "Sharpe": metrics["sharpe"],
+                "Calmar": metrics["calmar"],
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def combine_returns(results: list[dict[str, object]], weights: dict[str, float]) -> pd.Series:
+    name_to_number = {item.name: str(item.number) for item in STRATEGIES}
+    series = []
+    for result in results:
+        strategy_number = name_to_number[str(result["name"])]
+        weight = weights[strategy_number]
+        ret = result["daily_returns"].rename(result["name"]) * weight
+        series.append(ret)
+    if not series:
+        return pd.Series(dtype=float)
+    frame = pd.concat(series, axis=1).fillna(0.0)
+    return frame.sum(axis=1).rename("Portfolio")
+
+
+def calc_portfolio_metrics(daily_returns: pd.Series) -> dict[str, object]:
+    if daily_returns.empty:
+        return {"nav": pd.Series(dtype=float), "cagr": 0.0, "mdd": 0.0, "sharpe": 0.0}
+    nav = (1 + daily_returns).cumprod()
+    years = len(nav) / 252
+    cagr = nav.iloc[-1] ** (1 / years) - 1 if years > 0 and nav.iloc[-1] > 0 else -1.0
+    dd = nav / nav.cummax() - 1
+    sharpe = daily_returns.mean() / daily_returns.std() * (252 ** 0.5) if daily_returns.std() > 0 else 0.0
+    return {"nav": nav, "drawdown": dd, "cagr": cagr, "mdd": dd.min(), "sharpe": sharpe}
+
+
 st.set_page_config(
     page_title="Integrated Strategy Runner",
     page_icon="📊",
@@ -165,6 +215,12 @@ with st.sidebar:
         save_allocation(edited_weights)
         st.success("Saved.")
 
+    st.markdown("---")
+    st.header("Runner")
+    start_date = st.date_input("US start", pd.Timestamp("2016-01-04"))
+    end_date = st.date_input("US end", pd.Timestamp.today())
+    run_us = st.button("Run strategies 4-6", use_container_width=True)
+
 df = allocation_frame(edited_weights)
 total_weight = df["Weight"].sum()
 korea_weight = df.loc[df["Market"] == "Korea", "Weight"].sum()
@@ -184,39 +240,45 @@ with tab_alloc:
     st.dataframe(market_summary(df), use_container_width=True, hide_index=True)
 
 with tab_runner:
-    st.subheader("Execution Plan")
-    st.dataframe(
-        pd.DataFrame(
-            [
-                {
-                    "Step": 1,
-                    "Work": "Extract each strategy calculation into a pure runner function.",
-                    "Output": "daily_returns, nav, metrics, current_position",
-                },
-                {
-                    "Step": 2,
-                    "Work": "Run strategies 1-6 with default configs.",
-                    "Output": "One result object per strategy",
-                },
-                {
-                    "Step": 3,
-                    "Work": "Combine daily returns by allocation weights.",
-                    "Output": "portfolio_nav, portfolio_mdd, monthly_returns",
-                },
-                {
-                    "Step": 4,
-                    "Work": "Show current target positions and rebalance notes.",
-                    "Output": "operation table",
-                },
-            ]
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.info(
-        "This page is the integration shell. The next code step is to connect the "
-        "strategy runner functions one by one without changing the existing pages."
-    )
+    st.subheader("Run Strategies 4-6")
+    st.caption("This first integrated runner connects the three US ETF strategies only.")
+
+    if not run_us:
+        st.info("Set the allocation and dates in the sidebar, then click Run strategies 4-6.")
+    else:
+        progress = st.progress(0, text="Running US ETF strategies...")
+        results: list[dict[str, object]] = []
+        configs = default_us_configs(
+            pd.Timestamp(start_date).to_pydatetime(),
+            pd.Timestamp(end_date).to_pydatetime(),
+        )
+        for index, config in enumerate(configs, start=1):
+            progress.progress(index / len(configs), text=f"Running {config.name}...")
+            results.append(run_us_vol_strategy(config))
+        progress.empty()
+
+        portfolio_returns = combine_returns(results, edited_weights)
+        portfolio_metrics = calc_portfolio_metrics(portfolio_returns)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("US Sleeve CAGR", f"{portfolio_metrics['cagr']:.1%}")
+        c2.metric("US Sleeve MDD", f"{portfolio_metrics['mdd']:.1%}")
+        c3.metric("US Sleeve Sharpe", f"{portfolio_metrics['sharpe']:.2f}")
+
+        result_df = metrics_frame(results, edited_weights)
+        shown = result_df.copy()
+        for col in ["Weight", "Total", "CAGR", "MDD"]:
+            shown[col] = shown[col].map(lambda x: f"{x:.1%}")
+        for col in ["Sharpe", "Calmar"]:
+            shown[col] = shown[col].map(lambda x: f"{x:.2f}")
+        st.dataframe(shown, use_container_width=True, hide_index=True)
+
+        nav_frame = pd.DataFrame({"US Integrated Sleeve": portfolio_metrics["nav"]})
+        for result in results:
+            nav_frame[str(result["name"])] = result["nav"]
+        st.pyplot(
+            static_line_chart(nav_frame, "US Strategies 4-6 Integrated NAV", "NAV", height=360),
+            clear_figure=True,
+        )
 
 with tab_schema:
     st.code(

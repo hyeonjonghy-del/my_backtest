@@ -143,6 +143,7 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
     positions = {}
     trades = []
     nav_series = {}
+    end_open_positions = 0
 
     all_dates = pd.date_range(start=start_date, end=end_date, freq="B")
 
@@ -301,8 +302,9 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
                     trigger_date_map[ticker] = date
 
         nav_series[date] = calc_nav(date)
+        end_open_positions = len(positions)
 
-    return trades, pd.Series(nav_series)
+    return trades, pd.Series(nav_series), end_open_positions
 
 
 st.divider()
@@ -354,7 +356,7 @@ if run_btn:
     progress.empty()
 
     with st.spinner("Running portfolio simulation..."):
-        trades, strat_nav = run_portfolio_backtest(ticker_dfs, yearly_universe, ticker_names)
+        trades, strat_nav, end_open_positions = run_portfolio_backtest(ticker_dfs, yearly_universe, ticker_names)
 
     if not trades:
         st.warning("No completed trades matched the conditions.")
@@ -371,6 +373,10 @@ if run_btn:
 
     wins = (rdf["return"] > 0).sum()
     win_rate = wins / len(rdf) * 100
+    avg_win = rdf.loc[rdf["return"] > 0, "return"].mean()
+    avg_loss = rdf.loc[rdf["return"] < 0, "return"].mean()
+    avg_trade_return = rdf["return"].mean()
+    payoff_ratio = avg_win / abs(avg_loss) if pd.notna(avg_loss) and avg_loss != 0 else np.nan
     profit_factor = (
         rdf.loc[rdf["pnl"] > 0, "pnl"].sum()
         / (abs(rdf.loc[rdf["pnl"] < 0, "pnl"].sum()) + 1e-9)
@@ -391,7 +397,13 @@ if run_btn:
     c5.metric("Trades", f"{len(rdf):,}")
     c6.metric("Win rate", f"{win_rate:.1f}%")
     c7.metric("Profit factor", f"{profit_factor:.2f}")
-    c8.metric("Open positions at end", f"{len(strat_nav):,} NAV points")
+    c8.metric("Open positions at end", f"{end_open_positions:,}")
+
+    c9, c10, c11, c12 = st.columns(4)
+    c9.metric("Avg win", f"{avg_win * 100:.1f}%" if pd.notna(avg_win) else "-")
+    c10.metric("Avg loss", f"{avg_loss * 100:.1f}%" if pd.notna(avg_loss) else "-")
+    c11.metric("Avg trade return", f"{avg_trade_return * 100:.1f}%")
+    c12.metric("Payoff ratio", f"{payoff_ratio:.2f}" if pd.notna(payoff_ratio) else "-")
 
     kospi = fetch_kospi_index(start_str, end_str)
     ret_fig = go.Figure()

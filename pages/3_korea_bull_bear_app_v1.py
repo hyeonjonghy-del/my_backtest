@@ -668,7 +668,7 @@ with st.sidebar:
     current_cash = st.number_input("Current cash (KRW)", min_value=0.0, value=0.0, step=1_000_000.0)
 
     st.subheader("Diagnostics")
-    run_sensitivity = st.checkbox("Show sensitivity table", value=True)
+    run_sensitivity = st.checkbox("Show sensitivity table", value=False)
     recent_years = st.slider("Recent-period comparison years", 1, 5, 3, 1)
     st.caption("These diagnostics do not change the main strategy result.")
     run_btn = st.button("Run backtest", type="primary", use_container_width=True)

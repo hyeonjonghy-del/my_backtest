@@ -1,16 +1,11 @@
-"""KODEX 200 / KODEX Leverage ON/OFF strategy v5.
+"""KODEX 200 / KODEX Leverage ON/OFF strategy v1.
 
-v5 keeps the v3 core idea because it fits the KODEX data better:
+v1 keeps the v0 core idea and adds a high-volatility bull fallback:
 - Signal asset: KODEX 200.
-- Trading asset: KODEX Leverage.
-- Hold KODEX Leverage only when trend and volatility filters pass.
-- Hold cash otherwise.
-
-Additions over v3:
-- Full-period vs recent-period performance tables.
-- Parameter sensitivity table for MA / realized-vol window / volatility cap.
-- Whipsaw and trade diagnostics.
-- Lightweight static matplotlib charts only.
+- Main trading asset: KODEX Leverage.
+- Hold KODEX Leverage when trend and volatility filters pass.
+- Optionally hold KODEX 200 + cash when trend passes but RV is above the cap.
+- Hold cash when the trend filter fails.
 """
 
 from __future__ import annotations
@@ -22,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-from chart_utils import position_action_label, static_area_chart
+from chart_utils import static_area_chart
 
 warnings.filterwarnings("ignore")
 
@@ -39,11 +34,11 @@ COLORS = {
     "dd": "#B91C1C",
 }
 
-st.set_page_config(page_title="KODEX ON/OFF v5", page_icon="KR", layout="wide")
-st.title("KODEX 200 / Leverage ON-OFF Strategy v5")
+st.set_page_config(page_title="KODEX ON/OFF v1", page_icon="KR", layout="wide")
+st.title("KODEX 200 / Leverage ON-OFF Strategy v1")
 st.caption(
-    "Core v3 logic retained: KODEX 200 trend + realized-volatility filter. "
-    "v5 adds regime diagnostics, recent-period checks, and parameter sensitivity."
+    "v1 adds a high-volatility bull fallback: when trend passes but RV exceeds the cap, "
+    "the strategy can hold KODEX 200 plus cash instead of moving fully to cash."
 )
 
 
@@ -157,11 +152,43 @@ def render_yearly_bars(strategy_nav: pd.Series, kodex_nav: pd.Series, lev_nav: p
     st.pyplot(fig, clear_figure=True)
 
 
-def build_signal(close: pd.Series, ma_window: int, vol_price: pd.Series, vol_window: int, vol_threshold: float) -> tuple[pd.Series, pd.Series, pd.Series]:
+def build_signal(close: pd.Series, ma_window: int, vol_price: pd.Series, vol_window: int, vol_threshold: float) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
     ma = close.rolling(ma_window).mean()
     realized_vol = finite_return(vol_price.pct_change()).rolling(vol_window).std() * np.sqrt(TRADING_DAYS)
-    signal = ((close > ma) & (realized_vol < vol_threshold)).rename("Buy Signal")
-    return signal, ma, realized_vol
+    trend_signal = (close > ma).rename("Trend Signal")
+    low_vol_signal = (realized_vol < vol_threshold).rename("Low Vol Signal")
+    signal = (trend_signal & low_vol_signal).rename("Leverage Signal")
+    return signal, trend_signal, ma, realized_vol
+
+
+def build_target_weights(
+    dates: pd.DatetimeIndex,
+    leverage_signal: pd.Series,
+    trend_signal: pd.Series,
+    realized_vol: pd.Series,
+    leverage_weight: float,
+    use_high_vol_fallback: bool,
+    high_vol_kodex_weight: float,
+    vol_threshold: float,
+) -> pd.DataFrame:
+    leverage_signal = leverage_signal.reindex(dates).fillna(False)
+    trend_signal = trend_signal.reindex(dates).fillna(False)
+    realized_vol = realized_vol.reindex(dates)
+    high_vol_bull = trend_signal & (~leverage_signal) & (realized_vol >= vol_threshold)
+
+    lev_weight = leverage_signal.astype(float) * leverage_weight
+    kodex_weight = pd.Series(0.0, index=dates)
+    if use_high_vol_fallback:
+        kodex_weight = high_vol_bull.astype(float) * high_vol_kodex_weight
+    cash_weight = (1.0 - lev_weight - kodex_weight).clip(lower=0.0)
+    return pd.DataFrame(
+        {
+            "KODEX Leverage": lev_weight.clip(0.0, 1.0),
+            "KODEX 200": kodex_weight.clip(0.0, 1.0),
+            "Cash": cash_weight.clip(0.0, 1.0),
+        },
+        index=dates,
+    )
 
 
 def backtest_next_open(
@@ -309,6 +336,151 @@ def backtest_same_close(
     return pd.Series(nav_rows, index=dates, name="Ideal Same-Close Strategy"), pd.Series(weight_rows, index=dates, name="Leverage Weight"), pd.DataFrame(trades)
 
 
+def portfolio_turnover(new_weights: pd.Series, old_weights: pd.Series) -> float:
+    tradable_assets = [asset for asset in new_weights.index if asset != "Cash"]
+    return float((new_weights[tradable_assets] - old_weights[tradable_assets]).abs().sum())
+
+
+def backtest_portfolio_next_open(
+    dates: pd.DatetimeIndex,
+    target_weights: pd.DataFrame,
+    ret_co: pd.DataFrame,
+    ret_oc: pd.DataFrame,
+    fee_rate: float,
+) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
+    nav = 1.0
+    assets = list(target_weights.columns)
+    prev_weights = pd.Series(0.0, index=assets)
+    nav_rows: list[float] = []
+    weight_rows: list[pd.Series] = []
+    trades: list[dict[str, object]] = []
+    executable_weights = target_weights.shift(1).reindex(dates).fillna(0.0)
+
+    for i, date in enumerate(dates):
+        nav *= 1 + float((prev_weights * ret_co.loc[date, assets]).sum())
+        new_weights = executable_weights.loc[date, assets].astype(float)
+        turnover = portfolio_turnover(new_weights, prev_weights)
+        if i > 0 and turnover > 0:
+            before_fee = nav
+            nav *= 1 - min(max(fee_rate * turnover, 0.0), 0.99)
+            trades.append(
+                {
+                    "Date": date.date(),
+                    "Execution": "Next open",
+                    "Old Weight": prev_weights.drop("Cash").sum(),
+                    "New Weight": new_weights.drop("Cash").sum(),
+                    "Turnover": turnover,
+                    "Fee Cost": before_fee - nav,
+                    "NAV": nav,
+                }
+            )
+        prev_weights = new_weights
+        nav *= 1 + float((prev_weights * ret_oc.loc[date, assets]).sum())
+        nav_rows.append(nav)
+        weight_rows.append(prev_weights.copy())
+
+    return pd.Series(nav_rows, index=dates, name="Strategy"), pd.DataFrame(weight_rows, index=dates), pd.DataFrame(trades)
+
+
+def backtest_portfolio_after_close_fill(
+    dates: pd.DatetimeIndex,
+    target_weights: pd.DataFrame,
+    ret_co: pd.DataFrame,
+    ret_oc: pd.DataFrame,
+    fee_rate: float,
+    after_close_fill_rate: float,
+) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
+    nav = 1.0
+    assets = list(target_weights.columns)
+    open_weights = pd.Series(0.0, index=assets)
+    nav_rows: list[float] = []
+    weight_rows: list[pd.Series] = []
+    trades: list[dict[str, object]] = []
+    open_targets = target_weights.shift(1).reindex(dates).fillna(0.0)
+
+    for i, date in enumerate(dates):
+        nav *= 1 + float((open_weights * ret_co.loc[date, assets]).sum())
+        intraday_target = open_targets.loc[date, assets].astype(float)
+        intraday_turnover = portfolio_turnover(intraday_target, open_weights)
+        if i > 0 and intraday_turnover > 0:
+            before_fee = nav
+            nav *= 1 - min(max(fee_rate * intraday_turnover, 0.0), 0.99)
+            trades.append(
+                {
+                    "Date": date.date(),
+                    "Execution": "Next open residual",
+                    "Old Weight": open_weights.drop("Cash").sum(),
+                    "New Weight": intraday_target.drop("Cash").sum(),
+                    "Turnover": intraday_turnover,
+                    "Fee Cost": before_fee - nav,
+                    "NAV": nav,
+                }
+            )
+        nav *= 1 + float((intraday_target * ret_oc.loc[date, assets]).sum())
+
+        next_target = target_weights.loc[date, assets].astype(float)
+        close_weights = intraday_target + (next_target - intraday_target) * after_close_fill_rate
+        close_turnover = portfolio_turnover(close_weights, intraday_target)
+        if close_turnover > 0:
+            before_fee = nav
+            nav *= 1 - min(max(fee_rate * close_turnover, 0.0), 0.99)
+            trades.append(
+                {
+                    "Date": date.date(),
+                    "Execution": "After-close fixed close",
+                    "Old Weight": intraday_target.drop("Cash").sum(),
+                    "New Weight": close_weights.drop("Cash").sum(),
+                    "Turnover": close_turnover,
+                    "Fee Cost": before_fee - nav,
+                    "NAV": nav,
+                }
+            )
+
+        open_weights = close_weights
+        nav_rows.append(nav)
+        weight_rows.append(close_weights.copy())
+
+    return pd.Series(nav_rows, index=dates, name="After-close Fill Strategy"), pd.DataFrame(weight_rows, index=dates), pd.DataFrame(trades)
+
+
+def backtest_portfolio_same_close(
+    dates: pd.DatetimeIndex,
+    target_weights: pd.DataFrame,
+    ret_cc: pd.DataFrame,
+    fee_rate: float,
+) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
+    nav = 1.0
+    assets = list(target_weights.columns)
+    prev_weights = pd.Series(0.0, index=assets)
+    nav_rows: list[float] = []
+    weight_rows: list[pd.Series] = []
+    trades: list[dict[str, object]] = []
+
+    for date in dates:
+        nav *= 1 + float((prev_weights * ret_cc.loc[date, assets]).sum())
+        new_weights = target_weights.loc[date, assets].astype(float)
+        turnover = portfolio_turnover(new_weights, prev_weights)
+        if turnover > 0:
+            before_fee = nav
+            nav *= 1 - min(max(fee_rate * turnover, 0.0), 0.99)
+            trades.append(
+                {
+                    "Date": date.date(),
+                    "Execution": "Ideal same close",
+                    "Old Weight": prev_weights.drop("Cash").sum(),
+                    "New Weight": new_weights.drop("Cash").sum(),
+                    "Turnover": turnover,
+                    "Fee Cost": before_fee - nav,
+                    "NAV": nav,
+                }
+            )
+        prev_weights = new_weights
+        nav_rows.append(nav)
+        weight_rows.append(prev_weights.copy())
+
+    return pd.Series(nav_rows, index=dates, name="Ideal Same-Close Strategy"), pd.DataFrame(weight_rows, index=dates), pd.DataFrame(trades)
+
+
 def slice_nav(nav: pd.Series, start: pd.Timestamp | None) -> pd.Series:
     out = nav.dropna()
     if start is not None:
@@ -345,11 +517,12 @@ def format_metric_table(df: pd.DataFrame) -> pd.DataFrame:
     return shown
 
 
-def trade_diagnostics(weight: pd.Series, trade_log: pd.DataFrame, nav: pd.Series) -> dict[str, object]:
-    exposure_days = int((weight > 0).sum())
-    total_days = max(len(weight), 1)
-    years = max((weight.index[-1] - weight.index[0]).days / 365.25, 1 / 365.25)
-    changes = weight.diff().abs().fillna(0)
+def trade_diagnostics(weight: pd.Series | pd.DataFrame, trade_log: pd.DataFrame, nav: pd.Series) -> dict[str, object]:
+    risky_weight = weight.drop(columns=["Cash"], errors="ignore").sum(axis=1) if isinstance(weight, pd.DataFrame) else weight
+    exposure_days = int((risky_weight > 0).sum())
+    total_days = max(len(risky_weight), 1)
+    years = max((risky_weight.index[-1] - risky_weight.index[0]).days / 365.25, 1 / 365.25)
+    changes = risky_weight.diff().abs().fillna(0)
     round_trips = int((changes > 0).sum() / 2)
     monthly = nav.resample("M").last().pct_change().dropna()
     bad_months = int((monthly < 0).sum())
@@ -411,6 +584,56 @@ def build_execution_plan(
     return pd.DataFrame(rows), summary
 
 
+def build_multi_asset_execution_plan(
+    target_weights: pd.Series,
+    after_close_fill_rate: float,
+    latest_prices: dict[str, float],
+    account_value: float,
+    current_shares: dict[str, float],
+    current_cash: float,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    current_values = {asset: current_shares.get(asset, 0.0) * latest_prices[asset] for asset in latest_prices}
+    effective_value = account_value if account_value > 0 else sum(current_values.values()) + current_cash
+    rows: list[dict[str, object]] = []
+    total_order_value = 0.0
+    target_cash = effective_value
+
+    for asset, latest_price in latest_prices.items():
+        target_weight = float(target_weights.get(asset, 0.0))
+        target_value = effective_value * target_weight
+        target_shares = np.floor(target_value / latest_price) if latest_price > 0 else 0.0
+        order_shares = target_shares - current_shares.get(asset, 0.0)
+        after_close_order_shares = np.trunc(order_shares * after_close_fill_rate)
+        residual_shares = order_shares - after_close_order_shares
+        total_order_value += abs(order_shares) * latest_price
+        target_cash -= target_shares * latest_price
+
+        for step, shares in [
+            ("After-close fixed-price order", after_close_order_shares),
+            ("Next-open residual order", residual_shares),
+        ]:
+            rows.append(
+                {
+                    "Asset": asset,
+                    "Step": step,
+                    "Action": "Buy" if shares > 0 else "Sell" if shares < 0 else "Hold",
+                    "Shares": shares,
+                    "Reference Price": latest_price,
+                    "Estimated Value": abs(shares) * latest_price,
+                }
+            )
+
+    summary = {
+        "effective_value": effective_value,
+        "target_leverage_weight": float(target_weights.get("KODEX Leverage", 0.0)),
+        "target_kodex_weight": float(target_weights.get("KODEX 200", 0.0)),
+        "target_cash_weight": float(target_weights.get("Cash", 0.0)),
+        "target_cash": target_cash,
+        "total_order_value": total_order_value,
+    }
+    return pd.DataFrame(rows), summary
+
+
 with st.sidebar:
     st.header("Strategy Settings")
     st.subheader("Period")
@@ -420,11 +643,13 @@ with st.sidebar:
     with c2:
         end_date = st.date_input("End", datetime.today().date())
 
-    st.subheader("Core v3 Signal")
+    st.subheader("Core Signal")
     ma_window = st.slider("KODEX 200 MA", 20, 250, 100, 5)
     vol_window = st.slider("Realized volatility window", 5, 120, 20, 1)
     vol_threshold_pct = st.slider("Realized volatility cap (%)", 10, 120, 50, 5)
     vol_source = st.selectbox("Volatility source", ["KODEX 200", "KODEX Leverage"], index=0)
+    use_high_vol_fallback = st.checkbox("Use RV cap fallback", value=True)
+    high_vol_kodex_weight_pct = st.slider("KODEX 200 weight when RV cap fails (%)", 0, 100, 50, 5)
 
     st.subheader("Position / Cost")
     leverage_weight_pct = st.slider("KODEX Leverage weight when signal passes (%)", 0, 100, 100, 5)
@@ -439,6 +664,7 @@ with st.sidebar:
     st.subheader("Execution Planner")
     account_value = st.number_input("Account value (KRW)", min_value=0.0, value=0.0, step=1_000_000.0)
     current_lev_shares = st.number_input("Current KODEX Leverage shares", min_value=0.0, value=0.0, step=1.0)
+    current_kodex_shares = st.number_input("Current KODEX 200 shares", min_value=0.0, value=0.0, step=1.0)
     current_cash = st.number_input("Current cash (KRW)", min_value=0.0, value=0.0, step=1_000_000.0)
 
     st.subheader("Diagnostics")
@@ -449,6 +675,7 @@ with st.sidebar:
 
 vol_threshold = vol_threshold_pct / 100
 leverage_weight = leverage_weight_pct / 100
+high_vol_kodex_weight = high_vol_kodex_weight_pct / 100
 
 with st.expander("Strategy Rules", expanded=False):
     st.markdown(
@@ -458,15 +685,16 @@ with st.expander("Strategy Rules", expanded=False):
 | Signal asset | KODEX 200 |
 | Trading asset | KODEX Leverage |
 | Entry / hold | KODEX 200 close > MA{ma_window} AND {vol_source} RV{vol_window} < {vol_threshold_pct}% |
-| Exit | Any condition fails |
+| High-vol bull fallback | {'On' if use_high_vol_fallback else 'Off'}; if trend passes but RV cap fails, hold KODEX 200 {high_vol_kodex_weight_pct}%, cash {100 - high_vol_kodex_weight_pct}% |
+| Exit | Trend filter fails |
 | Execution | {execution_model} |
 | After-close fill assumption | {after_close_fill_pct}% of required trade at same-day close; residual at next open |
-| Position | KODEX Leverage {leverage_weight_pct}%, cash {100 - leverage_weight_pct}% |
+| Main position | KODEX Leverage {leverage_weight_pct}%, cash {100 - leverage_weight_pct}% |
 """
     )
 
 if not run_btn:
-    st.info("Adjust the settings, then run the backtest. v5 keeps the v3 ON/OFF core and adds diagnostics.")
+    st.info("Adjust the settings, then run the backtest. v1 adds a configurable RV cap fallback.")
     st.stop()
 
 if start_date >= end_date:
@@ -499,24 +727,34 @@ full_idx = full_idx[full_idx <= common_idx[-1]]
 kodex_close = kodex_200["close"].reindex(full_idx).ffill()
 lev_close = kodex_lev["close"].reindex(full_idx).ffill()
 vol_price = kodex_close if vol_source == "KODEX 200" else lev_close
-signal, ma, realized_vol = build_signal(kodex_close, ma_window, vol_price, vol_window, vol_threshold)
+signal, trend_signal, ma, realized_vol = build_signal(kodex_close, ma_window, vol_price, vol_window, vol_threshold)
+target_weights = build_target_weights(
+    common_idx,
+    signal,
+    trend_signal,
+    realized_vol,
+    leverage_weight,
+    use_high_vol_fallback,
+    high_vol_kodex_weight,
+    vol_threshold,
+)
 
 ret_lev_co = safe_divide(kodex_lev["open"] - kodex_lev["close"].shift(1), kodex_lev["close"].shift(1)).reindex(common_idx).fillna(0)
 ret_lev_oc = safe_divide(kodex_lev["close"] - kodex_lev["open"], kodex_lev["open"]).reindex(common_idx).fillna(0)
 ret_lev_cc = finite_return(kodex_lev["close"].pct_change()).reindex(common_idx).fillna(0)
+ret_kodex_co = safe_divide(kodex_200["open"] - kodex_200["close"].shift(1), kodex_200["close"].shift(1)).reindex(common_idx).fillna(0)
+ret_kodex_oc = safe_divide(kodex_200["close"] - kodex_200["open"], kodex_200["open"]).reindex(common_idx).fillna(0)
+ret_kodex_cc = finite_return(kodex_200["close"].pct_change()).reindex(common_idx).fillna(0)
+ret_co = pd.DataFrame({"KODEX Leverage": ret_lev_co, "KODEX 200": ret_kodex_co, "Cash": 0.0}, index=common_idx)
+ret_oc = pd.DataFrame({"KODEX Leverage": ret_lev_oc, "KODEX 200": ret_kodex_oc, "Cash": 0.0}, index=common_idx)
+ret_cc = pd.DataFrame({"KODEX Leverage": ret_lev_cc, "KODEX 200": ret_kodex_cc, "Cash": 0.0}, index=common_idx)
 
 progress.progress(75, text="Calculating strategy...")
-nav_next_open, weight_next_open, trades_next_open = backtest_next_open(common_idx, signal, leverage_weight, ret_lev_co, ret_lev_oc, fee)
-nav_after_close, weight_after_close, trades_after_close = backtest_after_close_fill(
-    common_idx,
-    signal,
-    leverage_weight,
-    ret_lev_co,
-    ret_lev_oc,
-    fee,
-    after_close_fill_pct / 100,
+nav_next_open, weight_next_open, trades_next_open = backtest_portfolio_next_open(common_idx, target_weights, ret_co, ret_oc, fee)
+nav_after_close, weight_after_close, trades_after_close = backtest_portfolio_after_close_fill(
+    common_idx, target_weights, ret_co, ret_oc, fee, after_close_fill_pct / 100
 )
-nav_same_close, weight_same_close, trades_same_close = backtest_same_close(common_idx, signal, leverage_weight, ret_lev_cc, fee)
+nav_same_close, weight_same_close, trades_same_close = backtest_portfolio_same_close(common_idx, target_weights, ret_cc, fee)
 
 if execution_model == "Ideal same-close":
     nav_s, weight_s, trade_log = nav_same_close, weight_same_close, trades_same_close
@@ -540,27 +778,36 @@ progress.empty()
 
 current_date = common_idx[-1].date()
 latest_signal = bool(signal.reindex(common_idx).iloc[-1])
-latest_weight = weight_s.iloc[-1]
+latest_trend_signal = bool(trend_signal.reindex(common_idx).iloc[-1])
+latest_weights = weight_s.iloc[-1]
 latest_close = kodex_close.reindex(common_idx).iloc[-1]
 latest_ma = ma.reindex(common_idx).iloc[-1]
 latest_vol = realized_vol.reindex(common_idx).iloc[-1]
-target_weight_for_plan = float(signal.reindex(common_idx).iloc[-1]) * leverage_weight
-execution_plan, execution_summary = build_execution_plan(
-    target_weight_for_plan,
+target_weights_for_plan = target_weights.iloc[-1]
+execution_plan, execution_summary = build_multi_asset_execution_plan(
+    target_weights_for_plan,
     after_close_fill_pct / 100,
-    float(kodex_lev["close"].reindex(common_idx).ffill().iloc[-1]),
+    {
+        "KODEX Leverage": float(kodex_lev["close"].reindex(common_idx).ffill().iloc[-1]),
+        "KODEX 200": float(kodex_200["close"].reindex(common_idx).ffill().iloc[-1]),
+    },
     account_value,
-    current_lev_shares,
+    {
+        "KODEX Leverage": current_lev_shares,
+        "KODEX 200": current_kodex_shares,
+    },
     current_cash,
 )
-action_label = position_action_label(execution_summary["total_order_shares"], tolerance=0.5)
+action_label = "Hold" if execution_summary["total_order_value"] <= 0 else "Rebalance"
 
 st.success(
-    f"{action_label} | Current state ({current_date}): {'Hold leverage' if latest_weight > 0 else 'Cash'} | "
-    f"KODEX Leverage {latest_weight:.0%}, Cash {1 - latest_weight:.0%}"
+    f"{action_label} | Current state ({current_date}): "
+    f"KODEX Leverage {latest_weights['KODEX Leverage']:.0%}, "
+    f"KODEX 200 {latest_weights['KODEX 200']:.0%}, Cash {latest_weights['Cash']:.0%}"
 )
 st.caption(
-    f"Latest raw signal: {'Pass' if latest_signal else 'Wait'} | "
+    f"Latest leverage signal: {'Pass' if latest_signal else 'Wait'} | "
+    f"Trend: {'Pass' if latest_trend_signal else 'Wait'} | "
     f"KODEX 200 {latest_close:,.0f} / MA{ma_window} {latest_ma:,.0f} / "
     f"{vol_source} RV{vol_window} {latest_vol:.1%} / cap {vol_threshold:.0%}"
 )
@@ -617,25 +864,20 @@ with tab_perf:
     ) * 100
     render_static_line(dd_chart, "Drawdown", "%", 3.0, True)
 
-    weight_chart = pd.DataFrame(
-        {
-            "KODEX Leverage": weight_s.clip(0.0, 1.0),
-            "Cash": (1 - weight_s).clip(0.0, 1.0),
-        }
-    )
+    weight_chart = weight_s[["KODEX Leverage", "KODEX 200", "Cash"]].clip(0.0, 1.0)
     st.pyplot(static_area_chart(weight_chart, "Portfolio Weights", height=300), clear_figure=True)
 
 with tab_execution:
     st.subheader("Practical Order Plan")
     st.caption(
-        "The plan uses the latest KODEX Leverage close as the reference price. "
+        "The plan uses the latest KODEX Leverage and KODEX 200 closes as reference prices. "
         "After-close orders target the fixed closing price; any unfilled portion is planned as next-open residual."
     )
     exec_cols = st.columns(5)
-    exec_cols[0].metric("Target Weight", f"{execution_summary['target_weight']:.0%}")
-    exec_cols[1].metric("Target Shares", f"{execution_summary['target_shares']:,.0f}")
-    exec_cols[2].metric("Current Shares", f"{execution_summary['current_shares']:,.0f}")
-    exec_cols[3].metric("Total Order", f"{execution_summary['total_order_shares']:,.0f}")
+    exec_cols[0].metric("LEV Target", f"{execution_summary['target_leverage_weight']:.0%}")
+    exec_cols[1].metric("KODEX200 Target", f"{execution_summary['target_kodex_weight']:.0%}")
+    exec_cols[2].metric("Cash Target", f"{execution_summary['target_cash_weight']:.0%}")
+    exec_cols[3].metric("Order Value", f"{execution_summary['total_order_value']:,.0f} KRW")
     exec_cols[4].metric("Target Cash", f"{execution_summary['target_cash']:,.0f} KRW")
 
     shown_plan = execution_plan.copy()
@@ -680,21 +922,23 @@ with tab_sensitivity:
         for ma_w in ma_values:
             for vol_w in vol_values:
                 for threshold_pct in threshold_values:
-                    sig, _, _ = build_signal(kodex_close, ma_w, vol_price, vol_w, threshold_pct / 100)
+                    sig, trend_sig, _, test_rv = build_signal(kodex_close, ma_w, vol_price, vol_w, threshold_pct / 100)
+                    test_targets = build_target_weights(
+                        common_idx,
+                        sig,
+                        trend_sig,
+                        test_rv,
+                        leverage_weight,
+                        use_high_vol_fallback,
+                        high_vol_kodex_weight,
+                        threshold_pct / 100,
+                    )
                     if execution_model == "Ideal same-close":
-                        test_nav, test_weight, test_trades = backtest_same_close(common_idx, sig, leverage_weight, ret_lev_cc, fee)
+                        test_nav, test_weight, test_trades = backtest_portfolio_same_close(common_idx, test_targets, ret_cc, fee)
                     elif execution_model == "After-close fill + next-open residual":
-                        test_nav, test_weight, test_trades = backtest_after_close_fill(
-                            common_idx,
-                            sig,
-                            leverage_weight,
-                            ret_lev_co,
-                            ret_lev_oc,
-                            fee,
-                            after_close_fill_pct / 100,
-                        )
+                        test_nav, test_weight, test_trades = backtest_portfolio_after_close_fill(common_idx, test_targets, ret_co, ret_oc, fee, after_close_fill_pct / 100)
                     else:
-                        test_nav, test_weight, test_trades = backtest_next_open(common_idx, sig, leverage_weight, ret_lev_co, ret_lev_oc, fee)
+                        test_nav, test_weight, test_trades = backtest_portfolio_next_open(common_idx, test_targets, ret_co, ret_oc, fee)
                     m = calc_metrics(test_nav)
                     records.append(
                         {
@@ -707,7 +951,7 @@ with tab_sensitivity:
                             "Calmar": m["calmar"],
                             "Sharpe": m["sharpe"],
                             "Total": m["total"],
-                            "Exposure": (test_weight > 0).mean(),
+                            "Exposure": (test_weight.drop(columns=["Cash"], errors="ignore").sum(axis=1) > 0).mean(),
                             "Trades": len(test_trades),
                         }
                     )
@@ -733,8 +977,11 @@ with tab_signal:
 
     recent_signal = pd.DataFrame(
         {
-            "Raw Signal": signal.reindex(common_idx),
-            "Held Leverage Weight": weight_s,
+            "Leverage Signal": signal.reindex(common_idx),
+            "Trend Signal": trend_signal.reindex(common_idx),
+            "KODEX Leverage Weight": weight_s["KODEX Leverage"],
+            "KODEX 200 Weight": weight_s["KODEX 200"],
+            "Cash Weight": weight_s["Cash"],
             "KODEX 200": kodex_close.reindex(common_idx),
             f"MA{ma_window}": ma.reindex(common_idx),
             f"RV{vol_window}": realized_vol.reindex(common_idx),
@@ -752,7 +999,7 @@ with tab_trades:
         shown["Fee Cost"] = shown["Fee Cost"].map(lambda x: f"{x:.4f}")
         shown["NAV"] = shown["NAV"].map(lambda x: f"{x:.4f}")
         st.dataframe(shown, use_container_width=True, hide_index=True)
-        st.download_button("Trade Log CSV", trade_log.to_csv(index=False).encode("utf-8-sig"), "kodex_onoff_v5_trades.csv", "text/csv")
+        st.download_button("Trade Log CSV", trade_log.to_csv(index=False).encode("utf-8-sig"), "kodex_onoff_v1_trades.csv", "text/csv")
 
 with tab_monthly:
     monthly_strategy = nav_s.resample("M").last().pct_change().dropna()
@@ -768,4 +1015,4 @@ with tab_monthly:
     pivot["Yearly"] = (1 + monthly_strategy).groupby(monthly_strategy.index.year).prod() - 1
     st.dataframe(pivot.map(lambda x: f"{x:.1%}" if pd.notna(x) else "-"), use_container_width=True)
     render_static_line(monthly * 100, "Monthly Strategy vs KODEX", "%", 3.0, True)
-    st.download_button("Monthly Returns CSV", monthly.reset_index().rename(columns={"index": "Date"}).to_csv(index=False).encode("utf-8-sig"), "kodex_onoff_v5_monthly.csv", "text/csv")
+    st.download_button("Monthly Returns CSV", monthly.reset_index().rename(columns={"index": "Date"}).to_csv(index=False).encode("utf-8-sig"), "kodex_onoff_v1_monthly.csv", "text/csv")

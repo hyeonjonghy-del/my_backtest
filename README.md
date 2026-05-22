@@ -16,8 +16,10 @@ streamlit run main.py
 | Keep | KOSPI 200 Momentum v3 | `pages/1_KOSPI_Momentum_v3.py` | Practical KOSPI momentum version |
 | Keep | S&P 500 Momentum v3 | `pages/2_SP500_Momentum_v3.py` | Practical S&P 500 momentum version |
 | Keep | KODEX 200 Bull/Bear v5 | `pages/3_korea_bull_bear_app_v5.py` | Practical Korea bull/bear version |
+| Review | KODEX 200 / Leverage Vol Target Experiment | `pages/3_korea_vol_target_app_v1.py` | SOXX/SOXL volatility-target logic applied to KODEX |
 | Keep | SPY / UPRO Bull/Bear v3 | `pages/4_us_bull_bear_app_v3.py` | Practical US bull/bear version |
 | Keep | SOXX / SOXL Vol Target | `pages/5_soxx_soxl_vol_target_app.py` | Semiconductor aggressive satellite |
+| Review | SOXX / SOXL ON-OFF Experiment | `pages/5_soxx_soxl_onoff_app_v1.py` | KODEX ON/OFF logic applied to SOXX/SOXL |
 | Keep | QQQ / TQQQ Vol Target | `pages/6_qqq_tqqq_vol_target_app.py` | Nasdaq growth satellite |
 | Keep | Dividend Screener | `pages/7_dividend_screener.py` | Supporting screener |
 | Keep | Chart Doctor Bluechip | `pages/8_chartdoctor_bluechip.py` | Research strategy |

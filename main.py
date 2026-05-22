@@ -31,13 +31,6 @@ STRATEGIES = [
         "note": "Use v5 as the practical Korea bull/bear strategy.",
     },
     {
-        "page": "3_korea_vol_target_app_v1.py",
-        "name": "KODEX 200 / Leverage Vol Target Experiment",
-        "role": "Cross-apply experiment",
-        "decision": "Review",
-        "note": "Applies the SOXX/SOXL volatility-target logic to KODEX 200 and KODEX Leverage.",
-    },
-    {
         "page": "4_us_bull_bear_app_v3.py",
         "name": "SPY / UPRO Bull/Bear v3",
         "role": "Defensive / regime candidate",
@@ -50,13 +43,6 @@ STRATEGIES = [
         "role": "Aggressive satellite",
         "decision": "Keep",
         "note": "Keep as a small semiconductor satellite sleeve.",
-    },
-    {
-        "page": "5_soxx_soxl_onoff_app_v1.py",
-        "name": "SOXX / SOXL ON-OFF Experiment",
-        "role": "Cross-apply experiment",
-        "decision": "Review",
-        "note": "Applies the KODEX ON/OFF and high-volatility fallback logic to SOXX and SOXL.",
     },
     {
         "page": "6_qqq_tqqq_vol_target_app.py",
@@ -94,13 +80,11 @@ st.caption("A simplified list of strategies to keep, replace, or review.")
 page_count = len(list(PAGES_DIR.glob("*.py"))) if PAGES_DIR.exists() else 0
 keep_count = sum(1 for item in STRATEGIES if item["decision"] == "Keep")
 satellite_count = sum(1 for item in STRATEGIES if "satellite" in item["role"].lower())
-experiment_count = sum(1 for item in STRATEGIES if "experiment" in item["role"].lower())
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 c1.metric("Current pages", page_count)
 c2.metric("Keep", keep_count)
 c3.metric("Satellite sleeves", satellite_count)
-c4.metric("Experiments", experiment_count)
 
 st.markdown("### Strategy List")
 st.dataframe(
@@ -121,10 +105,10 @@ st.dataframe(
 st.markdown("### Next Questions")
 st.markdown(
     """
-1. Compare the original strategy and the cross-applied experiment for each asset pair.
-2. Decide whether the experiment is only research, or whether it deserves a permanent allocation candidate slot.
-3. Confirm the simplified strategy set.
-4. Decide target allocation by strategy role: core, defensive, growth, and satellite.
+1. Confirm the simplified strategy set.
+2. Decide target allocation by strategy role: core, defensive, growth, and satellite.
+3. Add a simple allocation dashboard.
+4. Improve management only after the strategy set and weights are final.
     """
 )
 

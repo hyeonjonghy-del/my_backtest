@@ -38,7 +38,7 @@ st.set_page_config(page_title="QQQ/TQQQ Vol Target Backtest", page_icon="US", la
 st.title("QQQ / TQQQ Volatility Target Backtest")
 st.caption(
     "Default: QQQ MA30 > MA200, target volatility 35%, TQQQ cap 45%, "
-    "max QQQ-equivalent risk exposure 1.4x, 30% QQQ in bear regimes."
+    "max QQQ-equivalent risk exposure 1.8x, 30% QQQ in bear regimes."
 )
 
 
@@ -244,7 +244,7 @@ with st.sidebar:
     st.header("Settings")
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start", datetime(2011, 1, 1))
+        start_date = st.date_input("Start", datetime(2016, 5, 12))
     with col2:
         end_date = st.date_input("End", datetime.today())
     st.subheader("Trend Filter")
@@ -255,12 +255,12 @@ with st.sidebar:
     vol_window = st.slider("Volatility window", 10, 80, 20, 5)
     target_vol = st.slider("Target volatility (%)", 10, 80, 35, 5) / 100
     tqqq_cap = st.slider("TQQQ max weight (%)", 0, 80, 45, 5) / 100
-    max_risk_exposure = st.slider("Max risk exposure", 0.5, 2.0, 1.4, 0.1)
+    max_risk_exposure = st.slider("Max risk exposure", 0.5, 2.0, 1.8, 0.1)
     allocation_mode = st.selectbox("Allocation mode", ["Risk-adjusted", "Capital-first", "Fixed bull weights"], index=0)
     st.subheader("Bear / Trading")
     bear_qqq = st.slider("Bear-regime QQQ weight (%)", 0, 100, 30, 5) / 100
     rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=0, horizontal=True)
-    cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.10, step=0.01) / 100
+    cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.25, step=0.01) / 100
     st.subheader("Execution")
     account_value = st.number_input("Account value ($)", min_value=0.0, value=10000.0, step=1000.0)
     current_qqq_shares = st.number_input("Current QQQ shares", min_value=0.0, value=0.0, step=1.0)

@@ -23,6 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+YFINANCE_CACHE = ROOT / "data" / "yfinance-cache"
+YFINANCE_CACHE.mkdir(parents=True, exist_ok=True)
+
 KODEX_200 = "069500"
 KODEX_LEVERAGE = "122630"
 TRADING_DAYS = 252
@@ -52,6 +55,13 @@ def finite_return(ret: pd.Series) -> pd.Series:
 
 
 def load_krx_ohlcv(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
+    try:
+        import yfinance as yf
+
+        yf.set_tz_cache_location(str(YFINANCE_CACHE))
+    except Exception:
+        pass
+
     from pykrx import stock
 
     raw = stock.get_market_ohlcv_by_date(start_str, end_str, ticker)

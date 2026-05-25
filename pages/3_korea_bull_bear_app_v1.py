@@ -341,6 +341,43 @@ def portfolio_turnover(new_weights: pd.Series, old_weights: pd.Series) -> float:
     return float((new_weights[tradable_assets] - old_weights[tradable_assets]).abs().sum())
 
 
+def format_allocation(weights: pd.Series) -> str:
+    ordered_assets = ["KODEX Leverage", "KODEX 200", "Cash"]
+    parts = []
+    for asset in ordered_assets:
+        if asset in weights.index:
+            parts.append(f"{asset} {float(weights[asset]):.0%}")
+    return ", ".join(parts)
+
+
+def portfolio_trade_row(
+    date: pd.Timestamp,
+    execution: str,
+    old_weights: pd.Series,
+    new_weights: pd.Series,
+    turnover: float,
+    fee_cost: float,
+    nav: float,
+) -> dict[str, object]:
+    return {
+        "Date": date.date(),
+        "Execution": execution,
+        "Before Allocation": format_allocation(old_weights),
+        "After Allocation": format_allocation(new_weights),
+        "Old KODEX Leverage": float(old_weights.get("KODEX Leverage", 0.0)),
+        "Old KODEX 200": float(old_weights.get("KODEX 200", 0.0)),
+        "Old Cash": float(old_weights.get("Cash", 0.0)),
+        "New KODEX Leverage": float(new_weights.get("KODEX Leverage", 0.0)),
+        "New KODEX 200": float(new_weights.get("KODEX 200", 0.0)),
+        "New Cash": float(new_weights.get("Cash", 0.0)),
+        "Old Weight": old_weights.drop("Cash", errors="ignore").sum(),
+        "New Weight": new_weights.drop("Cash", errors="ignore").sum(),
+        "Turnover": turnover,
+        "Fee Cost": fee_cost,
+        "NAV": nav,
+    }
+
+
 def backtest_portfolio_next_open(
     dates: pd.DatetimeIndex,
     target_weights: pd.DataFrame,
@@ -364,15 +401,7 @@ def backtest_portfolio_next_open(
             before_fee = nav
             nav *= 1 - min(max(fee_rate * turnover, 0.0), 0.99)
             trades.append(
-                {
-                    "Date": date.date(),
-                    "Execution": "Next open",
-                    "Old Weight": prev_weights.drop("Cash").sum(),
-                    "New Weight": new_weights.drop("Cash").sum(),
-                    "Turnover": turnover,
-                    "Fee Cost": before_fee - nav,
-                    "NAV": nav,
-                }
+                portfolio_trade_row(date, "Next open", prev_weights, new_weights, turnover, before_fee - nav, nav)
             )
         prev_weights = new_weights
         nav *= 1 + float((prev_weights * ret_oc.loc[date, assets]).sum())
@@ -406,15 +435,7 @@ def backtest_portfolio_after_close_fill(
             before_fee = nav
             nav *= 1 - min(max(fee_rate * intraday_turnover, 0.0), 0.99)
             trades.append(
-                {
-                    "Date": date.date(),
-                    "Execution": "Next open residual",
-                    "Old Weight": open_weights.drop("Cash").sum(),
-                    "New Weight": intraday_target.drop("Cash").sum(),
-                    "Turnover": intraday_turnover,
-                    "Fee Cost": before_fee - nav,
-                    "NAV": nav,
-                }
+                portfolio_trade_row(date, "Next open residual", open_weights, intraday_target, intraday_turnover, before_fee - nav, nav)
             )
         nav *= 1 + float((intraday_target * ret_oc.loc[date, assets]).sum())
 
@@ -425,15 +446,7 @@ def backtest_portfolio_after_close_fill(
             before_fee = nav
             nav *= 1 - min(max(fee_rate * close_turnover, 0.0), 0.99)
             trades.append(
-                {
-                    "Date": date.date(),
-                    "Execution": "After-close fixed close",
-                    "Old Weight": intraday_target.drop("Cash").sum(),
-                    "New Weight": close_weights.drop("Cash").sum(),
-                    "Turnover": close_turnover,
-                    "Fee Cost": before_fee - nav,
-                    "NAV": nav,
-                }
+                portfolio_trade_row(date, "After-close fixed close", intraday_target, close_weights, close_turnover, before_fee - nav, nav)
             )
 
         open_weights = close_weights
@@ -464,15 +477,7 @@ def backtest_portfolio_same_close(
             before_fee = nav
             nav *= 1 - min(max(fee_rate * turnover, 0.0), 0.99)
             trades.append(
-                {
-                    "Date": date.date(),
-                    "Execution": "Ideal same close",
-                    "Old Weight": prev_weights.drop("Cash").sum(),
-                    "New Weight": new_weights.drop("Cash").sum(),
-                    "Turnover": turnover,
-                    "Fee Cost": before_fee - nav,
-                    "NAV": nav,
-                }
+                portfolio_trade_row(date, "Ideal same close", prev_weights, new_weights, turnover, before_fee - nav, nav)
             )
         prev_weights = new_weights
         nav_rows.append(nav)
@@ -994,8 +999,34 @@ with tab_trades:
         st.info("No trades in the selected period.")
     else:
         shown = trade_log.copy()
-        for col in ["Old Weight", "New Weight", "Turnover"]:
-            shown[col] = shown[col].map(lambda x: f"{x:.1%}")
+        pct_cols = [
+            "Old Weight",
+            "New Weight",
+            "Old KODEX Leverage",
+            "Old KODEX 200",
+            "Old Cash",
+            "New KODEX Leverage",
+            "New KODEX 200",
+            "New Cash",
+            "Turnover",
+        ]
+        for col in pct_cols:
+            if col in shown.columns:
+                shown[col] = shown[col].map(lambda x: f"{x:.1%}")
+        display_cols = [
+            "Date",
+            "Execution",
+            "Before Allocation",
+            "After Allocation",
+            "Turnover",
+            "Fee Cost",
+            "NAV",
+        ]
+        display_cols += [col for col in shown.columns if col not in display_cols + ["Old Weight", "New Weight"]]
+        shown = shown[[col for col in display_cols if col in shown.columns]]
+        for col in ["Old Weight", "New Weight"]:
+            if col in shown.columns:
+                shown[col] = shown[col].map(lambda x: f"{x:.1%}")
         shown["Fee Cost"] = shown["Fee Cost"].map(lambda x: f"{x:.4f}")
         shown["NAV"] = shown["NAV"].map(lambda x: f"{x:.4f}")
         st.dataframe(shown, use_container_width=True, hide_index=True)

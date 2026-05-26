@@ -483,7 +483,7 @@ KRX API → WISE Index API 순서로 시도하여 반기별 KOSPI 200 구성종�
 
     transaction_cost = st.slider(
         "거래비용 (왕복, %)",
-        min_value=0.0, max_value=1.0, value=0.3, step=0.1,
+        min_value=0.0, max_value=1.0, value=0.1, step=0.1,
         help="매수+매도 합산 수수료. 보통 0.3~0.5% 수준"
     ) / 100
 
@@ -601,6 +601,8 @@ if run_btn:
                     rebalance_dates.append(last_day)
 
     rebalance_dates = sorted(set(rebalance_dates))
+    if rebalance_dates and rebalance_dates[-1] < end_dt:
+        rebalance_dates.append(end_dt)
 
     if len(rebalance_dates) < 2:
         st.error("❌ 리밸런싱 날짜가 2개 미만입니다. 시작 연도나 주기를 조정해주세요.")

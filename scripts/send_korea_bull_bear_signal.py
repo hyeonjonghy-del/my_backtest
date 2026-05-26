@@ -25,6 +25,8 @@ if str(ROOT) not in sys.path:
 
 YFINANCE_CACHE = ROOT / "data" / "yfinance-cache"
 YFINANCE_CACHE.mkdir(parents=True, exist_ok=True)
+LOG_DIR = ROOT / "data" / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 KODEX_200 = "069500"
 KODEX_LEVERAGE = "122630"
@@ -167,13 +169,22 @@ def get_telegram_config() -> tuple[str, str]:
     return token, chat_id
 
 
+def write_log(text: str) -> None:
+    now = datetime.now(KST)
+    log_path = LOG_DIR / f"kodex_signal_{now:%Y%m%d}.log"
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(f"[{now:%Y-%m-%d %H:%M:%S}] {text}\n")
+
+
 def send_telegram(text: str) -> None:
     token, chat_id = get_telegram_config()
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     with urllib.request.urlopen(req, timeout=20) as response:
-        response.read()
+        payload = json.loads(response.read().decode("utf-8"))
+    if not payload.get("ok"):
+        raise RuntimeError(f"Telegram sendMessage failed: {payload}")
 
 
 def calculate_message(now: datetime) -> str:
@@ -266,8 +277,10 @@ def calculate_message(now: datetime) -> str:
 def main() -> int:
     now = datetime.now(KST)
     try:
+        write_log("Start KODEX notifier")
         message = calculate_message(now)
         send_telegram(message)
+        write_log("Telegram message sent successfully")
         print(message)
         return 0
     except Exception as exc:
@@ -279,8 +292,9 @@ def main() -> int:
         )
         try:
             send_telegram(error_message)
+            write_log(f"Failure message sent to Telegram: {exc}")
         except Exception:
-            pass
+            write_log(f"Failure message could not be sent to Telegram: {exc}")
         print(error_message, file=sys.stderr)
         return 1
 

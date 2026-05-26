@@ -214,7 +214,7 @@ def get_universe_at(date: pd.Timestamp, universe_dict: dict) -> list:
 # 3. 주가 데이터 다운로드 (yfinance)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600 * 6, show_spinner=False)
-def download_price_data(tickers_tuple: tuple, start_str: str) -> pd.DataFrame:
+def download_price_data(tickers_tuple: tuple, start_str: str, end_str: str) -> pd.DataFrame:
     """yfinance로 종목 주가 일괄 다운로드"""
     try:
         import yfinance as yf
@@ -243,6 +243,7 @@ def download_price_data(tickers_tuple: tuple, start_str: str) -> pd.DataFrame:
             raw = yf.download(
                 batch,
                 start=start_str,
+                end=end_str,
                 auto_adjust=True,
                 progress=False,
                 threads=True,
@@ -283,8 +284,15 @@ def download_price_data(tickers_tuple: tuple, start_str: str) -> pd.DataFrame:
 with st.sidebar:
     st.header("⚙️ 전략 설정")
 
+    today_date = pd.Timestamp.today().date()
     start_year = st.number_input(
-        "백테스트 시작 연도", value=2005, min_value=2000, max_value=2023
+        "백테스트 시작 연도", value=2020, min_value=2000, max_value=today_date.year
+    )
+    end_date = st.date_input(
+        "백테스트 종료일",
+        value=today_date,
+        min_value=pd.Timestamp("2000-01-01").date(),
+        max_value=today_date,
     )
     top_n = st.number_input(
         "보유 종목 수 (Top N)", value=20, min_value=1, max_value=100
@@ -315,9 +323,9 @@ with st.sidebar:
         help="S&P500 지수가 12개월 전보다 낮으면 전액 현금 보유"
     )
     transaction_cost = st.slider(
-        "거래비용 (왕복, %)",
-        min_value=0.0, max_value=1.0, value=0.1, step=0.05,
-        help="미국 주식은 수수료가 낮아 0.05~0.1% 수준"
+        "거래비용 (1회, %)",
+        min_value=0.0, max_value=1.0, value=0.25, step=0.05,
+        help="매수 또는 매도 1회 기준 비용입니다. 왕복 거래는 2회 비용으로 반영됩니다."
     ) / 100
 
     st.markdown("---")
@@ -328,6 +336,11 @@ with st.sidebar:
 # 5. 메인 백테스트 로직
 # ─────────────────────────────────────────────────────────
 if run_btn:
+
+    requested_end_dt = pd.to_datetime(end_date)
+    if requested_end_dt < pd.to_datetime(f"{start_year}-01-01"):
+        st.error("❌ 종료일은 백테스트 시작일 이후로 설정해주세요.")
+        st.stop()
 
     # ── 5-1. S&P500 유니버스 수집 ───────────────────────
     with st.spinner("Wikipedia에서 S&P500 구성종목 수집 중..."):
@@ -347,13 +360,19 @@ if run_btn:
 
     # ── 5-3. 주가 다운로드 ──────────────────────────────
     fetch_start = f"{start_year - ceil(momentum_window/12) - 1}-01-01"
-    st.info(f"📥 주가 데이터 다운로드 시작일: {fetch_start}")
+    fetch_end = (requested_end_dt + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    st.info(f"📥 주가 데이터 다운로드 기간: {fetch_start} ~ {requested_end_dt.date()}")
 
     with st.spinner("주가 데이터 다운로드 중... (첫 실행 시 시간이 걸립니다)"):
-        df_price = download_price_data(all_tickers, fetch_start)
+        df_price = download_price_data(all_tickers, fetch_start, fetch_end)
 
     if df_price.empty:
         st.error("❌ 주가 데이터를 가져오지 못했습니다.")
+        st.stop()
+
+    df_price = df_price[df_price.index <= requested_end_dt]
+    if df_price.empty:
+        st.error("❌ 종료일 이전의 유효한 주가 데이터가 없습니다.")
         st.stop()
 
     st.success(
@@ -365,9 +384,9 @@ if run_btn:
     sp500_index = None
     try:
         import yfinance as yf
-        sp500_raw = yf.download('^GSPC', start=fetch_start, auto_adjust=True, progress=False)['Close']
+        sp500_raw = yf.download('^GSPC', start=fetch_start, end=fetch_end, auto_adjust=True, progress=False)['Close']
         if len(sp500_raw) > 100:
-            sp500_index = sp500_raw
+            sp500_index = sp500_raw[sp500_raw.index <= requested_end_dt]
             st.success("✅ S&P500 지수 다운로드 완료")
     except Exception:
         st.warning("⚠️ S&P500 지수 다운로드 실패. 듀얼 모멘텀 없이 진행합니다.")
@@ -379,7 +398,7 @@ if run_btn:
         st.warning(f"⚠️ 시작일을 {data_avail_start.strftime('%Y-%m')}로 자동 조정합니다.")
         start_dt = data_avail_start
 
-    end_dt   = df_price.index[-1]
+    end_dt   = min(df_price.index[-1], requested_end_dt)
     all_days = df_price.index
 
     # ── 5-6. 리밸런싱 날짜 생성 ─────────────────────────
@@ -399,19 +418,25 @@ if run_btn:
         st.error("❌ 리밸런싱 날짜가 2개 미만입니다.")
         st.stop()
 
+    period_dates = list(rebalance_dates)
+    if end_dt > period_dates[-1]:
+        period_dates.append(end_dt)
+    period_dates = sorted(set(period_dates))
+
     # ── 5-7. 백테스트 루프 ──────────────────────────────
     portfolio_returns_list = []
     portfolio_weight_list = []
     history_records        = []
     cash_periods           = 0
+    previous_position      = "cash"
 
     prog2   = st.progress(0)
     status2 = st.empty()
-    total   = len(rebalance_dates) - 1
+    total   = len(period_dates) - 1
 
     for i in range(total):
-        curr_date = rebalance_dates[i]
-        next_date = rebalance_dates[i + 1]
+        curr_date = period_dates[i]
+        next_date = period_dates[i + 1]
 
         prog2.progress((i + 1) / total)
         status2.text(
@@ -450,8 +475,11 @@ if run_btn:
                 if curr_loc + 1 < len(all_days):
                     entry_date = all_days[curr_loc + 1]
                     cash_ret = pd.Series(0.0, index=df_price.loc[entry_date:next_date].index)
+                    if previous_position == "market" and transaction_cost > 0 and not cash_ret.empty:
+                        cash_ret.iloc[0] -= transaction_cost
                     portfolio_returns_list.append(cash_ret)
                     portfolio_weight_list.append(pd.Series(0.0, index=cash_ret.index))
+                previous_position = "cash"
                 continue
 
             # ── 당시 S&P500 구성종목 ──────────────────────
@@ -528,7 +556,9 @@ if run_btn:
 
             # 거래비용 반영
             if transaction_cost > 0 and not port_ret.empty:
-                port_ret.iloc[0] -= transaction_cost
+                transaction_events = 1 if previous_position == "cash" else 2
+                port_ret.iloc[0] -= transaction_cost * transaction_events
+            previous_position = "market"
 
             portfolio_returns_list.append(port_ret)
             portfolio_weight_list.append(pd.Series(1.0, index=port_ret.index))
@@ -587,7 +617,7 @@ if run_btn:
     # ─────────────────────────────────────────────────────
     st.markdown("## 📊 Backtest Results — ✅ Survivorship Bias Removed")
 
-    cost_label = f"Transaction cost {transaction_cost*100:.2f}%"
+    cost_label = f"Transaction cost {transaction_cost*100:.2f}% per trade"
     mom_label  = f"{momentum_window}M (excl. last 1M)" if skip_recent else f"{momentum_window}M"
     dual_label = "Dual Momentum ON" if use_dual_momentum else "Dual Momentum OFF"
     st.caption(
@@ -624,9 +654,9 @@ if run_btn:
                 cash_rows = history_df_tmp[history_df_tmp['티커'] == '💵 CASH']['리밸런싱일'].tolist()
                 for cr in cash_rows:
                     cr_dt = pd.to_datetime(cr)
-                    cr_idx = rebalance_dates.index(cr_dt) if cr_dt in rebalance_dates else -1
-                    if cr_idx >= 0 and cr_idx + 1 < len(rebalance_dates):
-                        cash_periods_list.append((cr_dt, rebalance_dates[cr_idx + 1]))
+                    cr_idx = period_dates.index(cr_dt) if cr_dt in period_dates else -1
+                    if cr_idx >= 0 and cr_idx + 1 < len(period_dates):
+                        cash_periods_list.append((cr_dt, period_dates[cr_idx + 1]))
 
         # S&P500 드로다운 계산
         bm_drawdown = None

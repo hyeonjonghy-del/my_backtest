@@ -229,7 +229,7 @@ def calculate_message(now: datetime) -> str:
     intraday_weights = target_weights.shift(1).reindex(common_idx).fillna(0.0).iloc[-1]
     full_target = target_weights.iloc[-1]
     after_close_target = intraday_weights + (full_target - intraday_weights) * DEFAULTS["after_close_fill_rate"]
-    after_close_target["Cash"] = (1.0 - after_close_target.drop("Cash").sum()).clip(lower=0.0)
+    after_close_target["Cash"] = max(1.0 - float(after_close_target.drop("Cash").sum()), 0.0)
     residual = full_target - after_close_target
     turnover = float((after_close_target.drop("Cash") - intraday_weights.drop("Cash")).abs().sum())
 

@@ -482,18 +482,18 @@ with st.sidebar:
     st.subheader("Regime Blend")
     strong_spread = st.slider("Strong Bull MA spread (%)", 0, 20, 5, 1) / 100
     weak_vol_cutoff = st.slider("Weak Bull if volatility above (%)", 20, 100, 55, 5) / 100
-    strong_qqq_risk_share = st.slider("Strong Bull QQQ risk share (%)", 0, 60, 20, 5) / 100
-    strong_cash_sweep = st.slider("Strong Bull cash sweep to QQQ (%)", 0, 100, 100, 5) / 100
+    strong_qqq_risk_share = st.slider("Strong Bull QQQ risk share (%)", 0, 60, 60, 5) / 100
+    strong_cash_sweep = st.slider("Strong Bull cash sweep to QQQ (%)", 0, 100, 50, 5) / 100
     weak_risk_multiplier = st.slider("Weak Bull risk multiplier (%)", 30, 100, 75, 5) / 100
-    weak_qqq_risk_share = st.slider("Weak Bull QQQ risk share (%)", 40, 100, 80, 5) / 100
+    weak_qqq_risk_share = st.slider("Weak Bull QQQ risk share (%)", 40, 100, 60, 5) / 100
     weak_tqqq_cap = st.slider("Weak Bull TQQQ max weight (%)", 0, 40, 15, 5) / 100
-    weak_cash_sweep = st.slider("Weak Bull cash sweep to QQQ (%)", 0, 100, 25, 5) / 100
+    weak_cash_sweep = st.slider("Weak Bull cash sweep to QQQ (%)", 0, 100, 20, 5) / 100
 
     st.subheader("Turnaround Full-Bet")
-    turnaround_dd_trigger = st.slider("Turnaround drawdown trigger (%)", 10, 50, 20, 5) / 100
+    turnaround_dd_trigger = st.slider("Turnaround drawdown trigger (%)", 10, 50, 10, 5) / 100
     turnaround_tqqq_weight = st.slider("Turnaround TQQQ weight (%)", 0, 80, 50, 5) / 100
-    turnaround_exit_fast = st.slider("Turnaround exit fast MA", 3, 20, 5, 1)
-    turnaround_exit_slow = st.slider("Turnaround exit slow MA", 10, 60, 20, 5)
+    turnaround_exit_fast = st.slider("Turnaround exit fast MA", 3, 20, 10, 1)
+    turnaround_exit_slow = st.slider("Turnaround exit slow MA", 10, 60, 60, 5)
     turnaround_exit_confirm = st.slider("Exit confirmation days", 1, 5, 2, 1)
 
     st.subheader("Bear / Trading")

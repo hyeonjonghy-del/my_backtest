@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
@@ -81,6 +82,26 @@ def load_krx_ohlcv(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
     )
     df = normalize_index(df).dropna(how="all")
     return df.where(df > 0)
+
+
+def load_krx_ohlcv_with_retry(ticker: str, start_str: str, end_str: str, attempts: int = 5, delay_seconds: int = 15) -> pd.DataFrame:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            data = load_krx_ohlcv(ticker, start_str, end_str)
+            if not data.empty:
+                if attempt > 1:
+                    write_log(f"Loaded {ticker} on attempt {attempt}")
+                return data
+            write_log(f"{ticker} returned empty data on attempt {attempt}")
+        except Exception as exc:
+            last_error = exc
+            write_log(f"{ticker} load failed on attempt {attempt}: {exc!r}")
+        if attempt < attempts:
+            time.sleep(delay_seconds)
+    if last_error is not None:
+        raise last_error
+    return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
 
 def build_signal(close: pd.Series, ma_window: int, vol_price: pd.Series, vol_window: int, vol_threshold: float):
@@ -187,14 +208,31 @@ def send_telegram(text: str) -> None:
         raise RuntimeError(f"Telegram sendMessage failed: {payload}")
 
 
+def send_telegram_with_retry(text: str, attempts: int = 3, delay_seconds: int = 5) -> None:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            send_telegram(text)
+            if attempt > 1:
+                write_log(f"Telegram message sent on attempt {attempt}")
+            return
+        except Exception as exc:
+            last_error = exc
+            write_log(f"Telegram send failed on attempt {attempt}: {exc!r}")
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+    if last_error is not None:
+        raise last_error
+
+
 def calculate_message(now: datetime) -> str:
     today = now.date()
     end_str = today.strftime("%Y%m%d")
     warmup_days = max(DEFAULTS["ma_window"], DEFAULTS["vol_window"], 120) * 3
     extended_start = DEFAULTS["start_date"] - timedelta(days=warmup_days)
 
-    kodex_200 = load_krx_ohlcv(KODEX_200, extended_start.strftime("%Y%m%d"), end_str)
-    kodex_lev = load_krx_ohlcv(KODEX_LEVERAGE, extended_start.strftime("%Y%m%d"), end_str)
+    kodex_200 = load_krx_ohlcv_with_retry(KODEX_200, extended_start.strftime("%Y%m%d"), end_str)
+    kodex_lev = load_krx_ohlcv_with_retry(KODEX_LEVERAGE, extended_start.strftime("%Y%m%d"), end_str)
     if kodex_200.empty or kodex_lev.empty:
         raise RuntimeError("KODEX ETF data could not be loaded.")
 
@@ -279,7 +317,7 @@ def main() -> int:
     try:
         write_log("Start KODEX notifier")
         message = calculate_message(now)
-        send_telegram(message)
+        send_telegram_with_retry(message)
         write_log("Telegram message sent successfully")
         print(message)
         return 0
@@ -291,7 +329,7 @@ def main() -> int:
             f"오류: {exc}"
         )
         try:
-            send_telegram(error_message)
+            send_telegram_with_retry(error_message)
             write_log(f"Failure message sent to Telegram: {exc}")
         except Exception:
             write_log(f"Failure message could not be sent to Telegram: {exc}")

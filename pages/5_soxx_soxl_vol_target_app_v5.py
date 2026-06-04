@@ -480,8 +480,8 @@ with st.sidebar:
     st.subheader("Turnaround Full-Bet")
     turnaround_dd_trigger = st.slider("Turnaround drawdown trigger (%)", 10, 50, 20, 5) / 100
     turnaround_soxl_weight = st.slider("Turnaround SOXL weight (%)", 0, 80, 50, 5) / 100
-    turnaround_exit_fast = st.slider("Turnaround exit fast MA", 3, 20, 5, 1)
-    turnaround_exit_slow = st.slider("Turnaround exit slow MA", 10, 60, 20, 5)
+    turnaround_exit_fast = st.slider("Turnaround exit fast MA", 3, 20, 10, 1)
+    turnaround_exit_slow = st.slider("Turnaround exit slow MA", 10, 60, 60, 5)
     turnaround_exit_confirm = st.slider("Exit confirmation days", 1, 5, 2, 1)
 
     st.subheader("Bear / Trading")

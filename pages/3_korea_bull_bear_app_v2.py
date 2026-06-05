@@ -185,7 +185,7 @@ source = replace_once(
     source,
     'signal, trend_signal, ma, realized_vol = build_signal(kodex_close, ma_window, vol_price, vol_window, vol_threshold)',
     'signal, trend_signal, ma, realized_vol = build_signal(kodex_close, ma_window, vol_price, vol_window, low_rv_threshold)',
-    "signal call",
+    "main signal call",
 )
 
 source = replace_once(
@@ -214,15 +214,106 @@ source = replace_once(
     "status caption",
 )
 
+source = replace_once(
+    source,
+    '''        threshold_values = sorted(set([45, 50, 55, vol_threshold_pct]))
+        records = []
+        for ma_w in ma_values:
+            for vol_w in vol_values:
+                for threshold_pct in threshold_values:
+                    sig, trend_sig, _, test_rv = build_signal(kodex_close, ma_w, vol_price, vol_w, threshold_pct / 100)
+                    test_targets = build_target_weights(
+                        common_idx,
+                        sig,
+                        trend_sig,
+                        test_rv,
+                        leverage_weight,
+                        use_high_vol_fallback,
+                        high_vol_kodex_weight,
+                        threshold_pct / 100,
+                    )''',
+    '''        low_threshold_values = sorted(set([40, 45, 50, low_rv_threshold_pct]))
+        high_threshold_values = sorted(set([60, 65, 70, high_rv_threshold_pct]))
+        records = []
+        for ma_w in ma_values:
+            for vol_w in vol_values:
+                for low_threshold_pct in low_threshold_values:
+                    for high_threshold_pct in high_threshold_values:
+                        if low_threshold_pct >= high_threshold_pct:
+                            continue
+                        sig, trend_sig, _, test_rv = build_signal(kodex_close, ma_w, vol_price, vol_w, low_threshold_pct / 100)
+                        test_targets = build_target_weights(
+                            common_idx,
+                            sig,
+                            trend_sig,
+                            test_rv,
+                            low_threshold_pct / 100,
+                            high_threshold_pct / 100,
+                            mid_lev_weight,
+                            mid_kodex_weight,
+                        )''',
+    "sensitivity setup",
+)
+
+source = replace_once(
+    source,
+    '''                    if execution_model == "Ideal same-close":
+                        test_nav, test_weight, test_trades = backtest_portfolio_same_close(common_idx, test_targets, ret_cc, fee)
+                    elif execution_model == "After-close fill + next-open residual":
+                        test_nav, test_weight, test_trades = backtest_portfolio_after_close_fill(common_idx, test_targets, ret_co, ret_oc, fee, after_close_fill_pct / 100)
+                    else:
+                        test_nav, test_weight, test_trades = backtest_portfolio_next_open(common_idx, test_targets, ret_co, ret_oc, fee)
+                    m = calc_metrics(test_nav)
+                    records.append(
+                        {
+                            "MA": ma_w,
+                            "RV Window": vol_w,
+                            "RV Cap": threshold_pct / 100,
+                            "Execution": execution_model,''',
+    '''                        if execution_model == "Ideal same-close":
+                            test_nav, test_weight, test_trades = backtest_portfolio_same_close(common_idx, test_targets, ret_cc, fee)
+                        elif execution_model == "After-close fill + next-open residual":
+                            test_nav, test_weight, test_trades = backtest_portfolio_after_close_fill(common_idx, test_targets, ret_co, ret_oc, fee, after_close_fill_pct / 100)
+                        else:
+                            test_nav, test_weight, test_trades = backtest_portfolio_next_open(common_idx, test_targets, ret_co, ret_oc, fee)
+                        m = calc_metrics(test_nav)
+                        records.append(
+                            {
+                                "MA": ma_w,
+                                "RV Window": vol_w,
+                                "Low RV": low_threshold_pct / 100,
+                                "Mid RV": ((low_threshold_pct + high_threshold_pct) / 2) / 100,
+                                "High RV": high_threshold_pct / 100,
+                                "Execution": execution_model,''',
+    "sensitivity records",
+)
+
+source = replace_once(
+    source,
+    '''                    )
+        sensitivity = pd.DataFrame(records).sort_values(["Calmar", "CAGR"], ascending=False)
+        shown = sensitivity.copy()
+        for col in ["RV Cap", "CAGR", "MDD", "Total", "Exposure"]:''',
+    '''                        )
+        sensitivity = pd.DataFrame(records).sort_values(["Calmar", "CAGR"], ascending=False)
+        shown = sensitivity.copy()
+        for col in ["Low RV", "Mid RV", "High RV", "CAGR", "MDD", "Total", "Exposure"]:''',
+    "sensitivity formatting",
+)
+
+source = replace_once(
+    source,
+    '''            f"{vol_source} RV{vol_window}": realized_vol.reindex(common_idx) * 100,
+            "Vol Cap": pd.Series(vol_threshold_pct, index=common_idx),''',
+    '''            f"{vol_source} RV{vol_window}": realized_vol.reindex(common_idx) * 100,
+            "Low RV Tier": pd.Series(low_rv_threshold_pct, index=common_idx),
+            "Mid RV Split": pd.Series(mid_rv_threshold_pct, index=common_idx),
+            "High RV Tier": pd.Series(high_rv_threshold_pct, index=common_idx),''',
+    "vol chart",
+)
+
 source = source.replace('"kodex_onoff_v1_trades.csv"', '"kodex_onoff_v2_trades.csv"')
 source = source.replace('"kodex_onoff_v1_monthly.csv"', '"kodex_onoff_v2_monthly.csv"')
-source = source.replace('"RV Cap": threshold_pct / 100,', '"Low RV": threshold_pct / 100,')
-source = source.replace('"Vol Cap": pd.Series(vol_threshold_pct, index=common_idx),', '"Low RV Tier": pd.Series(low_rv_threshold_pct, index=common_idx),\n            "Mid RV Split": pd.Series(mid_rv_threshold_pct, index=common_idx),\n            "High RV Tier": pd.Series(high_rv_threshold_pct, index=common_idx),')
-source = source.replace('["RV Cap", "CAGR", "MDD", "Total", "Exposure"]', '["Low RV", "CAGR", "MDD", "Total", "Exposure"]')
-source = source.replace('vol_threshold_pct', 'low_rv_threshold_pct')
-source = source.replace('leverage_weight', 'mid_lev_weight')
-source = source.replace('use_high_vol_fallback', 'True')
-source = source.replace('high_vol_kodex_weight', 'mid_kodex_weight')
 
 exec_globals = {"__name__": "__main__", "__file__": str(source_path)}
 exec(compile(source, str(source_path) + "::v2", "exec"), exec_globals)

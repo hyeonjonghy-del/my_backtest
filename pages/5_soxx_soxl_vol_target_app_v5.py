@@ -266,11 +266,17 @@ def build_regime_signal(
     vol: pd.Series,
     strong_spread: float,
     weak_vol_cutoff: float,
+    lag_for_execution: bool = True,
 ) -> pd.Series:
-    bull = trend_signal.shift(1).fillna(False)
-    ma_spread = (fast_ma / slow_ma - 1).shift(1).replace([np.inf, -np.inf], np.nan)
-    vol_lag = vol.shift(1)
-    strong = bull & (ma_spread >= strong_spread) & (vol_lag <= weak_vol_cutoff)
+    if lag_for_execution:
+        bull = trend_signal.shift(1).fillna(False)
+        ma_spread = (fast_ma / slow_ma - 1).shift(1).replace([np.inf, -np.inf], np.nan)
+        signal_vol = vol.shift(1)
+    else:
+        bull = trend_signal.fillna(False)
+        ma_spread = (fast_ma / slow_ma - 1).replace([np.inf, -np.inf], np.nan)
+        signal_vol = vol
+    strong = bull & (ma_spread >= strong_spread) & (signal_vol <= weak_vol_cutoff)
     weak = bull & ~strong
     regime = pd.Series("Bear", index=trend_signal.index, dtype="object")
     regime.loc[weak] = "Weak Bull"
@@ -286,6 +292,7 @@ def build_turnaround_signal(
     exit_fast_window: int,
     exit_slow_window: int,
     exit_confirm_days: int,
+    lag_for_execution: bool = True,
 ) -> pd.Series:
     price_dd = price / price.cummax() - 1
     golden_cross = (fast_ma > slow_ma) & (fast_ma.shift(1) <= slow_ma.shift(1))
@@ -318,7 +325,9 @@ def build_turnaround_signal(
                 in_turnaround = False
                 exit_count = 0
 
-    return active.shift(1).fillna(False)
+    if lag_for_execution:
+        return active.shift(1).fillna(False)
+    return active.fillna(False)
 
 
 def build_strategy_weights(
@@ -480,8 +489,8 @@ with st.sidebar:
     st.subheader("Turnaround Full-Bet")
     turnaround_dd_trigger = st.slider("Turnaround drawdown trigger (%)", 10, 50, 20, 5) / 100
     turnaround_soxl_weight = st.slider("Turnaround SOXL weight (%)", 0, 80, 50, 5) / 100
-    turnaround_exit_fast = st.slider("Turnaround exit fast MA", 3, 20, 10, 1)
-    turnaround_exit_slow = st.slider("Turnaround exit slow MA", 10, 60, 60, 5)
+    turnaround_exit_fast = st.slider("Turnaround exit fast MA", 3, 20, 5, 1)
+    turnaround_exit_slow = st.slider("Turnaround exit slow MA", 10, 60, 20, 5)
     turnaround_exit_confirm = st.slider("Exit confirmation days", 1, 5, 2, 1)
 
     st.subheader("Bear / Trading")
@@ -564,6 +573,16 @@ turnaround_signal = build_turnaround_signal(
     turnaround_exit_slow,
     turnaround_exit_confirm,
 )
+close_turnaround_signal = build_turnaround_signal(
+    price,
+    fast_ma,
+    slow_ma,
+    turnaround_dd_trigger,
+    turnaround_exit_fast,
+    turnaround_exit_slow,
+    turnaround_exit_confirm,
+    lag_for_execution=False,
+)
 regime_signal = build_regime_signal(
     trend_signal,
     fast_ma,
@@ -571,6 +590,15 @@ regime_signal = build_regime_signal(
     vol,
     strong_spread,
     weak_vol_cutoff,
+)
+close_regime_signal = build_regime_signal(
+    trend_signal,
+    fast_ma,
+    slow_ma,
+    vol,
+    strong_spread,
+    weak_vol_cutoff,
+    lag_for_execution=False,
 )
 
 weights_full = build_strategy_weights(
@@ -594,6 +622,28 @@ weights_full = build_strategy_weights(
 weights = weights_full.reindex(common_idx).fillna(0.0)
 turnaround = turnaround_signal.reindex(common_idx).fillna(False)
 display_regime_signal = regime_signal.reindex(common_idx).where(~turnaround, "Turnaround Bull")
+close_turnaround = close_turnaround_signal.reindex(common_idx).fillna(False)
+close_display_regime_signal = close_regime_signal.reindex(common_idx).where(~close_turnaround, "Turnaround Bull")
+close_target_weights = pd.DataFrame(
+    [
+        calc_target_weight(
+            str(close_regime_signal.ffill().loc[date]),
+            bool(close_turnaround_signal.fillna(False).loc[date]),
+            vol.ffill().loc[date],
+            target_vol,
+            soxl_cap,
+            max_risk_exposure,
+            strong_soxx_risk_share,
+            weak_risk_multiplier,
+            weak_soxx_risk_share,
+            weak_soxl_cap,
+            turnaround_soxl_weight,
+            bear_soxx,
+        )
+        for date in common_idx
+    ],
+    index=common_idx,
+)
 ret_soxx = ret_soxx_full.reindex(common_idx).fillna(0.0)
 ret_soxl = ret_soxl_full.reindex(common_idx).fillna(0.0)
 strategy_ret = backtest(weights, ret_soxx, ret_soxl, cost_rate)
@@ -619,11 +669,11 @@ progress.empty()
 
 latest = weights.iloc[-1]
 latest_date = weights.index[-1].date()
-latest_turnaround = bool(turnaround_signal.reindex(weights.index).fillna(False).iloc[-1])
-latest_regime = str(display_regime_signal.ffill().iloc[-1])
+latest_turnaround = bool(close_turnaround_signal.reindex(weights.index).fillna(False).iloc[-1])
+latest_regime = str(close_display_regime_signal.ffill().iloc[-1])
 latest_vol = vol.reindex(weights.index).ffill().iloc[-1]
 next_target = calc_target_weight(
-    str(regime_signal.reindex(weights.index).ffill().iloc[-1]),
+    str(close_regime_signal.reindex(weights.index).ffill().iloc[-1]),
     latest_turnaround,
     latest_vol,
     target_vol,
@@ -653,7 +703,7 @@ execution_plan, target_cash = build_execution_plan(
 action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 
 st.success(
-    f"{action_label} | Next-open target from close signal ({latest_date}): {latest_regime} | "
+    f"{action_label} | Today's target for next open from close signal ({latest_date}): {latest_regime} | "
     f"SOXX {next_target['SOXX']:.1%}, SOXL {next_target['SOXL']:.1%}, Cash {1 - next_target.sum():.1%} | "
     f"SOXX {vol_window}D volatility {latest_vol:.1%}"
 )
@@ -767,10 +817,15 @@ with tab_signal:
             f"Exit MA{turnaround_exit_slow}": price.rolling(turnaround_exit_slow).mean().reindex(common_idx),
             "SOXX DD": price.reindex(common_idx) / price.reindex(common_idx).cummax() - 1,
             f"Vol{vol_window}": vol.reindex(common_idx),
-            "Regime": display_regime_signal,
-            "Turnaround": turnaround,
-            "SOXX Weight": weights["SOXX"],
-            "SOXL Weight": weights["SOXL"],
+            "Applied Regime": display_regime_signal,
+            "Target Regime": close_display_regime_signal,
+            "Applied Turnaround": turnaround,
+            "Target Turnaround": close_turnaround,
+            "Applied SOXX": weights["SOXX"],
+            "Applied SOXL": weights["SOXL"],
+            "Target SOXX": close_target_weights["SOXX"],
+            "Target SOXL": close_target_weights["SOXL"],
+            "Target Cash": (1 - close_target_weights.sum(axis=1)).clip(0, 1),
         }
     ).tail(30)
     st.dataframe(recent, use_container_width=True)

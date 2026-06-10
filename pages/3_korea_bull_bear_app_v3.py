@@ -1,10 +1,11 @@
 """KODEX 200 / KODEX Leverage ON/OFF strategy v3.
 
-This page tests a directional realized-volatility idea:
-- Total RV treats upside and downside volatility equally.
-- Downside RV treats only negative-return dispersion as the main risk filter.
-- Directional Balance also checks how much of total RV comes from downside RV.
-- Downside + Total Guard keeps downside RV as the main filter, but uses total RV as a guardrail.
+Directional realized-volatility experiment.
+
+Compared with v1, this version separates total, upside, and downside realized
+volatility. The default is intentionally conservative: downside volatility is
+the main risk filter, while total volatility remains a guardrail. KODEX 200
+fallback exposure is allowed only when downside risk is still acceptable.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ COLORS = {
     "strategy": "#0F766E",
     "kodex200": "#2563EB",
     "leverage": "#DC2626",
+    "cash": "#9CA3AF",
     "total": "#7C3AED",
     "upside": "#059669",
     "downside": "#B91C1C",
@@ -35,8 +37,8 @@ COLORS = {
 st.set_page_config(page_title="KODEX ON/OFF v3", page_icon="KR", layout="wide")
 st.title("KODEX 200 / Leverage ON-OFF Strategy v3")
 st.caption(
-    "Directional RV experiment: separate upside volatility from downside volatility "
-    "so a strong upside move is not automatically treated as the same risk as downside turbulence."
+    "Directional RV experiment: separate upside volatility from downside volatility. "
+    "Fallback exposure is now allowed only when downside risk remains acceptable."
 )
 
 
@@ -120,11 +122,15 @@ def format_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return shown
 
 
-def plot_lines(data: pd.DataFrame, title: str, ylabel: str = "", percent_axis: bool = False, height: float = 3.6) -> None:
+def downsample(data: pd.DataFrame, max_points: int = 900) -> pd.DataFrame:
     clean = data.replace([np.inf, -np.inf], np.nan).dropna(how="all")
-    if len(clean) > 900:
-        clean = clean.iloc[:: int(np.ceil(len(clean) / 900))]
+    if len(clean) <= max_points:
+        return clean
+    return clean.iloc[:: int(np.ceil(len(clean) / max_points))].copy()
 
+
+def plot_lines(data: pd.DataFrame, title: str, ylabel: str = "", percent_axis: bool = False, height: float = 3.6) -> None:
+    clean = downsample(data)
     fig, ax = plt.subplots(figsize=(11, height), dpi=120)
     palette = [COLORS["strategy"], COLORS["kodex200"], COLORS["leverage"], COLORS["total"], COLORS["upside"], COLORS["downside"], COLORS["threshold"]]
     for i, col in enumerate(clean.columns):
@@ -144,32 +150,45 @@ def plot_lines(data: pd.DataFrame, title: str, ylabel: str = "", percent_axis: b
     st.pyplot(fig, clear_figure=True)
 
 
+def plot_weight_stack(weights: pd.DataFrame) -> None:
+    clean = downsample(weights[["KODEX Leverage", "KODEX 200", "Cash"]].clip(0.0, 1.0) * 100)
+    fig, ax = plt.subplots(figsize=(11, 3.0), dpi=120)
+    ax.stackplot(
+        clean.index,
+        clean["KODEX Leverage"],
+        clean["KODEX 200"],
+        clean["Cash"],
+        labels=["KODEX Leverage", "KODEX 200", "Cash"],
+        colors=[COLORS["leverage"], COLORS["kodex200"], COLORS["cash"]],
+        alpha=0.82,
+    )
+    ax.set_ylim(0, 100)
+    ax.set_title("Portfolio Weights", loc="left", fontsize=13, fontweight="bold")
+    ax.set_ylabel("%")
+    ax.grid(True, axis="y", color="#E5E7EB", linewidth=0.8)
+    ax.grid(False, axis="x")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(loc="upper left", ncols=3, frameon=False)
+    ax.yaxis.set_major_formatter(lambda x, _: f"{x:.0f}%")
+    fig.autofmt_xdate(rotation=0)
+    fig.tight_layout()
+    st.pyplot(fig, clear_figure=True)
+
+
 def build_volatility_profile(price: pd.Series, window: int) -> pd.DataFrame:
     ret = finite_return(price.pct_change())
     total = ret.rolling(window).std() * np.sqrt(TRADING_DAYS)
     upside = ret.where(ret > 0, 0.0).rolling(window).std() * np.sqrt(TRADING_DAYS)
     downside = ret.where(ret < 0, 0.0).rolling(window).std() * np.sqrt(TRADING_DAYS)
     downside_share = safe_divide(downside, total).clip(0.0, 1.0)
-    return pd.DataFrame(
-        {
-            "Total RV": total,
-            "Upside RV": upside,
-            "Downside RV": downside,
-            "Downside Share": downside_share,
-        }
-    )
+    return pd.DataFrame({"Total RV": total, "Upside RV": upside, "Downside RV": downside, "Downside Share": downside_share})
 
 
-def volatility_signal(
-    profile: pd.DataFrame,
-    mode: str,
-    total_cap: float,
-    downside_cap: float,
-    downside_share_cap: float,
-) -> tuple[pd.Series, pd.Series, str]:
+def volatility_signal(profile: pd.DataFrame, mode: str, total_cap: float, downside_cap: float, share_cap: float) -> tuple[pd.Series, pd.Series, str]:
     total_ok = profile["Total RV"] < total_cap
     downside_ok = profile["Downside RV"] < downside_cap
-    share_ok = profile["Downside Share"] < downside_share_cap
+    share_ok = profile["Downside Share"] < share_cap
 
     if mode == "Total RV":
         return total_ok.rename("Volatility Signal"), profile["Total RV"].rename("Effective RV"), f"Total RV < {total_cap:.0%}"
@@ -177,10 +196,10 @@ def volatility_signal(
         return downside_ok.rename("Volatility Signal"), profile["Downside RV"].rename("Effective RV"), f"Downside RV < {downside_cap:.0%}"
     if mode == "Directional Balance":
         sig = downside_ok & share_ok
-        return sig.rename("Volatility Signal"), profile["Downside RV"].rename("Effective RV"), f"Downside RV < {downside_cap:.0%} and downside share < {downside_share_cap:.0%}"
+        return sig.rename("Volatility Signal"), profile["Downside RV"].rename("Effective RV"), f"Downside RV < {downside_cap:.0%} and downside share < {share_cap:.0%}"
 
     sig = downside_ok & (total_ok | share_ok)
-    return sig.rename("Volatility Signal"), profile["Downside RV"].rename("Effective RV"), f"Downside RV < {downside_cap:.0%} and (Total RV < {total_cap:.0%} or downside share < {downside_share_cap:.0%})"
+    return sig.rename("Volatility Signal"), profile["Downside RV"].rename("Effective RV"), f"Downside RV < {downside_cap:.0%} and (Total RV < {total_cap:.0%} or downside share < {share_cap:.0%})"
 
 
 def build_strategy(
@@ -192,17 +211,23 @@ def build_strategy(
     vol_mode: str,
     total_cap: float,
     downside_cap: float,
-    downside_share_cap: float,
+    share_cap: float,
     leverage_weight: float,
     fallback_on: bool,
     fallback_kodex_weight: float,
+    fallback_requires_downside_ok: bool,
+    fee_rate: float,
 ) -> dict[str, object]:
     ma = kodex_close.rolling(ma_window).mean()
     trend = (kodex_close > ma).rename("Trend Signal")
-    vol_profile = build_volatility_profile(vol_price, vol_window)
-    vol_ok, effective_rv, rule = volatility_signal(vol_profile, vol_mode, total_cap, downside_cap, downside_share_cap)
+    profile = build_volatility_profile(vol_price, vol_window)
+    vol_ok, effective_rv, rule = volatility_signal(profile, vol_mode, total_cap, downside_cap, share_cap)
+    downside_ok = profile["Downside RV"] < downside_cap
+    share_ok = profile["Downside Share"] < share_cap
+    fallback_risk_ok = (downside_ok & share_ok) if fallback_requires_downside_ok else effective_rv.notna()
+
     leverage_signal = (trend & vol_ok).rename("Leverage Signal")
-    fallback_signal = trend & (~leverage_signal) & effective_rv.notna()
+    fallback_signal = trend & (~leverage_signal) & fallback_risk_ok
 
     weights = pd.DataFrame(index=kodex_close.index)
     weights["KODEX Leverage"] = leverage_signal.astype(float) * leverage_weight
@@ -218,18 +243,23 @@ def build_strategy(
         index=kodex_close.index,
     )
     executable = weights.shift(1).fillna(0.0)
-    strategy_ret = (executable * rets).sum(axis=1)
+    raw_ret = (executable * rets).sum(axis=1)
+    turnover = weights.drop(columns=["Cash"]).diff().abs().sum(axis=1).fillna(0.0)
+    strategy_ret = raw_ret - turnover.shift(1).fillna(0.0) * fee_rate
     nav = (1 + strategy_ret).cumprod().rename("Strategy")
 
     return {
         "ma": ma,
         "trend": trend,
-        "vol_profile": vol_profile,
+        "profile": profile,
         "vol_signal": vol_ok,
         "effective_rv": effective_rv,
         "rule": rule,
+        "downside_ok": downside_ok.rename("Downside Risk OK"),
+        "fallback_signal": fallback_signal.rename("Fallback Signal"),
         "leverage_signal": leverage_signal,
         "weights": weights,
+        "turnover": turnover,
         "nav": nav,
     }
 
@@ -246,24 +276,22 @@ with st.sidebar:
     st.subheader("Core Signal")
     ma_window = st.slider("KODEX 200 MA", 20, 250, 100, 5)
     vol_window = st.slider("RV window", 5, 120, 20, 1)
-    vol_mode = st.selectbox(
-        "Volatility filter mode",
-        ["Downside RV", "Directional Balance", "Downside + Total Guard", "Total RV"],
-        index=0,
-    )
+    vol_mode = st.selectbox("Volatility filter mode", ["Downside + Total Guard", "Downside RV", "Directional Balance", "Total RV"], index=0)
     total_cap_pct = st.slider("Total RV cap (%)", 10, 120, 50, 5)
     downside_cap_pct = st.slider("Downside RV cap (%)", 5, 80, 35, 5)
     downside_share_cap_pct = st.slider("Downside share cap (%)", 30, 100, 70, 5)
     vol_source = st.selectbox("Volatility source", ["KODEX 200", "KODEX Leverage"], index=0)
 
-    st.subheader("Position")
+    st.subheader("Position / Risk")
     leverage_weight_pct = st.slider("KODEX Leverage weight when signal passes (%)", 0, 100, 100, 5)
-    fallback_on = st.checkbox("Use volatility fallback", value=True)
-    fallback_weight_pct = st.slider("KODEX 200 weight when volatility filter fails (%)", 0, 100, 50, 5)
+    fallback_on = st.checkbox("Use KODEX 200 fallback", value=True)
+    fallback_weight_pct = st.slider("KODEX 200 fallback weight (%)", 0, 100, 30, 5)
+    fallback_requires_downside_ok = st.checkbox("Fallback only when downside risk is OK", value=True)
+    fee_pct = st.number_input("Trading cost per turnover (%)", min_value=0.0, value=0.03, step=0.01)
     run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 
 if not run_btn:
-    st.info("Adjust settings, then run the backtest. Default mode uses downside RV instead of total RV.")
+    st.info("Adjust settings, then run the backtest. The default is conservative: Downside + Total Guard with downside-risk-gated fallback.")
     st.stop()
 
 if start_date >= end_date:
@@ -292,7 +320,6 @@ if len(common_idx) < 60:
 
 full_idx = kodex_200.index.intersection(kodex_lev.index)
 full_idx = full_idx[full_idx <= common_idx[-1]]
-
 kodex_close_full = kodex_200["close"].reindex(full_idx).ffill()
 lev_close_full = kodex_lev["close"].reindex(full_idx).ffill()
 vol_price = kodex_close_full if vol_source == "KODEX 200" else lev_close_full
@@ -310,6 +337,8 @@ result = build_strategy(
     leverage_weight_pct / 100,
     fallback_on,
     fallback_weight_pct / 100,
+    fallback_requires_downside_ok,
+    fee_pct / 100,
 )
 
 progress.progress(90, text="Rendering results...")
@@ -324,25 +353,28 @@ progress.empty()
 strategy_metrics = calc_metrics(nav)
 benchmark_200_metrics = calc_metrics(benchmark_200)
 benchmark_lev_metrics = calc_metrics(benchmark_lev)
+profile = result["profile"].reindex(common_idx)
 
 latest_date = common_idx[-1]
 latest_weights = weights.iloc[-1]
-latest_total = result["vol_profile"]["Total RV"].reindex(common_idx).iloc[-1]
-latest_upside = result["vol_profile"]["Upside RV"].reindex(common_idx).iloc[-1]
-latest_downside = result["vol_profile"]["Downside RV"].reindex(common_idx).iloc[-1]
-latest_share = result["vol_profile"]["Downside Share"].reindex(common_idx).iloc[-1]
+latest_total = profile["Total RV"].iloc[-1]
+latest_upside = profile["Upside RV"].iloc[-1]
+latest_downside = profile["Downside RV"].iloc[-1]
+latest_share = profile["Downside Share"].iloc[-1]
 latest_signal = bool(result["leverage_signal"].reindex(common_idx).iloc[-1])
 latest_trend = bool(result["trend"].reindex(common_idx).iloc[-1])
 latest_vol_signal = bool(result["vol_signal"].reindex(common_idx).iloc[-1])
+latest_fallback = bool(result["fallback_signal"].reindex(common_idx).iloc[-1])
 
 st.success(
     f"Current state ({latest_date.date()}): KODEX Leverage {latest_weights['KODEX Leverage']:.0%}, "
     f"KODEX 200 {latest_weights['KODEX 200']:.0%}, Cash {latest_weights['Cash']:.0%}"
 )
 st.caption(
-    f"Leverage signal: {'Pass' if latest_signal else 'Wait'} | "
+    f"Leverage: {'Pass' if latest_signal else 'Wait'} | "
     f"Trend: {'Pass' if latest_trend else 'Wait'} | "
     f"Volatility: {'Pass' if latest_vol_signal else 'Wait'} | "
+    f"Fallback: {'On' if latest_fallback else 'Off'} | "
     f"Rule: {result['rule']} | "
     f"Total RV {latest_total:.1%}, Upside RV {latest_upside:.1%}, Downside RV {latest_downside:.1%}, Downside share {latest_share:.0%}"
 )
@@ -358,44 +390,35 @@ cols[5].metric("Monthly Win", f"{strategy_metrics['win_m']:.1%}")
 tab_perf, tab_signal, tab_table = st.tabs(["Performance", "Signal", "Data"])
 
 with tab_perf:
-    nav_chart = pd.DataFrame(
-        {
-            "Strategy": nav / nav.iloc[0],
-            "KODEX 200 B&H": benchmark_200 / benchmark_200.iloc[0],
-            "KODEX Leverage B&H": benchmark_lev / benchmark_lev.iloc[0],
-        }
-    )
+    nav_chart = pd.DataFrame({"Strategy": nav / nav.iloc[0], "KODEX 200 B&H": benchmark_200, "KODEX Leverage B&H": benchmark_lev})
     plot_lines(nav_chart, "Cumulative NAV", "NAV")
 
-    dd_chart = pd.DataFrame(
-        {
-            "Strategy DD": strategy_metrics["dd"],
-            "KODEX 200 DD": benchmark_200_metrics["dd"],
-            "KODEX Leverage DD": benchmark_lev_metrics["dd"],
-        }
-    ) * 100
+    dd_chart = pd.DataFrame({"Strategy DD": strategy_metrics["dd"], "KODEX 200 DD": benchmark_200_metrics["dd"], "KODEX Leverage DD": benchmark_lev_metrics["dd"]}) * 100
     plot_lines(dd_chart, "Drawdown", "%", percent_axis=True, height=3.0)
+    plot_weight_stack(weights)
 
-    weight_chart = weights[["KODEX Leverage", "KODEX 200", "Cash"]].clip(0.0, 1.0) * 100
-    plot_lines(weight_chart, "Portfolio Weights", "%", percent_axis=True, height=3.0)
+    exposure = weights.drop(columns=["Cash"]).sum(axis=1)
+    diag = pd.DataFrame(
+        {
+            "Metric": ["Exposure Ratio", "Leverage Days", "Fallback Days", "Cash Days", "Turnover Sum"],
+            "Value": [
+                f"{(exposure > 0).mean():.1%}",
+                f"{int((weights['KODEX Leverage'] > 0).sum()):,}",
+                f"{int((weights['KODEX 200'] > 0).sum()):,}",
+                f"{int((weights['Cash'] >= 0.999).sum()):,}",
+                f"{result['turnover'].reindex(common_idx).sum():.1f}",
+            ],
+        }
+    )
+    st.dataframe(diag, use_container_width=True, hide_index=True)
 
     st.subheader("Metric Table")
-    st.dataframe(
-        format_metrics(metrics_frame([("Strategy", nav), ("KODEX 200", benchmark_200), ("KODEX Leverage", benchmark_lev)])),
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.dataframe(format_metrics(metrics_frame([("Strategy", nav), ("KODEX 200", benchmark_200), ("KODEX Leverage", benchmark_lev)])), use_container_width=True, hide_index=True)
 
 with tab_signal:
-    trend_chart = pd.DataFrame(
-        {
-            "KODEX 200": kodex_close_full.reindex(common_idx),
-            f"MA{ma_window}": result["ma"].reindex(common_idx),
-        }
-    )
+    trend_chart = pd.DataFrame({"KODEX 200": kodex_close_full.reindex(common_idx), f"MA{ma_window}": result["ma"].reindex(common_idx)})
     plot_lines(trend_chart, "Trend Filter", "Price", height=3.0)
 
-    profile = result["vol_profile"].reindex(common_idx)
     vol_chart = pd.DataFrame(
         {
             "Total RV": profile["Total RV"] * 100,
@@ -407,20 +430,17 @@ with tab_signal:
     )
     plot_lines(vol_chart, "Annualized Directional Realized Volatility", "%", percent_axis=True, height=3.2)
 
-    share_chart = pd.DataFrame(
-        {
-            "Downside Share": profile["Downside Share"] * 100,
-            "Share Cap": pd.Series(downside_share_cap_pct, index=common_idx),
-        }
-    )
+    share_chart = pd.DataFrame({"Downside Share": profile["Downside Share"] * 100, "Share Cap": pd.Series(downside_share_cap_pct, index=common_idx)})
     plot_lines(share_chart, "Downside Share of Total RV", "%", percent_axis=True, height=2.8)
 
 with tab_table:
     recent = pd.DataFrame(
         {
             "Leverage Signal": result["leverage_signal"].reindex(common_idx),
+            "Fallback Signal": result["fallback_signal"].reindex(common_idx),
             "Trend Signal": result["trend"].reindex(common_idx),
             "Volatility Signal": result["vol_signal"].reindex(common_idx),
+            "Downside Risk OK": result["downside_ok"].reindex(common_idx),
             "KODEX Leverage Weight": weights["KODEX Leverage"],
             "KODEX 200 Weight": weights["KODEX 200"],
             "Cash Weight": weights["Cash"],
@@ -433,9 +453,4 @@ with tab_table:
         }
     )
     st.dataframe(recent.tail(60), use_container_width=True)
-    st.download_button(
-        "Signal CSV",
-        recent.to_csv(index=True).encode("utf-8-sig"),
-        "kodex_onoff_v3_directional_rv_signal.csv",
-        "text/csv",
-    )
+    st.download_button("Signal CSV", recent.to_csv(index=True).encode("utf-8-sig"), "kodex_onoff_v3_directional_rv_signal.csv", "text/csv")

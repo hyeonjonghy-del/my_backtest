@@ -237,31 +237,6 @@ def backtest_after_close_fill(
     return pd.Series(nav_rows, index=dates, name="After-Close Fill"), pd.DataFrame(weight_rows, index=dates)
 
 
-def backtest_same_close(
-    dates: pd.DatetimeIndex,
-    target_weights: pd.DataFrame,
-    ret_cc: pd.DataFrame,
-    fee_rate: float,
-) -> tuple[pd.Series, pd.DataFrame]:
-    nav = 1.0
-    assets = list(target_weights.columns)
-    current = pd.Series(0.0, index=assets)
-    nav_rows = []
-    weight_rows = []
-    for date in dates:
-        new_weights = target_weights.loc[date, assets].astype(float)
-        turnover = portfolio_turnover(new_weights, current)
-        if turnover > 0:
-            nav *= 1 - min(fee_rate * turnover, 0.99)
-        current = new_weights
-        # Deliberate look-ahead diagnostic: today's close-derived signal is
-        # applied to today's close-to-close return. This is not executable.
-        nav *= 1 + float((current * ret_cc.loc[date, assets]).sum())
-        nav_rows.append(nav)
-        weight_rows.append(current.copy())
-    return pd.Series(nav_rows, index=dates, name="Look-Ahead Same-Close"), pd.DataFrame(weight_rows, index=dates)
-
-
 def downsample(data: pd.DataFrame, max_points: int = 900) -> pd.DataFrame:
     clean = data.replace([np.inf, -np.inf], np.nan).dropna(how="all")
     if len(clean) <= max_points:
@@ -436,7 +411,7 @@ with st.sidebar:
     st.subheader("Execution / Cost")
     execution_model = st.selectbox(
         "Execution model",
-        ["Next open", "After-close fill + next-open residual", "Look-ahead same-close (not executable)"],
+        ["Next open", "After-close fill + next-open residual"],
         index=1,
     )
     after_close_fill_pct = st.slider("After-close fixed-price fill rate (%)", 0, 100, 70, 10)
@@ -497,24 +472,18 @@ progress.progress(80, text="Calculating execution models...")
 target_weights = result["weights"].reindex(common_idx).fillna(0.0)
 ret_lev_co = safe_divide(kodex_lev["open"] - kodex_lev["close"].shift(1), kodex_lev["close"].shift(1)).reindex(common_idx).fillna(0.0)
 ret_lev_oc = safe_divide(kodex_lev["close"] - kodex_lev["open"], kodex_lev["open"]).reindex(common_idx).fillna(0.0)
-ret_lev_cc = finite_return(kodex_lev["close"].pct_change()).reindex(common_idx).fillna(0.0)
 ret_kodex_co = safe_divide(kodex_200["open"] - kodex_200["close"].shift(1), kodex_200["close"].shift(1)).reindex(common_idx).fillna(0.0)
 ret_kodex_oc = safe_divide(kodex_200["close"] - kodex_200["open"], kodex_200["open"]).reindex(common_idx).fillna(0.0)
-ret_kodex_cc = finite_return(kodex_200["close"].pct_change()).reindex(common_idx).fillna(0.0)
 ret_co = pd.DataFrame({"KODEX Leverage": ret_lev_co, "KODEX 200": ret_kodex_co, "Cash": 0.0}, index=common_idx)
 ret_oc = pd.DataFrame({"KODEX Leverage": ret_lev_oc, "KODEX 200": ret_kodex_oc, "Cash": 0.0}, index=common_idx)
-ret_cc = pd.DataFrame({"KODEX Leverage": ret_lev_cc, "KODEX 200": ret_kodex_cc, "Cash": 0.0}, index=common_idx)
 fee_rate = fee_pct / 100
 nav_next_open, weights_next_open = backtest_next_open(common_idx, target_weights, ret_co, ret_oc, fee_rate)
 nav_after_close, weights_after_close = backtest_after_close_fill(
     common_idx, target_weights, ret_co, ret_oc, fee_rate, after_close_fill_pct / 100
 )
-nav_same_close, weights_same_close = backtest_same_close(common_idx, target_weights, ret_cc, fee_rate)
 
 if execution_model == "Next open":
     nav, weights = nav_next_open, weights_next_open
-elif execution_model == "Look-ahead same-close (not executable)":
-    nav, weights = nav_same_close, weights_same_close
 else:
     nav, weights = nav_after_close, weights_after_close
 
@@ -528,7 +497,6 @@ progress.empty()
 strategy_metrics = calc_metrics(nav)
 next_open_metrics = calc_metrics(nav_next_open)
 after_close_metrics = calc_metrics(nav_after_close)
-same_close_metrics = calc_metrics(nav_same_close)
 benchmark_200_metrics = calc_metrics(benchmark_200)
 benchmark_lev_metrics = calc_metrics(benchmark_lev)
 latest_date = common_idx[-1]
@@ -568,7 +536,6 @@ with tab_perf:
             "Selected Strategy": nav / nav.iloc[0],
             "Next open": nav_next_open / nav_next_open.iloc[0],
             f"After-close {after_close_fill_pct}%": nav_after_close / nav_after_close.iloc[0],
-            "Look-ahead same-close": nav_same_close / nav_same_close.iloc[0],
             "KODEX 200 B&H": benchmark_200,
             "KODEX Leverage B&H": benchmark_lev,
         }
@@ -620,7 +587,6 @@ with tab_execution:
         [
             {"Execution": "Next open", **{k: next_open_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
             {"Execution": f"After-close {after_close_fill_pct}% + residual", **{k: after_close_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
-            {"Execution": "Look-ahead same-close (not executable)", **{k: same_close_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
         ]
     )
     shown_execution = execution_comparison.rename(
@@ -633,11 +599,10 @@ with tab_execution:
     st.subheader("Execution Model Comparison")
     st.dataframe(shown_execution, use_container_width=True, hide_index=True)
     st.caption(
-        "After-close 100% and a one-day-lagged close-to-close calculation are equivalent: a trade made after today's close "
-        "cannot earn today's return and first participates from today's close onward. The look-ahead same-close row applies "
-        "today's close-derived signal to today's already-finished return, so it is shown only as an invalid diagnostic."
+        "Next open executes the full target change at the next trading day's opening price. After-close fill executes the "
+        "selected share of the target change at today's official close in the after-hours fixed-price session, then executes "
+        "the remaining share at the next opening price."
     )
-    st.warning("Do not use the look-ahead same-close result for strategy evaluation or live-trading expectations.")
 
 with tab_returns:
     return_series = {"Strategy": nav, "KODEX 200": benchmark_200, "KODEX Leverage": benchmark_lev}

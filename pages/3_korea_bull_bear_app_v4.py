@@ -50,18 +50,53 @@ def load_krx_ohlcv(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
     from pykrx import stock
 
     raw = stock.get_market_ohlcv_by_date(start_str, end_str, ticker)
-    if raw.empty:
-        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-    df = pd.DataFrame(
-        {
-            "open": pd.to_numeric(raw["시가"], errors="coerce"),
-            "high": pd.to_numeric(raw["고가"], errors="coerce"),
-            "low": pd.to_numeric(raw["저가"], errors="coerce"),
-            "close": pd.to_numeric(raw["종가"], errors="coerce"),
-            "volume": pd.to_numeric(raw["거래량"], errors="coerce"),
-        }
-    )
-    return normalize_index(df).dropna(how="all").where(df > 0)
+    primary = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    if not raw.empty:
+        primary = pd.DataFrame(
+            {
+                "open": pd.to_numeric(raw["시가"], errors="coerce"),
+                "high": pd.to_numeric(raw["고가"], errors="coerce"),
+                "low": pd.to_numeric(raw["저가"], errors="coerce"),
+                "close": pd.to_numeric(raw["종가"], errors="coerce"),
+                "volume": pd.to_numeric(raw["거래량"], errors="coerce"),
+            }
+        )
+        primary = normalize_index(primary).dropna(how="all")
+
+    # FinanceDataReader can return a truncated history for Korean ETFs. Fill
+    # missing early dates from Yahoo so KODEX Leverage can be tested from its
+    # 2010-02-22 listing date without changing the shared loader used by v1-v3.
+    yahoo = pd.DataFrame(columns=primary.columns)
+    try:
+        import yfinance as yf
+
+        start_dt = pd.to_datetime(start_str)
+        end_dt = pd.to_datetime(end_str) + timedelta(days=1)
+        yf_raw = yf.download(
+            f"{ticker}.KS",
+            start=start_dt.strftime("%Y-%m-%d"),
+            end=end_dt.strftime("%Y-%m-%d"),
+            progress=False,
+            auto_adjust=False,
+        )
+        if isinstance(yf_raw.columns, pd.MultiIndex):
+            yf_raw.columns = yf_raw.columns.get_level_values(0)
+        if not yf_raw.empty:
+            yahoo = yf_raw.rename(
+                columns={
+                    "Open": "open",
+                    "High": "high",
+                    "Low": "low",
+                    "Close": "close",
+                    "Volume": "volume",
+                }
+            ).reindex(columns=primary.columns)
+            yahoo = normalize_index(yahoo).apply(pd.to_numeric, errors="coerce").dropna(how="all")
+    except Exception:
+        pass
+
+    combined = primary.combine_first(yahoo) if not primary.empty else yahoo
+    return normalize_index(combined).dropna(how="all").where(combined > 0)
 
 
 def calc_metrics(nav: pd.Series) -> dict[str, object]:

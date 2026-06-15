@@ -249,15 +249,17 @@ def backtest_same_close(
     nav_rows = []
     weight_rows = []
     for date in dates:
-        nav *= 1 + float((current * ret_cc.loc[date, assets]).sum())
         new_weights = target_weights.loc[date, assets].astype(float)
         turnover = portfolio_turnover(new_weights, current)
         if turnover > 0:
             nav *= 1 - min(fee_rate * turnover, 0.99)
         current = new_weights
+        # Deliberate look-ahead diagnostic: today's close-derived signal is
+        # applied to today's close-to-close return. This is not executable.
+        nav *= 1 + float((current * ret_cc.loc[date, assets]).sum())
         nav_rows.append(nav)
         weight_rows.append(current.copy())
-    return pd.Series(nav_rows, index=dates, name="Ideal Same-Close"), pd.DataFrame(weight_rows, index=dates)
+    return pd.Series(nav_rows, index=dates, name="Look-Ahead Same-Close"), pd.DataFrame(weight_rows, index=dates)
 
 
 def downsample(data: pd.DataFrame, max_points: int = 900) -> pd.DataFrame:
@@ -434,7 +436,7 @@ with st.sidebar:
     st.subheader("Execution / Cost")
     execution_model = st.selectbox(
         "Execution model",
-        ["Next open", "After-close fill + next-open residual", "Ideal same-close"],
+        ["Next open", "After-close fill + next-open residual", "Look-ahead same-close (not executable)"],
         index=1,
     )
     after_close_fill_pct = st.slider("After-close fixed-price fill rate (%)", 0, 100, 70, 10)
@@ -511,7 +513,7 @@ nav_same_close, weights_same_close = backtest_same_close(common_idx, target_weig
 
 if execution_model == "Next open":
     nav, weights = nav_next_open, weights_next_open
-elif execution_model == "Ideal same-close":
+elif execution_model == "Look-ahead same-close (not executable)":
     nav, weights = nav_same_close, weights_same_close
 else:
     nav, weights = nav_after_close, weights_after_close
@@ -566,7 +568,7 @@ with tab_perf:
             "Selected Strategy": nav / nav.iloc[0],
             "Next open": nav_next_open / nav_next_open.iloc[0],
             f"After-close {after_close_fill_pct}%": nav_after_close / nav_after_close.iloc[0],
-            "Ideal same-close": nav_same_close / nav_same_close.iloc[0],
+            "Look-ahead same-close": nav_same_close / nav_same_close.iloc[0],
             "KODEX 200 B&H": benchmark_200,
             "KODEX Leverage B&H": benchmark_lev,
         }
@@ -618,7 +620,7 @@ with tab_execution:
         [
             {"Execution": "Next open", **{k: next_open_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
             {"Execution": f"After-close {after_close_fill_pct}% + residual", **{k: after_close_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
-            {"Execution": "Ideal same-close", **{k: same_close_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
+            {"Execution": "Look-ahead same-close (not executable)", **{k: same_close_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
         ]
     )
     shown_execution = execution_comparison.rename(
@@ -631,9 +633,11 @@ with tab_execution:
     st.subheader("Execution Model Comparison")
     st.dataframe(shown_execution, use_container_width=True, hide_index=True)
     st.caption(
-        "Next open is the conservative executable assumption. After-close fill assumes part of the target change is filled "
-        "at the closing price, while ideal same-close is an optimistic reference."
+        "After-close 100% and a one-day-lagged close-to-close calculation are equivalent: a trade made after today's close "
+        "cannot earn today's return and first participates from today's close onward. The look-ahead same-close row applies "
+        "today's close-derived signal to today's already-finished return, so it is shown only as an invalid diagnostic."
     )
+    st.warning("Do not use the look-ahead same-close result for strategy evaluation or live-trading expectations.")
 
 with tab_returns:
     return_series = {"Strategy": nav, "KODEX 200": benchmark_200, "KODEX Leverage": benchmark_lev}

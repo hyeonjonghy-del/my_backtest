@@ -171,6 +171,95 @@ def format_return_table(df: pd.DataFrame) -> pd.DataFrame:
     return df.applymap(lambda value: "-" if pd.isna(value) else f"{value:.2%}")
 
 
+def safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    return finite_return(numerator / denominator.where(denominator > 0))
+
+
+def portfolio_turnover(new_weights: pd.Series, old_weights: pd.Series) -> float:
+    assets = [asset for asset in new_weights.index if asset != "Cash"]
+    return float((new_weights[assets] - old_weights[assets]).abs().sum())
+
+
+def backtest_next_open(
+    dates: pd.DatetimeIndex,
+    target_weights: pd.DataFrame,
+    ret_co: pd.DataFrame,
+    ret_oc: pd.DataFrame,
+    fee_rate: float,
+) -> tuple[pd.Series, pd.DataFrame]:
+    nav = 1.0
+    assets = list(target_weights.columns)
+    current = pd.Series(0.0, index=assets)
+    nav_rows = []
+    weight_rows = []
+    executable = target_weights.shift(1).reindex(dates).fillna(0.0)
+    for i, date in enumerate(dates):
+        nav *= 1 + float((current * ret_co.loc[date, assets]).sum())
+        new_weights = executable.loc[date, assets].astype(float)
+        turnover = portfolio_turnover(new_weights, current)
+        if i > 0 and turnover > 0:
+            nav *= 1 - min(fee_rate * turnover, 0.99)
+        current = new_weights
+        nav *= 1 + float((current * ret_oc.loc[date, assets]).sum())
+        nav_rows.append(nav)
+        weight_rows.append(current.copy())
+    return pd.Series(nav_rows, index=dates, name="Next Open"), pd.DataFrame(weight_rows, index=dates)
+
+
+def backtest_after_close_fill(
+    dates: pd.DatetimeIndex,
+    target_weights: pd.DataFrame,
+    ret_co: pd.DataFrame,
+    ret_oc: pd.DataFrame,
+    fee_rate: float,
+    fill_rate: float,
+) -> tuple[pd.Series, pd.DataFrame]:
+    nav = 1.0
+    assets = list(target_weights.columns)
+    open_weights = pd.Series(0.0, index=assets)
+    nav_rows = []
+    weight_rows = []
+    open_targets = target_weights.shift(1).reindex(dates).fillna(0.0)
+    for i, date in enumerate(dates):
+        nav *= 1 + float((open_weights * ret_co.loc[date, assets]).sum())
+        intraday = open_targets.loc[date, assets].astype(float)
+        turnover = portfolio_turnover(intraday, open_weights)
+        if i > 0 and turnover > 0:
+            nav *= 1 - min(fee_rate * turnover, 0.99)
+        nav *= 1 + float((intraday * ret_oc.loc[date, assets]).sum())
+        close_weights = intraday + (target_weights.loc[date, assets].astype(float) - intraday) * fill_rate
+        close_turnover = portfolio_turnover(close_weights, intraday)
+        if close_turnover > 0:
+            nav *= 1 - min(fee_rate * close_turnover, 0.99)
+        open_weights = close_weights
+        nav_rows.append(nav)
+        weight_rows.append(close_weights.copy())
+    return pd.Series(nav_rows, index=dates, name="After-Close Fill"), pd.DataFrame(weight_rows, index=dates)
+
+
+def backtest_same_close(
+    dates: pd.DatetimeIndex,
+    target_weights: pd.DataFrame,
+    ret_cc: pd.DataFrame,
+    fee_rate: float,
+) -> tuple[pd.Series, pd.DataFrame]:
+    nav = 1.0
+    assets = list(target_weights.columns)
+    current = pd.Series(0.0, index=assets)
+    nav_rows = []
+    weight_rows = []
+    for date in dates:
+        nav *= 1 + float((current * ret_cc.loc[date, assets]).sum())
+        new_weights = target_weights.loc[date, assets].astype(float)
+        turnover = portfolio_turnover(new_weights, current)
+        if turnover > 0:
+            nav *= 1 - min(fee_rate * turnover, 0.99)
+        current = new_weights
+        nav_rows.append(nav)
+        weight_rows.append(current.copy())
+    return pd.Series(nav_rows, index=dates, name="Ideal Same-Close"), pd.DataFrame(weight_rows, index=dates)
+
+
 def downsample(data: pd.DataFrame, max_points: int = 900) -> pd.DataFrame:
     clean = data.replace([np.inf, -np.inf], np.nan).dropna(how="all")
     if len(clean) <= max_points:
@@ -342,6 +431,13 @@ with st.sidebar:
     early_leverage_pct = st.slider("Early reentry KODEX Leverage weight (%)", 0, 50, 20, 5)
     if early_kodex_pct + early_leverage_pct > 100:
         st.info("Early-reentry weights exceed 100%, so they will be normalized proportionally.")
+    st.subheader("Execution / Cost")
+    execution_model = st.selectbox(
+        "Execution model",
+        ["Next open", "After-close fill + next-open residual", "Ideal same-close"],
+        index=1,
+    )
+    after_close_fill_pct = st.slider("After-close fixed-price fill rate (%)", 0, 100, 70, 10)
     fee_pct = st.number_input("Trading cost per turnover (%)", min_value=0.0, value=0.03, step=0.01)
     run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 
@@ -395,9 +491,32 @@ result = build_v1_reentry_strategy(
     fee_pct / 100,
 )
 
+progress.progress(80, text="Calculating execution models...")
+target_weights = result["weights"].reindex(common_idx).fillna(0.0)
+ret_lev_co = safe_divide(kodex_lev["open"] - kodex_lev["close"].shift(1), kodex_lev["close"].shift(1)).reindex(common_idx).fillna(0.0)
+ret_lev_oc = safe_divide(kodex_lev["close"] - kodex_lev["open"], kodex_lev["open"]).reindex(common_idx).fillna(0.0)
+ret_lev_cc = finite_return(kodex_lev["close"].pct_change()).reindex(common_idx).fillna(0.0)
+ret_kodex_co = safe_divide(kodex_200["open"] - kodex_200["close"].shift(1), kodex_200["close"].shift(1)).reindex(common_idx).fillna(0.0)
+ret_kodex_oc = safe_divide(kodex_200["close"] - kodex_200["open"], kodex_200["open"]).reindex(common_idx).fillna(0.0)
+ret_kodex_cc = finite_return(kodex_200["close"].pct_change()).reindex(common_idx).fillna(0.0)
+ret_co = pd.DataFrame({"KODEX Leverage": ret_lev_co, "KODEX 200": ret_kodex_co, "Cash": 0.0}, index=common_idx)
+ret_oc = pd.DataFrame({"KODEX Leverage": ret_lev_oc, "KODEX 200": ret_kodex_oc, "Cash": 0.0}, index=common_idx)
+ret_cc = pd.DataFrame({"KODEX Leverage": ret_lev_cc, "KODEX 200": ret_kodex_cc, "Cash": 0.0}, index=common_idx)
+fee_rate = fee_pct / 100
+nav_next_open, weights_next_open = backtest_next_open(common_idx, target_weights, ret_co, ret_oc, fee_rate)
+nav_after_close, weights_after_close = backtest_after_close_fill(
+    common_idx, target_weights, ret_co, ret_oc, fee_rate, after_close_fill_pct / 100
+)
+nav_same_close, weights_same_close = backtest_same_close(common_idx, target_weights, ret_cc, fee_rate)
+
+if execution_model == "Next open":
+    nav, weights = nav_next_open, weights_next_open
+elif execution_model == "Ideal same-close":
+    nav, weights = nav_same_close, weights_same_close
+else:
+    nav, weights = nav_after_close, weights_after_close
+
 progress.progress(90, text="Rendering results...")
-nav = result["nav"].reindex(common_idx).dropna()
-weights = result["weights"].reindex(common_idx).fillna(0.0)
 benchmark_200 = kodex_close_full.reindex(common_idx).ffill()
 benchmark_200 = benchmark_200 / benchmark_200.iloc[0]
 benchmark_lev = lev_close_full.reindex(common_idx).ffill()
@@ -405,6 +524,9 @@ benchmark_lev = benchmark_lev / benchmark_lev.iloc[0]
 progress.empty()
 
 strategy_metrics = calc_metrics(nav)
+next_open_metrics = calc_metrics(nav_next_open)
+after_close_metrics = calc_metrics(nav_after_close)
+same_close_metrics = calc_metrics(nav_same_close)
 benchmark_200_metrics = calc_metrics(benchmark_200)
 benchmark_lev_metrics = calc_metrics(benchmark_lev)
 latest_date = common_idx[-1]
@@ -423,7 +545,7 @@ st.success(
 st.caption(
     f"KODEX 200 {latest_price:,.0f} / MA{long_ma_window} {latest_long_ma:,.0f} / "
     f"MA{short_ma_window} {latest_short_ma:,.0f} | {vol_source} RV{vol_window} {latest_vol:.1%} | "
-    "Today's signal is applied to the next trading day's return."
+    f"Execution: {execution_model}"
 )
 
 cols = st.columns(6)
@@ -434,12 +556,17 @@ cols[3].metric("Sharpe", f"{strategy_metrics['sharpe']:.2f}")
 cols[4].metric("Calmar", f"{strategy_metrics['calmar']:.2f}")
 cols[5].metric("Monthly Win", f"{strategy_metrics['win_m']:.1%}")
 
-tab_perf, tab_returns, tab_rules, tab_data = st.tabs(["Performance", "Monthly / Yearly Returns", "Rules", "Data"])
+tab_perf, tab_execution, tab_returns, tab_rules, tab_data = st.tabs(
+    ["Performance", "Execution", "Monthly / Yearly Returns", "Rules", "Data"]
+)
 
 with tab_perf:
     nav_chart = pd.DataFrame(
         {
-            "Strategy": nav / nav.iloc[0],
+            "Selected Strategy": nav / nav.iloc[0],
+            "Next open": nav_next_open / nav_next_open.iloc[0],
+            f"After-close {after_close_fill_pct}%": nav_after_close / nav_after_close.iloc[0],
+            "Ideal same-close": nav_same_close / nav_same_close.iloc[0],
             "KODEX 200 B&H": benchmark_200,
             "KODEX Leverage B&H": benchmark_lev,
         }
@@ -480,11 +607,33 @@ with tab_perf:
                 f"{int((weights['KODEX 200'] > 0).sum()):,}",
                 f"{int(result['early_reentry'].reindex(common_idx).fillna(False).sum()):,}",
                 f"{int((weights['Cash'] >= 0.999).sum()):,}",
-                f"{result['turnover'].reindex(common_idx).sum():.1f}",
+                f"{weights.drop(columns=['Cash']).diff().abs().sum(axis=1).sum():.1f}",
             ],
         }
     )
     st.dataframe(diag, use_container_width=True, hide_index=True)
+
+with tab_execution:
+    execution_comparison = pd.DataFrame(
+        [
+            {"Execution": "Next open", **{k: next_open_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
+            {"Execution": f"After-close {after_close_fill_pct}% + residual", **{k: after_close_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
+            {"Execution": "Ideal same-close", **{k: same_close_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
+        ]
+    )
+    shown_execution = execution_comparison.rename(
+        columns={"total": "Total", "cagr": "CAGR", "mdd": "MDD", "sharpe": "Sharpe", "calmar": "Calmar"}
+    )
+    for col in ["Total", "CAGR", "MDD"]:
+        shown_execution[col] = shown_execution[col].map(lambda value: f"{value:.1%}")
+    for col in ["Sharpe", "Calmar"]:
+        shown_execution[col] = shown_execution[col].map(lambda value: f"{value:.2f}")
+    st.subheader("Execution Model Comparison")
+    st.dataframe(shown_execution, use_container_width=True, hide_index=True)
+    st.caption(
+        "Next open is the conservative executable assumption. After-close fill assumes part of the target change is filled "
+        "at the closing price, while ideal same-close is an optimistic reference."
+    )
 
 with tab_returns:
     return_series = {"Strategy": nav, "KODEX 200": benchmark_200, "KODEX Leverage": benchmark_lev}
@@ -523,6 +672,9 @@ with tab_rules:
 | High-vol bull | Price > MA{long_ma_window} and RV{vol_window} >= {vol_cap_pct}% | {high_vol_kodex_pct}% | 0% | {100 - high_vol_kodex_pct}% |
 | Bear | Price <= MA{long_ma_window}, without early-reentry confirmation | 0% | 0% | 100% |
 | Early reentry | Price <= MA{long_ma_window}, Price > MA{short_ma_window}, MA{short_ma_window} rising, and rebound from {recent_low_window}d low >= {rebound_from_low_pct}% | {early_kodex_pct}% | {early_leverage_pct}% | {max(0, 100 - early_kodex_pct - early_leverage_pct)}% |
+
+**Selected execution:** {execution_model}<br>
+**After-close fill assumption:** {after_close_fill_pct}%
 """
     )
     st.warning(

@@ -3,9 +3,9 @@
 Directional realized-volatility experiment.
 
 Compared with v1, this version separates total, upside, and downside realized
-volatility. The default uses three regimes: a blended KODEX 200 / Leverage
-portfolio in a healthy bull market, KODEX 200 plus cash in a caution regime,
-and cash when the trend or downside-risk filter fails.
+volatility. The default uses four regimes: a leverage-boosted strong bull,
+a balanced bull blend, KODEX 200 plus cash in a caution regime, and cash when
+the trend or downside-risk filter fails.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ COLORS = {
 st.set_page_config(page_title="KODEX ON/OFF v3", page_icon="KR", layout="wide")
 st.title("KODEX 200 / Leverage ON-OFF Strategy v3")
 st.caption(
-    "Three regimes using directional RV: Bull holds KODEX Leverage + KODEX 200, "
+    "Adaptive directional-RV allocation: Strong Bull boosts leverage, Bull uses a balanced blend, "
     "Caution holds KODEX 200 + cash, and Bear holds cash."
 )
 
@@ -254,6 +254,12 @@ def build_strategy(
     share_cap: float,
     leverage_weight: float,
     bull_kodex_weight: float,
+    strong_bull_on: bool,
+    strong_trend_buffer: float,
+    ma_slope_window: int,
+    strong_downside_ratio: float,
+    strong_leverage_weight: float,
+    strong_kodex_weight: float,
     fallback_on: bool,
     fallback_kodex_weight: float,
     fallback_requires_downside_ok: bool,
@@ -269,10 +275,22 @@ def build_strategy(
 
     leverage_signal = (trend & vol_ok).rename("Leverage Signal")
     fallback_signal = trend & (~leverage_signal) & fallback_risk_ok
+    ma_rising = ma > ma.shift(ma_slope_window)
+    strong_bull_signal = (
+        leverage_signal
+        & (kodex_close > ma * (1.0 + strong_trend_buffer))
+        & ma_rising
+        & (profile["Downside RV"] < downside_cap * strong_downside_ratio)
+    )
+    if not strong_bull_on:
+        strong_bull_signal = pd.Series(False, index=kodex_close.index)
+    strong_bull_signal = strong_bull_signal.rename("Strong Bull Signal")
 
     weights = pd.DataFrame(index=kodex_close.index)
     weights["KODEX Leverage"] = leverage_signal.astype(float) * leverage_weight
     weights["KODEX 200"] = leverage_signal.astype(float) * bull_kodex_weight
+    weights.loc[strong_bull_signal, "KODEX Leverage"] = strong_leverage_weight
+    weights.loc[strong_bull_signal, "KODEX 200"] = strong_kodex_weight
     if fallback_on:
         weights["KODEX 200"] += fallback_signal.astype(float) * fallback_kodex_weight
     invested = weights["KODEX Leverage"] + weights["KODEX 200"]
@@ -293,6 +311,10 @@ def build_strategy(
     turnover = weights.drop(columns=["Cash"]).diff().abs().sum(axis=1).fillna(0.0)
     strategy_ret = raw_ret - turnover.shift(1).fillna(0.0) * fee_rate
     nav = (1 + strategy_ret).cumprod().rename("Strategy")
+    regime = pd.Series("Bear / Cash", index=kodex_close.index, name="Regime")
+    regime.loc[fallback_signal] = "Caution / KODEX 200"
+    regime.loc[leverage_signal] = "Bull / Blend"
+    regime.loc[strong_bull_signal] = "Strong Bull / Leverage Boost"
 
     return {
         "ma": ma,
@@ -304,6 +326,9 @@ def build_strategy(
         "downside_ok": downside_ok.rename("Downside Risk OK"),
         "fallback_signal": fallback_signal.rename("Fallback Signal"),
         "leverage_signal": leverage_signal,
+        "strong_bull_signal": strong_bull_signal,
+        "ma_rising": ma_rising.rename("MA Rising"),
+        "regime": regime,
         "weights": weights,
         "turnover": turnover,
         "nav": nav,
@@ -334,6 +359,14 @@ with st.sidebar:
     bull_kodex_weight_pct = st.slider("Bull KODEX 200 weight (%)", 0, 100, 50, 5)
     if leverage_weight_pct + bull_kodex_weight_pct > 100:
         st.info("Bull weights exceed 100%, so they will be normalized proportionally.")
+    strong_bull_on = st.checkbox("Use strong-bull leverage boost", value=True)
+    strong_trend_buffer_pct = st.slider("Strong bull distance above MA (%)", 0, 20, 3, 1)
+    ma_slope_window = st.slider("Strong bull MA rising lookback (days)", 5, 60, 20, 5)
+    strong_downside_ratio_pct = st.slider("Strong bull downside-RV limit (% of cap)", 40, 100, 80, 5)
+    strong_leverage_weight_pct = st.slider("Strong bull KODEX Leverage weight (%)", 0, 100, 75, 5)
+    strong_kodex_weight_pct = st.slider("Strong bull KODEX 200 weight (%)", 0, 100, 25, 5)
+    if strong_leverage_weight_pct + strong_kodex_weight_pct > 100:
+        st.info("Strong-bull weights exceed 100%, so they will be normalized proportionally.")
     fallback_on = st.checkbox("Use KODEX 200 fallback", value=True)
     fallback_weight_pct = st.slider("Caution KODEX 200 weight (%)", 0, 100, 50, 5)
     fallback_requires_downside_ok = st.checkbox("Fallback only when downside risk is OK", value=True)
@@ -386,6 +419,12 @@ result = build_strategy(
     downside_share_cap_pct / 100,
     leverage_weight_pct / 100,
     bull_kodex_weight_pct / 100,
+    strong_bull_on,
+    strong_trend_buffer_pct / 100,
+    ma_slope_window,
+    strong_downside_ratio_pct / 100,
+    strong_leverage_weight_pct / 100,
+    strong_kodex_weight_pct / 100,
     fallback_on,
     fallback_weight_pct / 100,
     fallback_requires_downside_ok,
@@ -416,12 +455,16 @@ latest_signal = bool(result["leverage_signal"].reindex(common_idx).iloc[-1])
 latest_trend = bool(result["trend"].reindex(common_idx).iloc[-1])
 latest_vol_signal = bool(result["vol_signal"].reindex(common_idx).iloc[-1])
 latest_fallback = bool(result["fallback_signal"].reindex(common_idx).iloc[-1])
+latest_strong_bull = bool(result["strong_bull_signal"].reindex(common_idx).iloc[-1])
+latest_regime = str(result["regime"].reindex(common_idx).iloc[-1])
 
 st.success(
     f"Current state ({latest_date.date()}): KODEX Leverage {latest_weights['KODEX Leverage']:.0%}, "
     f"KODEX 200 {latest_weights['KODEX 200']:.0%}, Cash {latest_weights['Cash']:.0%}"
 )
 st.caption(
+    f"Regime: {latest_regime} | "
+    f"Strong Bull: {'On' if latest_strong_bull else 'Off'} | "
     f"Leverage: {'Pass' if latest_signal else 'Wait'} | "
     f"Trend: {'Pass' if latest_trend else 'Wait'} | "
     f"Volatility: {'Pass' if latest_vol_signal else 'Wait'} | "
@@ -451,9 +494,10 @@ with tab_perf:
     exposure = weights.drop(columns=["Cash"]).sum(axis=1)
     diag = pd.DataFrame(
         {
-            "Metric": ["Exposure Ratio", "Leverage Days", "Fallback Days", "Cash Days", "Turnover Sum"],
+            "Metric": ["Exposure Ratio", "Strong Bull Days", "Leverage Days", "Fallback Days", "Cash Days", "Turnover Sum"],
             "Value": [
                 f"{(exposure > 0).mean():.1%}",
+                f"{int(result['strong_bull_signal'].reindex(common_idx).fillna(False).sum()):,}",
                 f"{int((weights['KODEX Leverage'] > 0).sum()):,}",
                 f"{int((weights['KODEX 200'] > 0).sum()):,}",
                 f"{int((weights['Cash'] >= 0.999).sum()):,}",
@@ -524,9 +568,12 @@ with tab_signal:
 with tab_table:
     recent = pd.DataFrame(
         {
+            "Regime": result["regime"].reindex(common_idx),
+            "Strong Bull Signal": result["strong_bull_signal"].reindex(common_idx),
             "Leverage Signal": result["leverage_signal"].reindex(common_idx),
             "Fallback Signal": result["fallback_signal"].reindex(common_idx),
             "Trend Signal": result["trend"].reindex(common_idx),
+            "MA Rising": result["ma_rising"].reindex(common_idx),
             "Volatility Signal": result["vol_signal"].reindex(common_idx),
             "Downside Risk OK": result["downside_ok"].reindex(common_idx),
             "KODEX Leverage Weight": weights["KODEX Leverage"],

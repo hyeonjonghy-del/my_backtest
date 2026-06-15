@@ -264,12 +264,37 @@ def read_krx_file(file_obj, file_name: str) -> pd.DataFrame:
     return pd.read_excel(file_obj, dtype=str)
 
 
-def parse_krx_files(uploaded_files) -> dict:
+def normalize_stock_code(value) -> str:
+    """Normalize KRX stock codes to six digits."""
+    code = str(value).strip()
+    if code.endswith(".0"):
+        code = code[:-2]
+    digits = re.sub(r"\D", "", code)
+    return digits.zfill(6) if 1 <= len(digits) <= 6 else ""
+
+
+def find_column(columns, candidates: list[str]):
+    """Find a column using exact names first, then normalized partial matches."""
+    normalized = {str(col).replace(" ", "").lower(): col for col in columns}
+    for candidate in candidates:
+        key = candidate.replace(" ", "").lower()
+        if key in normalized:
+            return normalized[key]
+    for candidate in candidates:
+        key = candidate.replace(" ", "").lower()
+        for normalized_name, original in normalized.items():
+            if key in normalized_name:
+                return original
+    return None
+
+
+def parse_krx_files(uploaded_files) -> tuple[dict, dict[str, str]]:
     """
-    KRX 정보데이터시스템 다운로드 CSV/XLSX → {날짜: [종목코드]} 딕셔너리
+    KRX CSV/XLSX에서 시점별 유니버스와 종목명 매핑을 함께 반환합니다.
     파일명에 YYYYMMDD 형식 날짜 포함 필수 (예: 20200630_KOSPI200.csv)
     """
     universe_dict = {}
+    uploaded_name_map: dict[str, str] = {}
 
     for f in uploaded_files:
         try:
@@ -294,20 +319,27 @@ def parse_krx_files(uploaded_files) -> dict:
             df = read_krx_file(f, file_name)
 
             # 종목코드 컬럼 자동 탐색
-            code_col = None
-            for col in df.columns:
-                if any(kw in col for kw in ['종목코드', '티커', 'Code', 'code', 'Ticker']):
-                    code_col = col
-                    break
+            code_col = find_column(
+                df.columns,
+                ['종목코드', '단축코드', '티커', 'Code', 'Symbol', 'Ticker'],
+            )
             if code_col is None:
                 code_col = df.columns[0]
                 st.info(f"ℹ️ 종목코드 컬럼 자동 선택: '{code_col}' ({f.name})")
 
-            codes = (
-                df[code_col].dropna().astype(str)
-                .str.strip().str.zfill(6).tolist()
+            codes = [normalize_stock_code(value) for value in df[code_col].dropna()]
+            codes = [code for code in codes if code]
+
+            name_col = find_column(
+                df.columns,
+                ['종목명', '한글종목명', '한글 종목약명', '종목약명', 'Name', 'CompanyName'],
             )
-            codes = [c for c in codes if c.isdigit() and len(c) == 6]
+            if name_col is not None:
+                for code_value, name_value in zip(df[code_col], df[name_col]):
+                    code = normalize_stock_code(code_value)
+                    name = str(name_value).strip() if pd.notna(name_value) else ""
+                    if code and name and name.lower() != "nan":
+                        uploaded_name_map[code] = name
 
             if not codes:
                 st.warning(f"⚠️ 유효한 종목코드 없음: {f.name}")
@@ -319,7 +351,7 @@ def parse_krx_files(uploaded_files) -> dict:
         except Exception as e:
             st.error(f"파일 파싱 오류 ({f.name}): {e}")
 
-    return dict(sorted(universe_dict.items()))
+    return dict(sorted(universe_dict.items())), uploaded_name_map
 
 
 # ─────────────────────────────────────────────────────────
@@ -418,6 +450,8 @@ with st.sidebar:
     uploaded_files = None
     saved_krx_files = get_saved_krx_files()
     use_saved_krx_files = False
+
+    uploaded_name_map: dict[str, str] = {}
 
     if universe_mode.startswith("🤖"):
         st.markdown("""
@@ -524,7 +558,7 @@ if run_btn:
             if not use_saved_krx_files:
                 uploaded_files = save_uploaded_krx_files(uploaded_files)
                 st.success(f"Saved {len(uploaded_files)} KRX file(s) for future runs.")
-            universe_dict = parse_krx_files(uploaded_files)
+            universe_dict, uploaded_name_map = parse_krx_files(uploaded_files)
 
         if not universe_dict:
             st.error("❌ 유효한 파일이 없습니다. 파일명과 형식을 확인해주세요.")
@@ -551,6 +585,10 @@ if run_btn:
 
     with st.spinner("주가 데이터 다운로드 중... (첫 실행 시 시간이 걸립니다)"):
         df_price, code_map = download_price_data(all_codes_sorted, fetch_start_str)
+
+    # Uploaded KRX files are the most reliable fallback when the external
+    # stock-listing endpoint is unavailable. Prefer their names when present.
+    code_map.update(uploaded_name_map)
 
     if df_price.empty:
         st.error("❌ 주가 데이터를 가져오지 못했습니다.")

@@ -1,11 +1,11 @@
-"""KODEX 200 / KODEX Leverage ON/OFF strategy v3.
+"""KODEX 200 / KODEX Leverage blended regime strategy v3.
 
 Directional realized-volatility experiment.
 
 Compared with v1, this version separates total, upside, and downside realized
-volatility. The default is intentionally conservative: downside volatility is
-the main risk filter, while total volatility remains a guardrail. KODEX 200
-fallback exposure is allowed only when downside risk is still acceptable.
+volatility. The default uses three regimes: a blended KODEX 200 / Leverage
+portfolio in a healthy bull market, KODEX 200 plus cash in a caution regime,
+and cash when the trend or downside-risk filter fails.
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ COLORS = {
 st.set_page_config(page_title="KODEX ON/OFF v3", page_icon="KR", layout="wide")
 st.title("KODEX 200 / Leverage ON-OFF Strategy v3")
 st.caption(
-    "Directional RV experiment: separate upside volatility from downside volatility. "
-    "Fallback exposure is now allowed only when downside risk remains acceptable."
+    "Three regimes using directional RV: Bull holds KODEX Leverage + KODEX 200, "
+    "Caution holds KODEX 200 + cash, and Bear holds cash."
 )
 
 
@@ -91,7 +91,8 @@ def calc_metrics(nav: pd.Series) -> dict[str, object]:
     mdd = dd.min()
     sharpe = ret.mean() / ret.std() * np.sqrt(TRADING_DAYS) if ret.std() > 0 else 0.0
     calmar = cagr / abs(mdd) if mdd < 0 else 0.0
-    win_m = (nav.resample("M").last().pct_change().dropna() > 0).mean()
+    monthly_nav = nav.groupby(nav.index.to_period("M")).last()
+    win_m = (monthly_nav.pct_change().dropna() > 0).mean()
     return {"total": total, "cagr": cagr, "mdd": mdd, "sharpe": sharpe, "calmar": calmar, "win_m": win_m, "dd": dd}
 
 
@@ -120,6 +121,45 @@ def format_metrics(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["Sharpe", "Calmar"]:
         shown[col] = shown[col].map(lambda x: "-" if pd.isna(x) else f"{x:.2f}")
     return shown
+
+
+def period_returns(nav: pd.Series, frequency: str) -> pd.Series:
+    """Return complete calendar-period returns, including the first period."""
+    clean = nav.replace([np.inf, -np.inf], np.nan).dropna()
+    if clean.empty:
+        return pd.Series(dtype=float)
+    period_end = clean.groupby(clean.index.to_period(frequency)).last()
+    previous = period_end.shift(1)
+    previous.iloc[0] = clean.iloc[0]
+    returns = (period_end / previous - 1).dropna()
+    returns.index = returns.index.to_timestamp(how="end").normalize()
+    return returns
+
+
+def monthly_return_matrix(nav: pd.Series) -> pd.DataFrame:
+    monthly = period_returns(nav, "M")
+    if monthly.empty:
+        return pd.DataFrame()
+    frame = monthly.rename("Return").to_frame()
+    frame["Year"] = frame.index.year
+    frame["Month"] = frame.index.month
+    matrix = frame.pivot(index="Year", columns="Month", values="Return")
+    return matrix.reindex(columns=range(1, 13)).rename(
+        columns={month: pd.Timestamp(2000, month, 1).strftime("%b") for month in range(1, 13)}
+    )
+
+
+def calendar_return_table(series_map: dict[str, pd.Series], frequency: str) -> pd.DataFrame:
+    table = pd.concat(
+        {name: period_returns(nav, frequency) for name, nav in series_map.items()},
+        axis=1,
+    )
+    table.index = table.index.strftime("%Y") if frequency == "Y" else table.index.strftime("%Y-%m")
+    return table
+
+
+def format_return_table(df: pd.DataFrame) -> pd.DataFrame:
+    return df.applymap(lambda value: "-" if pd.isna(value) else f"{value:.2%}")
 
 
 def downsample(data: pd.DataFrame, max_points: int = 900) -> pd.DataFrame:
@@ -213,6 +253,7 @@ def build_strategy(
     downside_cap: float,
     share_cap: float,
     leverage_weight: float,
+    bull_kodex_weight: float,
     fallback_on: bool,
     fallback_kodex_weight: float,
     fallback_requires_downside_ok: bool,
@@ -224,14 +265,19 @@ def build_strategy(
     vol_ok, effective_rv, rule = volatility_signal(profile, vol_mode, total_cap, downside_cap, share_cap)
     downside_ok = profile["Downside RV"] < downside_cap
     share_ok = profile["Downside Share"] < share_cap
-    fallback_risk_ok = (downside_ok & share_ok) if fallback_requires_downside_ok else effective_rv.notna()
+    fallback_risk_ok = downside_ok if fallback_requires_downside_ok else effective_rv.notna()
 
     leverage_signal = (trend & vol_ok).rename("Leverage Signal")
     fallback_signal = trend & (~leverage_signal) & fallback_risk_ok
 
     weights = pd.DataFrame(index=kodex_close.index)
     weights["KODEX Leverage"] = leverage_signal.astype(float) * leverage_weight
-    weights["KODEX 200"] = fallback_signal.astype(float) * fallback_kodex_weight if fallback_on else 0.0
+    weights["KODEX 200"] = leverage_signal.astype(float) * bull_kodex_weight
+    if fallback_on:
+        weights["KODEX 200"] += fallback_signal.astype(float) * fallback_kodex_weight
+    invested = weights["KODEX Leverage"] + weights["KODEX 200"]
+    scale = pd.Series(np.where(invested > 1.0, 1.0 / invested, 1.0), index=weights.index)
+    weights[["KODEX Leverage", "KODEX 200"]] = weights[["KODEX Leverage", "KODEX 200"]].mul(scale, axis=0)
     weights["Cash"] = (1.0 - weights["KODEX Leverage"] - weights["KODEX 200"]).clip(lower=0.0)
 
     rets = pd.DataFrame(
@@ -283,9 +329,13 @@ with st.sidebar:
     vol_source = st.selectbox("Volatility source", ["KODEX 200", "KODEX Leverage"], index=0)
 
     st.subheader("Position / Risk")
-    leverage_weight_pct = st.slider("KODEX Leverage weight when signal passes (%)", 0, 100, 100, 5)
+    st.caption("Bull: Leverage + KODEX 200 / Caution: KODEX 200 / Bear: Cash")
+    leverage_weight_pct = st.slider("Bull KODEX Leverage weight (%)", 0, 100, 50, 5)
+    bull_kodex_weight_pct = st.slider("Bull KODEX 200 weight (%)", 0, 100, 50, 5)
+    if leverage_weight_pct + bull_kodex_weight_pct > 100:
+        st.info("Bull weights exceed 100%, so they will be normalized proportionally.")
     fallback_on = st.checkbox("Use KODEX 200 fallback", value=True)
-    fallback_weight_pct = st.slider("KODEX 200 fallback weight (%)", 0, 100, 30, 5)
+    fallback_weight_pct = st.slider("Caution KODEX 200 weight (%)", 0, 100, 50, 5)
     fallback_requires_downside_ok = st.checkbox("Fallback only when downside risk is OK", value=True)
     fee_pct = st.number_input("Trading cost per turnover (%)", min_value=0.0, value=0.03, step=0.01)
     run_btn = st.button("Run backtest", type="primary", use_container_width=True)
@@ -335,6 +385,7 @@ result = build_strategy(
     downside_cap_pct / 100,
     downside_share_cap_pct / 100,
     leverage_weight_pct / 100,
+    bull_kodex_weight_pct / 100,
     fallback_on,
     fallback_weight_pct / 100,
     fallback_requires_downside_ok,
@@ -387,7 +438,7 @@ cols[3].metric("Sharpe", f"{strategy_metrics['sharpe']:.2f}", f"LEV {benchmark_l
 cols[4].metric("Calmar", f"{strategy_metrics['calmar']:.2f}")
 cols[5].metric("Monthly Win", f"{strategy_metrics['win_m']:.1%}")
 
-tab_perf, tab_signal, tab_table = st.tabs(["Performance", "Signal", "Data"])
+tab_perf, tab_returns, tab_signal, tab_table = st.tabs(["Performance", "Monthly / Yearly Returns", "Signal", "Data"])
 
 with tab_perf:
     nav_chart = pd.DataFrame({"Strategy": nav / nav.iloc[0], "KODEX 200 B&H": benchmark_200, "KODEX Leverage B&H": benchmark_lev})
@@ -414,6 +465,43 @@ with tab_perf:
 
     st.subheader("Metric Table")
     st.dataframe(format_metrics(metrics_frame([("Strategy", nav), ("KODEX 200", benchmark_200), ("KODEX Leverage", benchmark_lev)])), use_container_width=True, hide_index=True)
+
+with tab_returns:
+    return_series = {
+        "Strategy": nav,
+        "KODEX 200": benchmark_200,
+        "KODEX Leverage": benchmark_lev,
+    }
+    monthly_returns = calendar_return_table(return_series, "M")
+    yearly_returns = calendar_return_table(return_series, "Y")
+    monthly_matrix = monthly_return_matrix(nav)
+
+    st.subheader("Strategy Monthly Returns")
+    st.dataframe(format_return_table(monthly_matrix), use_container_width=True)
+
+    st.subheader("Monthly Returns by Asset")
+    st.dataframe(format_return_table(monthly_returns.sort_index(ascending=False)), use_container_width=True)
+
+    st.subheader("Yearly Returns")
+    st.dataframe(format_return_table(yearly_returns.sort_index(ascending=False)), use_container_width=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            "Monthly Returns CSV",
+            monthly_returns.to_csv(index=True).encode("utf-8-sig"),
+            "kodex_onoff_v3_monthly_returns.csv",
+            "text/csv",
+            use_container_width=True,
+        )
+    with c2:
+        st.download_button(
+            "Yearly Returns CSV",
+            yearly_returns.to_csv(index=True).encode("utf-8-sig"),
+            "kodex_onoff_v3_yearly_returns.csv",
+            "text/csv",
+            use_container_width=True,
+        )
 
 with tab_signal:
     trend_chart = pd.DataFrame({"KODEX 200": kodex_close_full.reindex(common_idx), f"MA{ma_window}": result["ma"].reindex(common_idx)})

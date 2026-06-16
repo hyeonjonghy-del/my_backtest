@@ -38,8 +38,8 @@ STRATEGIES = [
         "note": "Use v3 as the practical US bull/bear strategy.",
     },
     {
-        "page": "5_soxx_soxl_vol_target_app_v4.py",
-        "name": "SOXX / SOXL Vol Target v4",
+        "page": "5_soxx_soxl_vol_target_app_v5.py",
+        "name": "SOXX / SOXL Vol Target v5",
         "role": "Aggressive satellite",
         "decision": "Keep",
         "note": "Keep as a small semiconductor satellite sleeve.",

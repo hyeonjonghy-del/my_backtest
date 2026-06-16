@@ -66,10 +66,10 @@ STRATEGIES = [
     ),
     StrategySpec(
         5,
-        "SOXX/SOXL Vol Target v4",
+        "SOXX/SOXL Vol Target v5",
         "US",
         "Aggressive satellite",
-        "5_soxx_soxl_vol_target_app_v4.py",
+        "5_soxx_soxl_vol_target_app_v5.py",
         0.03,
         "Needs core runner",
     ),

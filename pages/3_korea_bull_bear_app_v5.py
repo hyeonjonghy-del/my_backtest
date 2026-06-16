@@ -180,6 +180,43 @@ def portfolio_turnover(new_weights: pd.Series, old_weights: pd.Series) -> float:
     return float((new_weights[assets] - old_weights[assets]).abs().sum())
 
 
+def scale_between(value: pd.Series, low: float, high: float) -> pd.Series:
+    if high <= low:
+        return pd.Series(0.0, index=value.index)
+    return ((value - low) / (high - low)).clip(0.0, 1.0).fillna(0.0)
+
+
+def limit_weight_changes(weights: pd.DataFrame, max_daily_change: float) -> pd.DataFrame:
+    if max_daily_change <= 0:
+        return weights
+
+    limited_rows = []
+    previous = pd.Series(0.0, index=["KODEX Leverage", "KODEX 200"])
+    for date, row in weights.iterrows():
+        target = row[["KODEX Leverage", "KODEX 200"]].astype(float)
+        target_exposure = float(target.sum())
+        previous_exposure = float(previous.sum())
+
+        # Defensive de-risking should not wait for the smoothing rule.
+        if target_exposure < previous_exposure:
+            current = target
+        else:
+            delta = (target - previous).clip(-max_daily_change, max_daily_change)
+            current = (previous + delta).clip(0.0, 1.0)
+            if float(current.sum()) > 1.0:
+                current = current / float(current.sum())
+
+        limited_rows.append(
+            {
+                "KODEX Leverage": float(current["KODEX Leverage"]),
+                "KODEX 200": float(current["KODEX 200"]),
+                "Cash": max(0.0, 1.0 - float(current.sum())),
+            }
+        )
+        previous = current
+    return pd.DataFrame(limited_rows, index=weights.index)
+
+
 def backtest_next_open(
     dates: pd.DatetimeIndex,
     target_weights: pd.DataFrame,
@@ -303,10 +340,14 @@ def build_v5_high_vol_split_strategy(
     vol_window: int,
     vol_cap: float,
     bull_leverage_weight: float,
-    upside_high_vol_kodex_weight: float,
-    upside_high_vol_leverage_weight: float,
-    stress_high_vol_kodex_weight: float,
-    stress_high_vol_leverage_weight: float,
+    full_defense_vol: float,
+    rv_penalty_weight: float,
+    pullback_penalty_weight: float,
+    downside_penalty_weight: float,
+    short_trend_penalty_weight: float,
+    max_risk_penalty: float,
+    max_bull_cash_weight: float,
+    max_daily_weight_change: float,
     recent_return_window: int,
     drawdown_window: int,
     pullback_threshold: float,
@@ -356,24 +397,44 @@ def build_v5_high_vol_split_strategy(
         early_reentry = pd.Series(False, index=kodex_close.index)
     early_reentry = early_reentry.rename("Early Reentry Signal")
 
+    rv_penalty = (scale_between(realized_vol, vol_cap, full_defense_vol) * rv_penalty_weight).rename("RV Penalty")
+    pullback_penalty = (scale_between(-pullback, pullback_threshold, pullback_threshold * 2.0) * pullback_penalty_weight).rename(
+        "Pullback Penalty"
+    )
+    downside_penalty = pd.Series(
+        np.where(downside_vol > upside_vol * downside_vol_ratio, downside_penalty_weight, 0.0),
+        index=kodex_close.index,
+        name="Downside RV Penalty",
+    )
+    short_trend_penalty = pd.Series(
+        np.where(short_trend_ok, 0.0, short_trend_penalty_weight),
+        index=kodex_close.index,
+        name="Short Trend Penalty",
+    )
+    risk_penalty = (rv_penalty + pullback_penalty + downside_penalty + short_trend_penalty).clip(0.0, max_risk_penalty)
+    risk_penalty = risk_penalty.where(trend_signal, 1.0).rename("Risk Penalty")
+
+    bull_cash = (max_bull_cash_weight * risk_penalty / max(max_risk_penalty, 0.01)).clip(0.0, max_bull_cash_weight)
+    invested_target = pd.Series(np.where(trend_signal, 1.0 - bull_cash, 0.0), index=kodex_close.index)
+    leverage_target = (bull_leverage_weight * (1.0 - risk_penalty)).clip(0.0, bull_leverage_weight)
+    leverage_target = pd.Series(np.minimum(leverage_target, invested_target), index=kodex_close.index)
+    kodex_target = (invested_target - leverage_target).clip(0.0, 1.0)
+
     weights = pd.DataFrame(index=kodex_close.index)
-    weights["KODEX Leverage"] = bull_signal.astype(float) * bull_leverage_weight
-    weights["KODEX 200"] = 0.0
-    weights.loc[upside_high_vol_bull, "KODEX Leverage"] = upside_high_vol_leverage_weight
-    weights.loc[upside_high_vol_bull, "KODEX 200"] = upside_high_vol_kodex_weight
-    weights.loc[stress_high_vol_bull, "KODEX Leverage"] = stress_high_vol_leverage_weight
-    weights.loc[stress_high_vol_bull, "KODEX 200"] = stress_high_vol_kodex_weight
+    weights["KODEX Leverage"] = leverage_target.where(trend_signal, 0.0)
+    weights["KODEX 200"] = kodex_target.where(trend_signal, 0.0)
     weights.loc[early_reentry, "KODEX Leverage"] = early_leverage_weight
     weights.loc[early_reentry, "KODEX 200"] = early_kodex_weight
     invested = weights["KODEX Leverage"] + weights["KODEX 200"]
     scale = pd.Series(np.where(invested > 1.0, 1.0 / invested, 1.0), index=weights.index)
     weights[["KODEX Leverage", "KODEX 200"]] = weights[["KODEX Leverage", "KODEX 200"]].mul(scale, axis=0)
     weights["Cash"] = (1.0 - weights["KODEX Leverage"] - weights["KODEX 200"]).clip(0.0, 1.0)
+    weights = limit_weight_changes(weights, max_daily_weight_change)
 
     regime = pd.Series("Bear / Cash", index=kodex_close.index, name="Regime")
-    regime.loc[upside_high_vol_bull] = "Upside High Vol Bull / KODEX 200 + Leverage"
-    regime.loc[stress_high_vol_bull] = "Downside Stress Bull / KODEX 200 + Cash"
-    regime.loc[bull_signal] = "Bull / KODEX Leverage"
+    regime.loc[upside_high_vol_bull] = "Upside High Vol Bull / Scaled Leverage"
+    regime.loc[stress_high_vol_bull] = "Downside Stress Bull / Scaled Defense"
+    regime.loc[bull_signal] = "Bull / Full Leverage"
     regime.loc[early_reentry] = "Early Reentry / Mixed Position"
 
     returns = pd.DataFrame(
@@ -405,6 +466,11 @@ def build_v5_high_vol_split_strategy(
         "downside_stress": downside_stress,
         "upside_high_vol_bull": upside_high_vol_bull,
         "stress_high_vol_bull": stress_high_vol_bull,
+        "rv_penalty": rv_penalty,
+        "pullback_penalty": pullback_penalty,
+        "downside_penalty": downside_penalty,
+        "short_trend_penalty": short_trend_penalty,
+        "risk_penalty": risk_penalty,
         "short_ma_rising": short_ma_rising.rename("Short MA Rising"),
         "recent_low": recent_low.rename("Recent Low"),
         "rebound_return": rebound_return,
@@ -431,19 +497,21 @@ with st.sidebar:
     vol_cap_pct = st.slider("Realized volatility cap (%)", 10, 120, 50, 5)
     vol_source = st.selectbox("Volatility source", ["KODEX 200", "KODEX Leverage"], index=0)
     bull_leverage_pct = st.slider("Bull KODEX Leverage weight (%)", 0, 100, 100, 5)
-    st.subheader("High-Vol Bull Split")
+    st.subheader("Scaled Bull Risk Control")
+    full_defense_vol_pct = st.slider("Full-defense RV level (%)", 40, 150, 80, 5)
+    rv_penalty_pct = st.slider("Max RV leverage penalty (%)", 0, 100, 60, 5)
+    pullback_penalty_pct = st.slider("Max pullback leverage penalty (%)", 0, 100, 25, 5)
+    downside_penalty_pct = st.slider("Downside RV penalty (%)", 0, 100, 20, 5)
+    short_trend_penalty_pct = st.slider("Short-trend break penalty (%)", 0, 100, 20, 5)
+    max_risk_penalty_pct = st.slider("Max total leverage penalty (%)", 0, 100, 90, 5)
+    max_bull_cash_pct = st.slider("Max cash while above long MA (%)", 0, 80, 35, 5)
+    max_daily_weight_change_pct = st.slider("Max daily increase per asset (%)", 0, 100, 25, 5)
     recent_return_window = st.slider("Recent return window (days)", 5, 60, 20, 5)
     drawdown_window = st.slider("Recent high window (days)", 5, 90, 20, 5)
     pullback_threshold_pct = st.slider("Stress pullback threshold (%)", 1, 20, 5, 1)
     downside_vol_ratio = st.slider("Downside stress vol ratio", 0.5, 2.0, 1.0, 0.1)
-    upside_high_vol_kodex_pct = st.slider("Upside high-vol KODEX 200 weight (%)", 0, 100, 60, 5)
-    upside_high_vol_leverage_pct = st.slider("Upside high-vol KODEX Leverage weight (%)", 0, 100, 25, 5)
-    stress_high_vol_kodex_pct = st.slider("Stress high-vol KODEX 200 weight (%)", 0, 100, 50, 5)
-    stress_high_vol_leverage_pct = st.slider("Stress high-vol KODEX Leverage weight (%)", 0, 100, 10, 5)
-    if upside_high_vol_kodex_pct + upside_high_vol_leverage_pct > 100:
-        st.info("Upside high-vol weights exceed 100%, so they will be normalized proportionally.")
-    if stress_high_vol_kodex_pct + stress_high_vol_leverage_pct > 100:
-        st.info("Stress high-vol weights exceed 100%, so they will be normalized proportionally.")
+    if full_defense_vol_pct <= vol_cap_pct:
+        st.info("Full-defense RV should be above the RV cap. The model will still run, but RV scaling will be compressed.")
 
     st.subheader("Limited Early Reentry")
     early_reentry_on = st.checkbox("Use early reentry below long MA", value=True)
@@ -504,10 +572,14 @@ result = build_v5_high_vol_split_strategy(
     vol_window,
     vol_cap_pct / 100,
     bull_leverage_pct / 100,
-    upside_high_vol_kodex_pct / 100,
-    upside_high_vol_leverage_pct / 100,
-    stress_high_vol_kodex_pct / 100,
-    stress_high_vol_leverage_pct / 100,
+    full_defense_vol_pct / 100,
+    rv_penalty_pct / 100,
+    pullback_penalty_pct / 100,
+    downside_penalty_pct / 100,
+    short_trend_penalty_pct / 100,
+    max_risk_penalty_pct / 100,
+    max_bull_cash_pct / 100,
+    max_daily_weight_change_pct / 100,
     recent_return_window,
     drawdown_window,
     pullback_threshold_pct / 100,
@@ -560,6 +632,7 @@ latest_price = float(kodex_close_full.reindex(common_idx).iloc[-1])
 latest_long_ma = float(result["long_ma"].reindex(common_idx).iloc[-1])
 latest_short_ma = float(result["short_ma"].reindex(common_idx).iloc[-1])
 latest_vol = float(result["realized_vol"].reindex(common_idx).iloc[-1])
+latest_risk_penalty = float(result["risk_penalty"].reindex(common_idx).iloc[-1])
 
 st.success(
     f"Current state ({latest_date.date()}): {latest_regime} | "
@@ -569,6 +642,7 @@ st.success(
 st.caption(
     f"KODEX 200 {latest_price:,.0f} / MA{long_ma_window} {latest_long_ma:,.0f} / "
     f"MA{short_ma_window} {latest_short_ma:,.0f} | {vol_source} RV{vol_window} {latest_vol:.1%} | "
+    f"Risk penalty {latest_risk_penalty:.1%} | "
     f"Execution: {execution_model}"
 )
 
@@ -705,11 +779,14 @@ with tab_rules:
 | State | Condition | KODEX 200 | KODEX Leverage | Cash |
 |---|---|---:|---:|---:|
 | Bull | Price > MA{long_ma_window} and RV{vol_window} < {vol_cap_pct}% | 0% | {bull_leverage_pct}% | {100 - bull_leverage_pct}% |
-| Upside high-vol bull | Price > MA{long_ma_window}, RV{vol_window} >= {vol_cap_pct}%, and no downside-stress confirmation | {upside_high_vol_kodex_pct}% | {upside_high_vol_leverage_pct}% | {max(0, 100 - upside_high_vol_kodex_pct - upside_high_vol_leverage_pct)}% |
-| Downside-stress bull | Price > MA{long_ma_window}, RV{vol_window} >= {vol_cap_pct}%, and recent return / pullback / downside RV is stressed | {stress_high_vol_kodex_pct}% | {stress_high_vol_leverage_pct}% | {max(0, 100 - stress_high_vol_kodex_pct - stress_high_vol_leverage_pct)}% |
+| Upside high-vol bull | Price > MA{long_ma_window}, RV{vol_window} >= {vol_cap_pct}%, and no downside-stress confirmation | Scaled residual | Scaled by risk penalty | Scaled up to {max_bull_cash_pct}% |
+| Downside-stress bull | Price > MA{long_ma_window}, RV{vol_window} >= {vol_cap_pct}%, and recent return / pullback / downside RV is stressed | Scaled residual | Reduced by stress penalty | Scaled up to {max_bull_cash_pct}% |
 | Bear | Price <= MA{long_ma_window}, without early-reentry confirmation | 0% | 0% | 100% |
 | Early reentry | Price <= MA{long_ma_window}, Price > MA{short_ma_window}, MA{short_ma_window} rising, and rebound from {recent_low_window}d low >= {rebound_from_low_pct}% | {early_kodex_pct}% | {early_leverage_pct}% | {max(0, 100 - early_kodex_pct - early_leverage_pct)}% |
 
+**Scaled leverage:** base leverage x (1 - risk penalty). Risk penalty is capped at {max_risk_penalty_pct}% and combines RV, pullback, downside RV, and short-trend penalties.<br>
+**RV scaling:** RV penalty starts at {vol_cap_pct}% RV and reaches its maximum near {full_defense_vol_pct}% RV.<br>
+**Daily smoothing:** risk-on increases are limited to {max_daily_weight_change_pct}%p per asset per day; de-risking is immediate.<br>
 **Downside-stress confirmation:** recent {recent_return_window}d return < 0%, or pullback from {drawdown_window}d high <= -{pullback_threshold_pct}%, or downside RV > upside RV x {downside_vol_ratio:.1f}, or short MA trend is not rising.<br>
 **Selected execution:** {execution_model}<br>
 **After-close fill assumption:** {after_close_fill_pct}%
@@ -740,6 +817,11 @@ with tab_data:
             "Downside Stress": result["downside_stress"].reindex(common_idx),
             "Upside High Vol Bull": result["upside_high_vol_bull"].reindex(common_idx),
             "Stress High Vol Bull": result["stress_high_vol_bull"].reindex(common_idx),
+            "RV Penalty": result["rv_penalty"].reindex(common_idx),
+            "Pullback Penalty": result["pullback_penalty"].reindex(common_idx),
+            "Downside RV Penalty": result["downside_penalty"].reindex(common_idx),
+            "Short Trend Penalty": result["short_trend_penalty"].reindex(common_idx),
+            "Risk Penalty": result["risk_penalty"].reindex(common_idx),
             "Short MA Rising": result["short_ma_rising"].reindex(common_idx),
             "Recent Low": result["recent_low"].reindex(common_idx),
             "Rebound From Recent Low": result["rebound_return"].reindex(common_idx),

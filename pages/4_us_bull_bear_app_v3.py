@@ -13,6 +13,7 @@ import streamlit as st
 from chart_utils import static_area_chart as mpl_static_area_chart
 from chart_utils import static_line_chart as mpl_static_line_chart
 from chart_utils import position_action_label
+from chart_utils import static_yearly_returns_chart
 
 SPY = "SPY"
 UPRO = "UPRO"
@@ -33,7 +34,12 @@ COLORS = {
 }
 
 st.set_page_config(page_title="SPY / UPRO Vol Target Bull/Bear", page_icon="US", layout="wide")
-st.title("SPY / UPRO Bull/Bear Volatility Target Backtest")
+title_col, run_col = st.columns([4, 1])
+with title_col:
+    st.title("SPY / UPRO Bull/Bear Volatility Target Backtest")
+with run_col:
+    st.write("")
+    run_btn = st.button("Run backtest", type="primary", use_container_width=True, key="run_backtest_top")
 st.caption("SPY trend + SPY-volatility target sizing")
 
 
@@ -385,7 +391,6 @@ with st.sidebar:
     current_spy_shares = st.number_input("Current SPY shares", min_value=0.0, value=0.0, step=1.0)
     current_upro_shares = st.number_input("Current UPRO shares", min_value=0.0, value=0.0, step=1.0)
     current_cash = st.number_input("Current cash ($)", min_value=0.0, value=0.0, step=1000.0)
-    run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 
 with st.expander("Strategy Rules", expanded=False):
     st.markdown(
@@ -532,6 +537,21 @@ with tab_perf:
         static_line_chart(dd_df, f"Drawdown | Strategy MDD {strategy_metrics['mdd']:.1%}", percent_axis=True, height=320),
         clear_figure=True,
     )
+    st.pyplot(
+        static_yearly_returns_chart(
+            {
+                "Strategy": strategy_metrics["nav"],
+                "SPY": calc_metrics(bench_spy)["nav"],
+                "UPRO": calc_metrics(bench_upro)["nav"],
+            },
+            "Yearly Returns",
+            height=330,
+        ),
+        clear_figure=True,
+    )
+    performance_weight_df = weights[["SPY", "UPRO"]].copy()
+    performance_weight_df["Cash"] = (1 - performance_weight_df.sum(axis=1)).clip(0, 1)
+    st.pyplot(static_area_chart(performance_weight_df, "Portfolio Weights", height=320), clear_figure=True)
 
 with tab_signal:
     signal_df = pd.DataFrame(

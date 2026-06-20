@@ -104,5 +104,55 @@ def static_area_chart(data: pd.DataFrame, title: str, height: int = 300):
     return fig
 
 
+def static_yearly_returns_chart(
+    nav_data: pd.DataFrame | dict[str, pd.Series],
+    title: str = "Yearly Returns",
+    height: int = 330,
+):
+    frame = pd.DataFrame(nav_data).replace([np.inf, -np.inf], np.nan).dropna(how="all")
+    yearly = {}
+    for column in frame.columns:
+        series = frame[column].dropna()
+        if series.empty:
+            continue
+        series = series / series.iloc[0]
+        yearly[column] = series.groupby(series.index.year).apply(lambda x: x.iloc[-1] / x.iloc[0] - 1)
+
+    yearly_df = pd.DataFrame(yearly).dropna(how="all") * 100
+    fig, ax = plt.subplots(figsize=(11, max(height / 100, 2.8)), dpi=120)
+    if yearly_df.empty:
+        ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
+        ax.text(0.5, 0.5, "No yearly return data", ha="center", va="center", transform=ax.transAxes)
+        ax.axis("off")
+        fig.tight_layout()
+        return fig
+
+    x = np.arange(len(yearly_df.index))
+    columns = list(yearly_df.columns)
+    width = min(0.8 / max(len(columns), 1), 0.25)
+    offsets = (np.arange(len(columns)) - (len(columns) - 1) / 2) * width
+    for i, column in enumerate(columns):
+        ax.bar(
+            x + offsets[i],
+            yearly_df[column].fillna(0),
+            width=width,
+            label=str(column),
+            color=DEFAULT_COLORS[i % len(DEFAULT_COLORS)],
+        )
+
+    ax.axhline(0, color="#64748B", linewidth=1, linestyle="--")
+    ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
+    ax.set_ylabel("Return (%)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(yearly_df.index.astype(str))
+    ax.grid(True, axis="y", color="#E5E7EB", linewidth=0.8)
+    ax.grid(False, axis="x")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(loc="upper left", ncols=min(len(columns), 4), frameon=False)
+    fig.tight_layout()
+    return fig
+
+
 def position_action_label(order_abs_sum: float, tolerance: float = 1e-6) -> str:
     return "기존보유비중 유지" if abs(order_abs_sum) <= tolerance else "포지션 및 보유비중 변경"

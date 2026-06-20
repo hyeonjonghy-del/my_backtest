@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from chart_utils import static_yearly_returns_chart
 
 warnings.filterwarnings("ignore")
 
@@ -28,7 +29,12 @@ COLORS = {
 }
 
 st.set_page_config(page_title="KODEX ON/OFF v5", page_icon="KR", layout="wide")
-st.title("KODEX 200 / Leverage ON-OFF Strategy v5")
+title_col, run_col = st.columns([4, 1])
+with title_col:
+    st.title("KODEX 200 / Leverage ON-OFF Strategy v5")
+with run_col:
+    st.write("")
+    run_btn = st.button("Run backtest", type="primary", use_container_width=True, key="run_backtest_top")
 st.caption(
     "v5 core rules with a high-volatility bull regime split: upside-led volatility keeps some leverage, "
     "while downside-stress volatility shifts toward KODEX 200 and cash."
@@ -463,7 +469,6 @@ with st.sidebar:
     )
     after_close_fill_pct = st.slider("After-close fixed-price fill rate (%)", 0, 100, 70, 10)
     fee_pct = st.number_input("Trading cost per turnover (%)", min_value=0.0, value=0.03, step=0.01)
-    run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 
 if not run_btn:
     st.info("Run the v5 strategy with high-volatility bull split and optional early reentry below the long moving average.")
@@ -603,6 +608,18 @@ with tab_perf:
         }
     )
     plot_lines(dd_chart, "Portfolio Drawdown", "%", percent_axis=True, height=3.0)
+    st.pyplot(
+        static_yearly_returns_chart(
+            {
+                "Strategy": nav,
+                "KODEX 200": benchmark_200,
+                "KODEX Leverage": benchmark_lev,
+            },
+            "Yearly Returns",
+            height=330,
+        ),
+        clear_figure=True,
+    )
     plot_weights(weights)
     signal_chart = pd.DataFrame(
         {

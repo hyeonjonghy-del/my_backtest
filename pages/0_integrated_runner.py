@@ -183,7 +183,12 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("Integrated Strategy Runner")
+title_col, run_col = st.columns([4, 1])
+with title_col:
+    st.title("Integrated Strategy Runner")
+with run_col:
+    st.write("")
+    run_us = st.button("Run strategies 4-6", type="primary", use_container_width=True, key="run_strategies_top")
 st.caption("Strategy allocation and execution structure for strategies 1-6.")
 
 weights = load_allocation()
@@ -219,7 +224,6 @@ with st.sidebar:
     st.header("Runner")
     start_date = st.date_input("US start", pd.Timestamp("2016-01-04"))
     end_date = st.date_input("US end", pd.Timestamp.today())
-    run_us = st.button("Run strategies 4-6", use_container_width=True)
 
 df = allocation_frame(edited_weights)
 total_weight = df["Weight"].sum()

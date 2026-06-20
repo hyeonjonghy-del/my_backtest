@@ -13,6 +13,7 @@ import streamlit as st
 from chart_utils import static_area_chart as mpl_static_area_chart
 from chart_utils import static_line_chart as mpl_static_line_chart
 from chart_utils import position_action_label
+from chart_utils import static_yearly_returns_chart
 
 TRADING_DAYS = 252
 QQQ = "QQQ"
@@ -34,7 +35,12 @@ COLORS = {
 }
 
 st.set_page_config(page_title="QQQ/TQQQ Vol Target Backtest V2", page_icon="US", layout="wide")
-st.title("QQQ / TQQQ Volatility Target Backtest V2")
+title_col, run_col = st.columns([4, 1])
+with title_col:
+    st.title("QQQ / TQQQ Volatility Target Backtest V2")
+with run_col:
+    st.write("")
+    run_btn = st.button("Run backtest", type="primary", use_container_width=True, key="run_backtest_top")
 st.caption(
     "Default: Strong Bull uses TQQQ tactically, Weak Bull shifts toward QQQ, "
     "and deep-drawdown turnarounds stay active until short-term momentum breaks"
@@ -515,7 +521,6 @@ with st.sidebar:
     current_qqq_shares = st.number_input("Current QQQ shares", min_value=0.0, value=0.0, step=1.0)
     current_tqqq_shares = st.number_input("Current TQQQ shares", min_value=0.0, value=0.0, step=1.0)
     current_cash = st.number_input("Current cash ($)", min_value=0.0, value=10000.0, step=1000.0)
-    run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 
 with st.expander("Default Strategy", expanded=False):
     st.markdown(
@@ -781,6 +786,21 @@ with tab_perf:
         ),
         clear_figure=True,
     )
+    st.pyplot(
+        static_yearly_returns_chart(
+            {
+                "Strategy": strategy_metrics["nav"],
+                "QQQ": calc_metrics(bench_qqq)["nav"],
+                "TQQQ": calc_metrics(bench_tqqq)["nav"],
+            },
+            "Yearly Returns",
+            height=330,
+        ),
+        clear_figure=True,
+    )
+    performance_weight_df = weights.copy()
+    performance_weight_df["Cash"] = (1 - performance_weight_df.sum(axis=1)).clip(0, 1)
+    st.pyplot(static_area_chart(performance_weight_df, "Portfolio Weights", height=300), clear_figure=True)
 
 with tab_execute:
     st.subheader("Next Trade Plan")

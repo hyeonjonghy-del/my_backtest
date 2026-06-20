@@ -6,10 +6,16 @@ import plotly.express as px
 from pykrx import stock
 from datetime import datetime, timedelta
 import time
+from chart_utils import static_area_chart, static_yearly_returns_chart
 
 st.set_page_config(page_title="차트박사 우량주 백테스트", page_icon="📊", layout="wide")
 
-st.title("📊 6. 차트박사 절대수익 우량주 매매법 백테스트")
+title_col, run_col = st.columns([4, 1])
+with title_col:
+    st.title("📊 6. 차트박사 절대수익 우량주 매매법 백테스트")
+with run_col:
+    st.write("")
+    run_btn = st.button("Run backtest", type="primary", use_container_width=True, key="run_backtest_top")
 st.caption("라운드넘버존 진입 · 역피라미딩 분할매수 · 연간 유니버스 리밸런싱 · 시가평가 NAV")
 
 # ────────────────────────────────────────────────────────────
@@ -162,6 +168,7 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
 
     all_trades = []
     nav_series = {}
+    weight_rows = {}
 
     all_dates = pd.date_range(start=start_date, end=end_date, freq="B")
 
@@ -280,6 +287,11 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
                 mtm_value += pos["shares"] * pos["avg_cost"]
         current_nav = cash + mtm_value
         nav_series[date] = current_nav
+        if current_nav > 0:
+            weight_rows[date] = {
+                "Invested": mtm_value / current_nav,
+                "Cash": cash / current_nav,
+            }
 
         # ── 2. 신규 진입 탐색 ───────────────────────────────
         n_open = len(positions)
@@ -326,13 +338,12 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
                             states[ticker] = "IN_TRADE"
                             n_open += 1
 
-    return all_trades, pd.Series(nav_series)
+    return all_trades, pd.Series(nav_series), pd.DataFrame.from_dict(weight_rows, orient="index")
 
 # ────────────────────────────────────────────────────────────
 # 실행
 # ────────────────────────────────────────────────────────────
 st.divider()
-run_btn = st.button("🚀 백테스트 실행", type="primary", use_container_width=True)
 
 if run_btn:
     start_str = start_date.strftime("%Y%m%d")
@@ -383,7 +394,7 @@ if run_btn:
 
     # ── 포트폴리오 시뮬 ─────────────────────────────────────
     with st.spinner("🔄 포트폴리오 시뮬레이션 실행 중..."):
-        all_trades, strat_nav = run_portfolio_backtest(
+        all_trades, strat_nav, weight_df = run_portfolio_backtest(
             ticker_dfs, yearly_universe, ticker_names
         )
 
@@ -537,6 +548,19 @@ if run_btn:
             height=320, margin=dict(t=50, b=20),
         )
         st.plotly_chart(fig_mdd, use_container_width=True)
+
+        yearly_nav = {"Strategy": strat_nav}
+        if not kospi_s.empty:
+            yearly_nav["KOSPI"] = kospi_s
+        st.pyplot(
+            static_yearly_returns_chart(yearly_nav, "Yearly Returns", height=330),
+            clear_figure=True,
+        )
+        if not weight_df.empty:
+            st.pyplot(
+                static_area_chart(weight_df[["Invested", "Cash"]].clip(0.0, 1.0), "Portfolio Weights", height=300),
+                clear_figure=True,
+            )
 
         col_a, col_b = st.columns(2)
         with col_a:

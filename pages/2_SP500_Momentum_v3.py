@@ -30,7 +30,7 @@ import time
 import requests
 from math import ceil
 from datetime import datetime
-from chart_utils import static_area_chart
+from chart_utils import static_area_chart, static_yearly_returns_chart
 
 # ─────────────────────────────────────────────────────────
 # 0. 한글 폰트 설정
@@ -53,7 +53,12 @@ st.set_page_config(
     page_icon="🇺🇸",
     layout="wide"
 )
-st.title("🇺🇸 S&P 500 상대 모멘텀 전략 v3")
+title_col, run_col = st.columns([4, 1])
+with title_col:
+    st.title("🇺🇸 S&P 500 상대 모멘텀 전략 v3")
+with run_col:
+    st.write("")
+    run_btn = st.button("Run backtest", type="primary", use_container_width=True, key="run_backtest_top")
 st.markdown("""
 **생존편향(Survivorship Bias)을 제거**한 백테스트입니다.  
 Wikipedia S&P500 편출입 이력을 자동 수집하여 각 리밸런싱 시점의 **실제 구성종목**을 복원합니다.  
@@ -329,7 +334,6 @@ with st.sidebar:
     ) / 100
 
     st.markdown("---")
-    run_btn = st.button("🚀 전략 실행", type="primary", use_container_width=True)
 
 
 # ─────────────────────────────────────────────────────────
@@ -720,6 +724,15 @@ if run_btn:
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
+
+        yearly_nav = {"Strategy": cum_returns}
+        if bm_cum is not None:
+            bm_vals = bm_cum.iloc[:, 0] if isinstance(bm_cum, pd.DataFrame) else bm_cum
+            yearly_nav["S&P 500"] = bm_vals
+        st.pyplot(
+            static_yearly_returns_chart(yearly_nav, "Yearly Returns", height=330),
+            clear_figure=True,
+        )
 
         weight_df = pd.DataFrame({
             "Equity": equity_weight,

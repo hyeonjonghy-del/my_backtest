@@ -35,7 +35,12 @@ COLORS = {
 }
 
 st.set_page_config(page_title="KODEX ON/OFF v1", page_icon="KR", layout="wide")
-st.title("KODEX 200 / Leverage ON-OFF Strategy v1")
+title_col, run_col = st.columns([4, 1])
+with title_col:
+    st.title("KODEX 200 / Leverage ON-OFF Strategy v1")
+with run_col:
+    st.write("")
+    run_btn = st.button("Run backtest", type="primary", use_container_width=True, key="run_backtest_top")
 st.caption(
     "v1 adds a high-volatility bull fallback: when trend passes but RV exceeds the cap, "
     "the strategy can hold KODEX 200 plus cash instead of moving fully to cash."
@@ -676,7 +681,6 @@ with st.sidebar:
     run_sensitivity = st.checkbox("Show sensitivity table", value=False)
     recent_years = st.slider("Recent-period comparison years", 1, 5, 3, 1)
     st.caption("These diagnostics do not change the main strategy result.")
-    run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 
 vol_threshold = vol_threshold_pct / 100
 leverage_weight = leverage_weight_pct / 100

@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from pykrx import stock
+from chart_utils import static_area_chart, static_yearly_returns_chart
 
 
 COL_OPEN = "\uc2dc\uac00"
@@ -21,7 +22,12 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("\U0001f4ca 8. ChartDoctor Bluechip Backtest v2")
+title_col, run_col = st.columns([4, 1])
+with title_col:
+    st.title("\U0001f4ca 8. ChartDoctor Bluechip Backtest v2")
+with run_col:
+    st.write("")
+    run_btn = st.button("Run backtest", type="primary", use_container_width=True, key="run_backtest_top")
 st.caption(
     "Practical daily-bar execution: past-only universe, next-day entry after trigger, "
     "and end-of-day mark-to-market NAV."
@@ -143,6 +149,7 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
     positions = {}
     trades = []
     nav_series = {}
+    weight_rows = {}
     end_open_positions = 0
 
     all_dates = pd.date_range(start=start_date, end=end_date, freq="B")
@@ -301,14 +308,20 @@ def run_portfolio_backtest(ticker_dfs: dict, yearly_universe: dict, ticker_names
                     prev_round_map[ticker] = prev_round
                     trigger_date_map[ticker] = date
 
-        nav_series[date] = calc_nav(date)
+        nav_value = calc_nav(date)
+        invested_value = max(nav_value - cash, 0.0)
+        nav_series[date] = nav_value
+        if nav_value > 0:
+            weight_rows[date] = {
+                "Invested": invested_value / nav_value,
+                "Cash": cash / nav_value,
+            }
         end_open_positions = len(positions)
 
-    return trades, pd.Series(nav_series), end_open_positions
+    return trades, pd.Series(nav_series), pd.DataFrame.from_dict(weight_rows, orient="index"), end_open_positions
 
 
 st.divider()
-run_btn = st.button("Run v2 backtest", type="primary", use_container_width=True)
 
 if run_btn:
     start_str = start_date.strftime("%Y%m%d")
@@ -356,7 +369,7 @@ if run_btn:
     progress.empty()
 
     with st.spinner("Running portfolio simulation..."):
-        trades, strat_nav, end_open_positions = run_portfolio_backtest(ticker_dfs, yearly_universe, ticker_names)
+        trades, strat_nav, weight_df, end_open_positions = run_portfolio_backtest(ticker_dfs, yearly_universe, ticker_names)
 
     if not trades:
         st.warning("No completed trades matched the conditions.")
@@ -424,6 +437,18 @@ if run_btn:
     ret_fig.add_hline(y=0, line_dash="dash", line_color="gray")
     ret_fig.update_layout(title="Cumulative return", yaxis_ticksuffix="%", height=420)
     st.plotly_chart(ret_fig, use_container_width=True)
+    yearly_nav = {"Strategy v2": strat_nav}
+    if not kospi.empty:
+        yearly_nav["KOSPI"] = kospi
+    st.pyplot(
+        static_yearly_returns_chart(yearly_nav, "Yearly Returns", height=330),
+        clear_figure=True,
+    )
+    if not weight_df.empty:
+        st.pyplot(
+            static_area_chart(weight_df[["Invested", "Cash"]].clip(0.0, 1.0), "Portfolio Weights", height=300),
+            clear_figure=True,
+        )
 
     tab1, tab2 = st.tabs(["Trades", "Monthly returns"])
     with tab1:

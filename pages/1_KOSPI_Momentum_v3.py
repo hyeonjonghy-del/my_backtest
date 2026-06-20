@@ -33,7 +33,7 @@ import FinanceDataReader as fdr
 import time
 from math import ceil
 from pathlib import Path
-from chart_utils import static_area_chart
+from chart_utils import static_area_chart, static_yearly_returns_chart
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "kospi200_universe"
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -59,7 +59,12 @@ st.set_page_config(
     page_icon="🇰🇷",
     layout="wide"
 )
-st.title("🇰🇷 KOSPI 200 상대 모멘텀 전략 v3")
+title_col, run_col = st.columns([4, 1])
+with title_col:
+    st.title("🇰🇷 KOSPI 200 상대 모멘텀 전략 v3")
+with run_col:
+    st.write("")
+    run_btn = st.button("Run backtest", type="primary", use_container_width=True, key="run_backtest_top")
 st.markdown("""
 **생존편향(Survivorship Bias)을 제거**한 백테스트입니다.  
 각 리밸런싱 시점에 *당시 실제로 편입되어 있던* KOSPI 200 종목만 사용합니다.
@@ -521,8 +526,6 @@ KRX API → WISE Index API 순서로 시도하여 반기별 KOSPI 200 구성종�
         help="매수+매도 합산 수수료. 보통 0.3~0.5% 수준"
     ) / 100
 
-    run_btn = st.button("🚀 전략 실행", type="primary", use_container_width=True)
-
 
 # ─────────────────────────────────────────────────────────
 # 5. 메인 백테스트 로직
@@ -875,6 +878,14 @@ if run_btn:
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
+
+        yearly_nav = {"Strategy": cum_returns}
+        if bm_cum is not None:
+            yearly_nav["KOSPI 200"] = bm_cum
+        st.pyplot(
+            static_yearly_returns_chart(yearly_nav, "Yearly Returns", height=330),
+            clear_figure=True,
+        )
 
         weight_df = pd.DataFrame({
             "Equity": equity_weight,

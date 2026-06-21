@@ -8,6 +8,7 @@ USD (2x semiconductor ETF) and SOXL (3x semiconductor ETF).
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 SOURCE_PAGE = Path(__file__).with_name("5_soxx_soxl_vol_target_app_v5.py")
@@ -27,20 +28,10 @@ code = code.replace(
 )
 code = code.replace('SOXL = "SOXL"', 'USD = "USD"\nSOXL = "SOXL"\nUSD_LEVERAGE = 2.0\nSOXL_LEVERAGE = 3.0')
 code = code.replace('"soxl": "#DC2626",', '"usd": "#EA580C",\n    "soxl": "#DC2626",')
-code = code.replace(
-    'page_title="SOXX/SOXL Vol Target Backtest V5"',
-    'page_title="SOXX/USD/SOXL Vol Target Backtest V1"',
-)
-code = code.replace(
-    "SOXX / SOXL Volatility Target Backtest V5",
-    "SOXX / USD / SOXL Volatility Target Backtest V1",
-)
-code = code.replace(
-    "Default: Strong Bull uses SOXL tactically, Weak Bull shifts toward SOXX, "
-    "and deep-drawdown turnarounds stay active until short-term momentum breaks",
-    "Default: Strong Bull can use SOXL aggressively, Weak Bull can use USD as a 2x middle gear, "
-    "and SOXX remains the base signal and defensive sleeve",
-)
+code = code.replace('page_title="SOXX/SOXL Vol Target Backtest V5"', 'page_title="SOXX/USD/SOXL Vol Target Backtest V1"')
+code = code.replace("SOXX / SOXL Volatility Target Backtest V5", "SOXX / USD / SOXL Volatility Target Backtest V1")
+code = code.replace("Default: Strong Bull uses SOXL tactically, Weak Bull shifts toward SOXX,", "Default: Strong Bull can use SOXL aggressively, Weak Bull can use USD as a 2x middle gear,")
+code = code.replace("and deep-drawdown turnarounds stay active until short-term momentum breaks", "and SOXX remains the base signal and defensive sleeve")
 
 code = replace_between(
     code,
@@ -104,34 +95,22 @@ code = replace_between(
     strong_risk = desired_risk
     strong_soxx = (strong_risk * strong_soxx_risk_share).clip(0, 1)
     strong_soxl = ((strong_risk - strong_soxx) / SOXL_LEVERAGE).clip(0, soxl_cap)
-    strong_risk_left = (strong_risk - strong_soxx - strong_soxl * SOXL_LEVERAGE).clip(lower=0)
-    strong_usd = (strong_risk_left / USD_LEVERAGE).clip(0, usd_cap)
-    strong_risk_used = strong_soxx + strong_usd * USD_LEVERAGE + strong_soxl * SOXL_LEVERAGE
-    strong_soxx = (strong_soxx + (strong_risk - strong_risk_used).clip(lower=0)).clip(0, 1 - strong_usd - strong_soxl)
+    strong_left = (strong_risk - strong_soxx - strong_soxl * SOXL_LEVERAGE).clip(lower=0)
+    strong_usd = (strong_left / USD_LEVERAGE).clip(0, usd_cap)
+    strong_used = strong_soxx + strong_usd * USD_LEVERAGE + strong_soxl * SOXL_LEVERAGE
+    strong_soxx = (strong_soxx + (strong_risk - strong_used).clip(lower=0)).clip(0, 1 - strong_usd - strong_soxl)
 
     weak_risk = (desired_risk * weak_risk_multiplier).clip(0, max_risk_exposure)
     weak_soxx = (weak_risk * weak_soxx_risk_share).clip(0, 1)
     weak_usd = ((weak_risk - weak_soxx) / USD_LEVERAGE).clip(0, weak_usd_cap)
-    weak_risk_left = (weak_risk - weak_soxx - weak_usd * USD_LEVERAGE).clip(lower=0)
-    weak_soxl = (weak_risk_left / SOXL_LEVERAGE).clip(0, weak_soxl_cap)
-    weak_risk_used = weak_soxx + weak_usd * USD_LEVERAGE + weak_soxl * SOXL_LEVERAGE
-    weak_soxx = (weak_soxx + (weak_risk - weak_risk_used).clip(lower=0)).clip(0, 1 - weak_usd - weak_soxl)
+    weak_left = (weak_risk - weak_soxx - weak_usd * USD_LEVERAGE).clip(lower=0)
+    weak_soxl = (weak_left / SOXL_LEVERAGE).clip(0, weak_soxl_cap)
+    weak_used = weak_soxx + weak_usd * USD_LEVERAGE + weak_soxl * SOXL_LEVERAGE
+    weak_soxx = (weak_soxx + (weak_risk - weak_used).clip(lower=0)).clip(0, 1 - weak_usd - weak_soxl)
 
-    weights["SOXL"] = np.select(
-        [regime == "Strong Bull", regime == "Weak Bull"],
-        [strong_soxl, weak_soxl],
-        default=0.0,
-    )
-    weights["USD"] = np.select(
-        [regime == "Strong Bull", regime == "Weak Bull"],
-        [strong_usd, weak_usd],
-        default=0.0,
-    )
-    weights["SOXX"] = np.select(
-        [regime == "Strong Bull", regime == "Weak Bull"],
-        [strong_soxx, weak_soxx],
-        default=bear_soxx,
-    )
+    weights["SOXL"] = np.select([regime == "Strong Bull", regime == "Weak Bull"], [strong_soxl, weak_soxl], default=0.0)
+    weights["USD"] = np.select([regime == "Strong Bull", regime == "Weak Bull"], [strong_usd, weak_usd], default=0.0)
+    weights["SOXX"] = np.select([regime == "Strong Bull", regime == "Weak Bull"], [strong_soxx, weak_soxx], default=bear_soxx)
     weights.loc[turnaround_signal, "USD"] = turnaround_usd_weight
     weights.loc[turnaround_signal, "SOXL"] = turnaround_soxl_weight
     weights.loc[turnaround_signal, "SOXX"] = 1 - turnaround_usd_weight - turnaround_soxl_weight
@@ -195,11 +174,8 @@ code = replace_between(
 
     risk_used = soxx_w + usd_w * USD_LEVERAGE + soxl_w * SOXL_LEVERAGE
     soxx_w = min(soxx_w + max(desired_risk - risk_used, 0.0), 1 - usd_w - soxl_w)
-
     target = pd.Series({"SOXX": soxx_w, "USD": usd_w, "SOXL": soxl_w}).clip(0, 1)
-    if target.sum() > 1:
-        target = target / target.sum()
-    return target''',
+    return target / target.sum() if target.sum() > 1 else target''',
 )
 
 code = replace_between(
@@ -265,13 +241,89 @@ code = code.replace('soxx_adj_factor = (soxx["adjclose"] / soxx["close"]).replac
 code = code.replace('soxx_adjopen = (soxx["open"] * soxx_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()\nsoxl_adjopen', 'soxx_adjopen = (soxx["open"] * soxx_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()\nusd_adjopen = (usd["open"] * usd_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()\nsoxl_adjopen')
 code = code.replace('ret_soxx_full = (soxx_adjopen.shift(-1) / soxx_adjopen - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)\nret_soxl_full', 'ret_soxx_full = (soxx_adjopen.shift(-1) / soxx_adjopen - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)\nret_usd_full = (usd_adjopen.shift(-1) / usd_adjopen - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)\nret_soxl_full')
 
-code = code.replace('    target_vol,\n    soxl_cap,\n    max_risk_exposure,', '    target_vol,\n    soxl_cap,\n    usd_cap,\n    max_risk_exposure,')
-code = code.replace('    weak_soxx_risk_share,\n    weak_soxl_cap,\n    turnaround_soxl_weight,', '    weak_soxx_risk_share,\n    weak_usd_cap,\n    weak_soxl_cap,\n    turnaround_usd_weight,\n    turnaround_soxl_weight,')
+code = re.sub(
+    r"weights_full = build_strategy_weights\([\s\S]*?\n\)\n\nweights =",
+    '''weights_full = build_strategy_weights(
+    price,
+    trend_signal,
+    regime_signal,
+    turnaround_signal,
+    vol,
+    target_vol,
+    soxl_cap,
+    usd_cap,
+    max_risk_exposure,
+    strong_soxx_risk_share,
+    weak_risk_multiplier,
+    weak_soxx_risk_share,
+    weak_usd_cap,
+    weak_soxl_cap,
+    turnaround_usd_weight,
+    turnaround_soxl_weight,
+    bear_soxx,
+    rebalance,
+)
 
+weights =''',
+    code,
+    count=1,
+)
+code = re.sub(
+    r"close_target_weights = pd\.DataFrame\([\s\S]*?\n\)\nret_soxx =",
+    '''close_target_weights = pd.DataFrame(
+    [
+        calc_target_weight(
+            str(close_regime_signal.ffill().loc[date]),
+            bool(close_turnaround_signal.fillna(False).loc[date]),
+            vol.ffill().loc[date],
+            target_vol,
+            soxl_cap,
+            usd_cap,
+            max_risk_exposure,
+            strong_soxx_risk_share,
+            weak_risk_multiplier,
+            weak_soxx_risk_share,
+            weak_usd_cap,
+            weak_soxl_cap,
+            turnaround_usd_weight,
+            turnaround_soxl_weight,
+            bear_soxx,
+        )
+        for date in common_idx
+    ],
+    index=common_idx,
+)
+ret_soxx =''',
+    code,
+    count=1,
+)
 code = code.replace('ret_soxx = ret_soxx_full.reindex(common_idx).fillna(0.0)\nret_soxl = ret_soxl_full.reindex(common_idx).fillna(0.0)\nstrategy_ret = backtest(weights, ret_soxx, ret_soxl, cost_rate)', 'ret_soxx = ret_soxx_full.reindex(common_idx).fillna(0.0)\nret_usd = ret_usd_full.reindex(common_idx).fillna(0.0)\nret_soxl = ret_soxl_full.reindex(common_idx).fillna(0.0)\nstrategy_ret = backtest(weights, ret_soxx, ret_usd, ret_soxl, cost_rate)')
 code = code.replace('bench_soxx = ret_soxx\nbench_soxl = ret_soxl\nfixed_20 = 0.8 * ret_soxx + 0.2 * ret_soxl\nfixed_30 = 0.7 * ret_soxx + 0.3 * ret_soxl', 'bench_soxx = ret_soxx\nbench_usd = ret_usd\nbench_soxl = ret_soxl\nfixed_20 = 0.7 * ret_soxx + 0.2 * ret_usd + 0.1 * ret_soxl\nfixed_30 = 0.5 * ret_soxx + 0.3 * ret_usd + 0.2 * ret_soxl')
 code = code.replace('metric_row("Strategy", strategy_ret, weights["SOXX"], weights["SOXL"]),\n        metric_row("SOXX 100%", bench_soxx),\n        metric_row("SOXL 100%", bench_soxl),\n        metric_row("SOXX 80% + SOXL 20%", fixed_20),\n        metric_row("SOXX 70% + SOXL 30%", fixed_30),', 'metric_row("Strategy", strategy_ret, weights["SOXX"], weights["USD"], weights["SOXL"]),\n        metric_row("SOXX 100%", bench_soxx),\n        metric_row("USD 100%", bench_usd),\n        metric_row("SOXL 100%", bench_soxl),\n        metric_row("SOXX 70% + USD 20% + SOXL 10%", fixed_20),\n        metric_row("SOXX 50% + USD 30% + SOXL 20%", fixed_30),')
 
+code = re.sub(
+    r"next_target = calc_target_weight\([\s\S]*?\n\)\nlatest_prices =",
+    '''next_target = calc_target_weight(
+    str(close_regime_signal.reindex(weights.index).ffill().iloc[-1]),
+    latest_turnaround,
+    latest_vol,
+    target_vol,
+    soxl_cap,
+    usd_cap,
+    max_risk_exposure,
+    strong_soxx_risk_share,
+    weak_risk_multiplier,
+    weak_soxx_risk_share,
+    weak_usd_cap,
+    weak_soxl_cap,
+    turnaround_usd_weight,
+    turnaround_soxl_weight,
+    bear_soxx,
+)
+latest_prices =''',
+    code,
+    count=1,
+)
 code = code.replace('f"SOXX {next_target[\'SOXX\']:.1%}, SOXL {next_target[\'SOXL\']:.1%}, Cash {1 - next_target.sum():.1%} | "', 'f"SOXX {next_target[\'SOXX\']:.1%}, USD {next_target[\'USD\']:.1%}, SOXL {next_target[\'SOXL\']:.1%}, Cash {1 - next_target.sum():.1%} | "')
 code = code.replace('"SOXL": soxl["adjclose"].reindex(weights.index).ffill().iloc[-1],', '"USD": usd["adjclose"].reindex(weights.index).ffill().iloc[-1],\n        "SOXL": soxl["adjclose"].reindex(weights.index).ffill().iloc[-1],')
 code = code.replace('current_shares = pd.Series({"SOXX": current_soxx_shares, "SOXL": current_soxl_shares})', 'current_shares = pd.Series({"SOXX": current_soxx_shares, "USD": current_usd_shares, "SOXL": current_soxl_shares})')

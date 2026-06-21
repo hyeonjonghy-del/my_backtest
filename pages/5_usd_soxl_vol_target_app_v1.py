@@ -43,7 +43,5 @@ code = code.replace("/ 3).clip", "/ SOXL_LEVERAGE).clip")
 code = code.replace("/ 3, 0.0)", "/ SOXL_LEVERAGE, 0.0)")
 code = code.replace("* 3\n", "* SOXL_LEVERAGE\n")
 code = code.replace("* 3\r\n", "* SOXL_LEVERAGE\r\n")
-code = code.replace("1.5f}x USD-equivalent risk", "1.1f}x USD-equivalent risk")
-code = code.replace("Loading USD/SOXL data...", "Loading USD/SOXL data...")
 
 exec(compile(code, str(SOURCE_PAGE), "exec"), {"__file__": str(SOURCE_PAGE), "__name__": "__main__"})

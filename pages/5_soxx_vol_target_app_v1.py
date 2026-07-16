@@ -221,6 +221,7 @@ def monthly_table(ret: pd.Series) -> pd.DataFrame:
     frame["Month"] = frame.index.month
     table = frame.pivot(index="Year", columns="Month", values="return")
     table.columns = [datetime(2000, int(month), 1).strftime("%b") for month in table.columns]
+    table["Annual"] = (1 + table).prod(axis=1, skipna=True) - 1
     return table
 
 
@@ -442,8 +443,13 @@ with tab_comparison:
 with tab_monthly:
     strategy_monthly = monthly_table(strategy_ret)
     st.subheader("Strategy Monthly Returns")
-    st.dataframe(strategy_monthly.style.format("{:.1%}").background_gradient(cmap="RdYlGn", axis=None),
-                 use_container_width=True)
+    monthly_style = (
+        strategy_monthly.style
+        .format("{:.1%}")
+        .background_gradient(cmap="RdYlGn", axis=None)
+        .set_properties(subset=["Annual"], **{"font-weight": "bold", "border-left": "2px solid #9CA3AF"})
+    )
+    st.dataframe(monthly_style, use_container_width=True)
     daily_export = pd.DataFrame({
         "SOXX_return": ret_soxx,
         "BIL_return": ret_bil,
@@ -460,4 +466,3 @@ with tab_monthly:
                        file_name="soxx_vol_target_daily.csv", mime="text/csv", use_container_width=True)
     d2.download_button("Download summary CSV", summary.to_csv(index=False).encode("utf-8-sig"),
                        file_name="soxx_vol_target_summary.csv", mime="text/csv", use_container_width=True)
-

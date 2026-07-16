@@ -38,6 +38,13 @@ STRATEGIES = [
         "note": "Use v3 as the practical US bull/bear strategy.",
     },
     {
+        "page": "5_soxx_vol_target_app_v1.py",
+        "name": "SOXX Vol Target v1",
+        "role": "Defensive semiconductor core",
+        "decision": "Keep",
+        "note": "Use SOXX and BIL only to reduce drawdown without leveraged ETFs.",
+    },
+    {
         "page": "5_soxx_soxl_vol_target_app_v5.py",
         "name": "SOXX / SOXL Vol Target v5",
         "role": "Aggressive satellite",
@@ -70,7 +77,7 @@ STRATEGIES = [
 
 st.set_page_config(
     page_title="my_backtest Strategy Dashboard",
-    page_icon="📈",
+    page_icon="?뱢",
     layout="wide",
 )
 

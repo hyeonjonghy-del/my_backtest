@@ -35,8 +35,8 @@ with run_col:
     st.write("")
     run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 st.caption(
-    "KODEX 반도체 and short-term Treasury kodex_bondls only: participate in long-term semiconductor growth "
-    "while reducing exposure when trend weakens or volatility rises."
+    "KODEX 반도체와 KODEX 단기채권만 사용합니다. 반도체의 장기 성장에는 참여하되, "
+    "추세가 약해지거나 변동성이 커지면 주식 비중을 낮춥니다."
 )
 
 
@@ -260,7 +260,7 @@ with st.expander("Default Strategy", expanded=False):
 | Volatility window | {vol_window} trading days |
 | Target volatility | {target_vol:.0%} |
 | Bull allocation | min(100%, target volatility / KODEX 반도체 volatility) |
-| Bear allocation | KODEX 반도체 {bear_kodex_semiconductor:.0%} + KODEX 단기채권 {1 - bear_kodex_semiconductor:.0%} |
+| Bear allocation | KODEX 반도체 {bear_soxx:.0%} + KODEX 단기채권 {1 - bear_soxx:.0%} |
 | Signal execution | Close signal, next open |
 | Rebalance | Daily |
 | One-way cost | {cost_rate:.2%} |
@@ -279,7 +279,7 @@ if fast_window >= slow_window:
     st.stop()
 
 
-progress = st.progress(0, text="Loading KODEX 반도체 and KODEX 단기채권 data...")
+progress = st.progress(0, text="KODEX 반도체와 KODEX 단기채권 데이터를 불러오는 중...")
 try:
     warmup_start = datetime.combine(start_date, datetime.min.time()) - timedelta(days=max(slow_window, vol_window) * 3)
     end_dt = datetime.combine(end_date, datetime.min.time())

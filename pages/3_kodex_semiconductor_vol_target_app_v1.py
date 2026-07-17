@@ -1,4 +1,4 @@
-"""KODEX 반도체-only trend and volatility-target backtest."""
+"""Selectable Korean stock trend and volatility-target backtest."""
 
 from __future__ import annotations
 
@@ -13,8 +13,15 @@ import streamlit as st
 
 
 TRADING_DAYS = 252
-SOXX = "091160.KS"
 BIL = "153130.KS"
+RISK_COL = "risk_asset"
+BOND_COL = "bond_asset"
+ASSET_PRESETS = {
+    "KODEX 반도체": "091160.KS",
+    "삼성전자": "005930.KS",
+    "SK하이닉스": "000660.KS",
+    "직접 입력": None,
+}
 COLORS = {
     "strategy": "#0F766E",
     "kodex_semiconductor": "#2563EB",
@@ -27,15 +34,30 @@ COLORS = {
 }
 
 
-st.set_page_config(page_title="KODEX 반도체 변동성 타깃 전략", page_icon="🇰🇷", layout="wide")
+st.set_page_config(page_title="한국 주식 변동성 타깃 전략", page_icon="🇰🇷", layout="wide")
+
+with st.sidebar:
+    st.header("테스트 종목")
+    asset_choice = st.selectbox("종목 선택", list(ASSET_PRESETS))
+    if asset_choice == "직접 입력":
+        custom_name = st.text_input("표시할 종목명", value="사용자 종목").strip() or "사용자 종목"
+        custom_code = st.text_input("Yahoo Finance 종목코드", value="005930.KS").strip().upper()
+        if custom_code.isdigit() and len(custom_code) == 6:
+            custom_code = f"{custom_code}.KS"
+        risk_label = custom_name
+        risk_symbol = custom_code
+    else:
+        risk_label = asset_choice
+        risk_symbol = ASSET_PRESETS[asset_choice]
+
 title_col, run_col = st.columns([4, 1])
 with title_col:
-    st.title("KODEX 반도체 변동성 타깃 전략")
+    st.title(f"{risk_label} 변동성 타깃 전략")
 with run_col:
     st.write("")
     run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 st.caption(
-    "KODEX 반도체와 KODEX 단기채권만 사용합니다. 반도체의 장기 성장에는 참여하되, "
+    f"{risk_label}와 KODEX 단기채권을 조합합니다. 선택 종목의 장기 상승에는 참여하되, "
     "추세가 약해지거나 변동성이 커지면 주식 비중을 낮춥니다."
 )
 
@@ -122,7 +144,7 @@ def metric_row(name: str, ret: pd.Series, soxx_weight: pd.Series | None = None) 
         "Sharpe": metrics["sharpe"],
         "Calmar": metrics["calmar"],
         "Monthly Win": metrics["monthly_win"],
-        "Avg KODEX 반도체": np.nan if soxx_weight is None else soxx_weight.mean(),
+        "Avg Risk Asset": np.nan if soxx_weight is None else soxx_weight.mean(),
     }
 
 
@@ -143,7 +165,7 @@ def build_weights(
     execution_vol = realized_vol.shift(1).replace(0, np.nan)
     bull_weight = (target_vol / execution_vol).clip(0, 1).fillna(bear_soxx)
     soxx_weight = pd.Series(np.where(execution_bull, bull_weight, bear_soxx), index=price.index)
-    weights = pd.DataFrame({"KODEX 반도체": soxx_weight, "KODEX 단기채권": 1 - soxx_weight}, index=price.index)
+    weights = pd.DataFrame({RISK_COL: soxx_weight, BOND_COL: 1 - soxx_weight}, index=price.index)
     return weights, close_bull, realized_vol, fast_ma, slow_ma
 
 
@@ -198,11 +220,11 @@ def line_chart(data: pd.DataFrame, title: str, yaxis: str = "", percent: bool = 
     return fig
 
 
-def area_chart(weights: pd.DataFrame):
+def area_chart(weights: pd.DataFrame, selected_label: str):
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=weights.index, y=weights["KODEX 반도체"], name="KODEX 반도체", stackgroup="one",
+    fig.add_trace(go.Scatter(x=weights.index, y=weights[RISK_COL], name=selected_label, stackgroup="one",
                              line=dict(width=0.7, color=COLORS["kodex_semiconductor"])))
-    fig.add_trace(go.Scatter(x=weights.index, y=weights["KODEX 단기채권"], name="KODEX 단기채권 / Cash", stackgroup="one",
+    fig.add_trace(go.Scatter(x=weights.index, y=weights[BOND_COL], name="KODEX 단기채권 / Cash", stackgroup="one",
                              line=dict(width=0.7, color=COLORS["kodex_bond"])))
     fig.update_layout(title="Portfolio Weights", height=330, hovermode="x unified", plot_bgcolor="white",
                       paper_bgcolor="white", margin=dict(l=10, r=10, t=48, b=20),
@@ -240,13 +262,13 @@ with st.sidebar:
     st.subheader("Volatility Target")
     vol_window = st.slider("Volatility window", 10, 80, 20, 5)
     target_vol = st.slider("Target volatility (%)", 10, 60, 40, 5) / 100
-    bear_soxx = st.slider("Bear-regime KODEX 반도체 weight (%)", 0, 100, 40, 5) / 100
+    bear_soxx = st.slider(f"약세 구간 {risk_label} 비중 (%)", 0, 100, 40, 5) / 100
     cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.10, step=0.01) / 100
 
     st.subheader("Execution")
     account_value = st.number_input("계좌 평가금액 (원)", min_value=0.0, value=10000000.0, step=1000000.0)
-    current_soxx_shares = st.number_input("Current KODEX 반도체 shares", min_value=0.0, value=0.0, step=1.0)
-    current_bil_shares = st.number_input("Current KODEX 단기채권 shares", min_value=0.0, value=0.0, step=1.0)
+    current_soxx_shares = st.number_input(f"현재 {risk_label} 보유 수량", min_value=0.0, value=0.0, step=1.0)
+    current_bil_shares = st.number_input("현재 KODEX 단기채권 보유 수량", min_value=0.0, value=0.0, step=1.0)
     current_cash = st.number_input("현재 미투자 현금 (원)", min_value=0.0, value=10000000.0, step=1000000.0)
 
 
@@ -255,12 +277,12 @@ with st.expander("Default Strategy", expanded=False):
         f"""
 | Item | Value |
 |---|---|
-| Assets | KODEX 반도체 + KODEX 단기채권 only |
-| Bull regime | KODEX 반도체 MA{fast_window} > MA{slow_window} |
+| 투자 대상 | {risk_label} + KODEX 단기채권 |
+| 상승 구간 | {risk_label} MA{fast_window} > MA{slow_window} |
 | Volatility window | {vol_window} trading days |
 | Target volatility | {target_vol:.0%} |
-| Bull allocation | min(100%, target volatility / KODEX 반도체 volatility) |
-| Bear allocation | KODEX 반도체 {bear_soxx:.0%} + KODEX 단기채권 {1 - bear_soxx:.0%} |
+| 상승 구간 비중 | min(100%, 목표 변동성 / {risk_label} 변동성) |
+| 약세 구간 비중 | {risk_label} {bear_soxx:.0%} + KODEX 단기채권 {1 - bear_soxx:.0%} |
 | Signal execution | Close signal, next open |
 | Rebalance | Daily |
 | One-way cost | {cost_rate:.2%} |
@@ -269,7 +291,10 @@ with st.expander("Default Strategy", expanded=False):
 
 
 if not run_btn:
-    st.info("Check the settings in the sidebar, then run the backtest.")
+    st.info("왼쪽에서 종목과 설정을 확인한 뒤 Run backtest를 누르세요.")
+    st.stop()
+if not risk_symbol:
+    st.error("직접 입력할 Yahoo Finance 종목코드를 입력하세요.")
     st.stop()
 if start_date >= end_date:
     st.error("Start date must be earlier than end date.")
@@ -279,11 +304,11 @@ if fast_window >= slow_window:
     st.stop()
 
 
-progress = st.progress(0, text="KODEX 반도체와 KODEX 단기채권 데이터를 불러오는 중...")
+progress = st.progress(0, text=f"{risk_label}와 KODEX 단기채권 데이터를 불러오는 중...")
 try:
     warmup_start = datetime.combine(start_date, datetime.min.time()) - timedelta(days=max(slow_window, vol_window) * 3)
     end_dt = datetime.combine(end_date, datetime.min.time())
-    soxx = load_yahoo_chart(SOXX, warmup_start, end_dt)
+    soxx = load_yahoo_chart(risk_symbol, warmup_start, end_dt)
     bil = load_yahoo_chart(BIL, warmup_start, end_dt)
 except Exception as exc:
     st.error(f"Could not load Yahoo Finance data: {exc}")
@@ -308,7 +333,7 @@ ret_bil_full = (bil_open.shift(-1) / bil_open - 1).replace([np.inf, -np.inf], np
 weights_full, close_bull, realized_vol, fast_ma, slow_ma = build_weights(
     price, close_ret, fast_window, slow_window, vol_window, target_vol, bear_soxx
 )
-weights = weights_full.reindex(common_idx).ffill().fillna({"KODEX 반도체": bear_soxx, "KODEX 단기채권": 1 - bear_soxx})
+weights = weights_full.reindex(common_idx).ffill().fillna({RISK_COL: bear_soxx, BOND_COL: 1 - bear_soxx})
 ret_soxx = ret_soxx_full.reindex(common_idx).fillna(0.0)
 ret_bil = ret_bil_full.reindex(common_idx).fillna(0.0)
 strategy_ret, turnover = backtest_drift_aware(weights, ret_soxx, ret_bil, cost_rate)
@@ -318,10 +343,10 @@ fixed_80 = fixed_mix_return(ret_soxx, ret_bil, 0.8)
 fixed_60 = fixed_mix_return(ret_soxx, ret_bil, 0.6)
 metrics = calc_metrics(strategy_ret)
 summary = pd.DataFrame([
-    metric_row("Strategy", strategy_ret, weights["KODEX 반도체"]),
-    metric_row("KODEX 반도체 100%", bench_soxx),
-    metric_row("KODEX 반도체 80% + KODEX 단기채권 20%", fixed_80),
-    metric_row("KODEX 반도체 60% + KODEX 단기채권 40%", fixed_60),
+    metric_row("Strategy", strategy_ret, weights[RISK_COL]),
+    metric_row(f"{risk_label} 100%", bench_soxx),
+    metric_row(f"{risk_label} 80% + KODEX 단기채권 20%", fixed_80),
+    metric_row(f"{risk_label} 60% + KODEX 단기채권 40%", fixed_60),
 ])
 
 latest_date = common_idx[-1]
@@ -330,16 +355,17 @@ latest_bil_price = bil["adjclose"].reindex(common_idx).ffill().iloc[-1]
 latest_vol = realized_vol.reindex(common_idx).ffill().iloc[-1]
 latest_bull = bool(close_bull.reindex(common_idx).fillna(False).iloc[-1])
 next_soxx_weight = min(target_vol / latest_vol, 1.0) if latest_bull and latest_vol > 0 else bear_soxx
-next_weights = pd.Series({"KODEX 반도체": next_soxx_weight, "KODEX 단기채권": 1 - next_soxx_weight})
+next_weights = pd.Series({RISK_COL: next_soxx_weight, BOND_COL: 1 - next_soxx_weight})
 regime = "Bull" if latest_bull else "Bear"
 
 progress.progress(100, text="Done")
 progress.empty()
 
 st.success(
-    f"Position and allocation change | Today's target for next open from close signal ({latest_date.date()}): "
-    f"{regime} | KODEX 반도체 {next_weights['KODEX 반도체']:.1%}, KODEX 단기채권/Cash {next_weights['KODEX 단기채권']:.1%} | "
-    f"KODEX 반도체 {vol_window}D volatility {latest_vol:.1%}"
+    f"다음 거래일 시가 목표 비중 ({latest_date.date()} 종가 신호): "
+    f"{regime} | {risk_label} {next_weights[RISK_COL]:.1%}, "
+    f"KODEX 단기채권/현금 {next_weights[BOND_COL]:.1%} | "
+    f"{risk_label} {vol_window}일 변동성 {latest_vol:.1%}"
 )
 
 c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -357,13 +383,13 @@ tab_performance, tab_execution, tab_signal, tab_comparison, tab_monthly = st.tab
 with tab_performance:
     nav_data = pd.DataFrame({
         "Strategy": metrics["nav"],
-        "KODEX 반도체": calc_metrics(bench_soxx)["nav"],
+        risk_label: calc_metrics(bench_soxx)["nav"],
         "80/20": calc_metrics(fixed_80)["nav"],
     })
     st.plotly_chart(line_chart(nav_data, "Cumulative NAV with Strategy MDD", "NAV", mdd=metrics), use_container_width=True)
     dd_data = pd.DataFrame({
         "Strategy": metrics["drawdown"],
-        "KODEX 반도체": calc_metrics(bench_soxx)["drawdown"],
+        risk_label: calc_metrics(bench_soxx)["drawdown"],
     })
     st.plotly_chart(line_chart(dd_data, "Drawdown", percent=True), use_container_width=True)
 
@@ -372,17 +398,17 @@ with tab_execution:
     if effective_value <= 0:
         effective_value = current_soxx_shares * latest_price + current_bil_shares * latest_bil_price + current_cash
     execution_rows = []
-    for symbol, px, current_shares in [
-        ("KODEX 반도체", latest_price, current_soxx_shares),
-        ("KODEX 단기채권", latest_bil_price, current_bil_shares),
+    for symbol, weight_key, px, current_shares in [
+        (risk_label, RISK_COL, latest_price, current_soxx_shares),
+        ("KODEX 단기채권", BOND_COL, latest_bil_price, current_bil_shares),
     ]:
-        target_value = effective_value * next_weights[symbol]
+        target_value = effective_value * next_weights[weight_key]
         target_shares = np.floor(target_value / px) if px > 0 else 0
         order_shares = target_shares - current_shares
         execution_rows.append({
             "Symbol": symbol,
             "Latest Price": px,
-            "Target Weight": next_weights[symbol],
+            "Target Weight": next_weights[weight_key],
             "Target Value": target_value,
             "Target Shares": target_shares,
             "Current Shares": current_shares,
@@ -398,38 +424,38 @@ with tab_execution:
     st.metric("Estimated residual cash after whole-share orders", f"₩{max(effective_value - invested, 0):,.0f}")
 
 with tab_signal:
-    st.plotly_chart(area_chart(weights), use_container_width=True)
+    st.plotly_chart(area_chart(weights, risk_label), use_container_width=True)
     signal_frame = pd.DataFrame({
-        "KODEX 반도체": price.reindex(common_idx),
+        risk_label: price.reindex(common_idx),
         f"MA{fast_window}": fast_ma.reindex(common_idx),
         f"MA{slow_window}": slow_ma.reindex(common_idx),
     })
-    st.plotly_chart(line_chart(signal_frame, "KODEX 반도체 Price and Trend Filter", "Adjusted price"), use_container_width=True)
+    st.plotly_chart(line_chart(signal_frame, f"{risk_label} 가격과 추세 필터", "수정주가"), use_container_width=True)
     vol_frame = pd.DataFrame({
-        f"KODEX 반도체 {vol_window}D Volatility": realized_vol.reindex(common_idx),
+        f"{risk_label} {vol_window}일 변동성": realized_vol.reindex(common_idx),
         "Target Volatility": target_vol,
     })
     st.plotly_chart(line_chart(vol_frame, "Realized Volatility", percent=True), use_container_width=True)
     st.dataframe(pd.DataFrame({
         "Date": common_idx,
         "Regime": np.where(close_bull.reindex(common_idx).fillna(False), "Bull", "Bear"),
-        "KODEX 반도체 Weight": weights["KODEX 반도체"],
-        "KODEX 단기채권 Weight": weights["KODEX 단기채권"],
-        "KODEX 반도체 Volatility": realized_vol.reindex(common_idx),
+        f"{risk_label} 비중": weights[RISK_COL],
+        "KODEX 단기채권 비중": weights[BOND_COL],
+        f"{risk_label} 변동성": realized_vol.reindex(common_idx),
         "Daily Turnover": turnover,
-    }).tail(120).style.format({"KODEX 반도체 Weight": "{:.1%}", "KODEX 단기채권 Weight": "{:.1%}",
-                               "KODEX 반도체 Volatility": "{:.1%}", "Daily Turnover": "{:.2%}"}),
+    }).tail(120).style.format({f"{risk_label} 비중": "{:.1%}", "KODEX 단기채권 비중": "{:.1%}",
+                               f"{risk_label} 변동성": "{:.1%}", "Daily Turnover": "{:.2%}"}),
                  use_container_width=True, hide_index=True)
 
 with tab_comparison:
     formatted = summary.copy()
     st.dataframe(formatted.style.format({
         "Total": "{:.1%}", "CAGR": "{:.1%}", "MDD": "{:.1%}", "Volatility": "{:.1%}",
-        "Sharpe": "{:.2f}", "Calmar": "{:.2f}", "Monthly Win": "{:.1%}", "Avg KODEX 반도체": "{:.1%}",
+        "Sharpe": "{:.2f}", "Calmar": "{:.2f}", "Monthly Win": "{:.1%}", "Avg Risk Asset": "{:.1%}",
     }), use_container_width=True, hide_index=True)
     yearly = pd.DataFrame({
         "Strategy": yearly_returns(strategy_ret),
-        "KODEX 반도체": yearly_returns(bench_soxx),
+        risk_label: yearly_returns(bench_soxx),
         "80/20": yearly_returns(fixed_80),
         "60/40": yearly_returns(fixed_60),
     })
@@ -451,14 +477,14 @@ with tab_monthly:
     )
     st.dataframe(monthly_style, use_container_width=True)
     daily_export = pd.DataFrame({
-        "KODEX 반도체_return": ret_soxx,
+        f"{risk_label}_return": ret_soxx,
         "KODEX 단기채권_return": ret_bil,
         "strategy_return": strategy_ret,
         "strategy_NAV": metrics["nav"],
         "strategy_drawdown": metrics["drawdown"],
-        "KODEX 반도체_weight": weights["KODEX 반도체"],
-        "KODEX 단기채권_weight": weights["KODEX 단기채권"],
-        "KODEX 반도체_volatility": realized_vol.reindex(common_idx),
+        f"{risk_label}_weight": weights[RISK_COL],
+        "KODEX 단기채권_weight": weights[BOND_COL],
+        f"{risk_label}_volatility": realized_vol.reindex(common_idx),
         "turnover": turnover,
     })
     d1, d2 = st.columns(2)

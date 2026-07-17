@@ -363,28 +363,91 @@ progress.empty()
 full_summary = period_summary(strategy_returns, turnovers)
 research_names = STRATEGY_NAMES
 research_summary = full_summary[full_summary["Strategy"].isin(research_names)].copy()
-best_calmar = research_summary.sort_values("Calmar", ascending=False).iloc[0]
-baseline = research_summary[research_summary["Strategy"] == STRATEGY_NAMES[0]].iloc[0]
-if best_calmar["Strategy"] != STRATEGY_NAMES[0] and best_calmar["MDD"] > baseline["MDD"]:
-    st.success(
-        f"위험조정 성과 1위: {best_calmar['Strategy']} | CAGR {best_calmar['CAGR']:.1%}, "
-        f"MDD {best_calmar['MDD']:.1%}, Calmar {best_calmar['Calmar']:.2f}. "
-        "기존 전략보다 MDD도 낮았습니다."
-    )
+split_date = pd.Timestamp("2022-01-01")
+train = period_summary(strategy_returns, turnovers, end=split_date - pd.Timedelta(days=1))
+validation = period_summary(strategy_returns, turnovers, start=split_date)
+validation_research = validation[validation["Strategy"].isin(research_names)].copy()
+full_by_name = research_summary.set_index("Strategy")
+validation_by_name = validation_research.set_index("Strategy")
+
+short_names = {
+    STRATEGY_NAMES[0]: "반도체 40%",
+    STRATEGY_NAMES[1]: "반도체 완전 이탈",
+    STRATEGY_NAMES[2]: "타업종 1개 대체",
+    STRATEGY_NAMES[3]: "업종순환 Top 2",
+}
+full_winner = research_summary.sort_values("Calmar", ascending=False).iloc[0]["Strategy"]
+validation_winner = validation_research.sort_values("Calmar", ascending=False).iloc[0]["Strategy"]
+baseline_validation = validation_by_name.loc[STRATEGY_NAMES[0]]
+exit_validation = validation_by_name.loc[STRATEGY_NAMES[1]]
+exit_improved = (
+    exit_validation["CAGR"] > baseline_validation["CAGR"]
+    and exit_validation["MDD"] > baseline_validation["MDD"]
+)
+
+st.markdown("### 한눈에 보는 결론")
+if full_winner == STRATEGY_NAMES[0]:
+    st.success("✅ **현재 전략 유지** — 전체 기간의 위험조정 성과는 반도체 최소 40% 전략이 가장 좋습니다.")
 else:
-    st.warning(
-        f"Calmar 1위는 {best_calmar['Strategy']}이지만, 기존 전략 대비 CAGR과 MDD를 동시에 개선했는지는 "
-        "아래 기간별 표에서 확인해야 합니다."
+    st.success(f"✅ **전체 기간 1위** — {short_names[full_winner]} 전략입니다.")
+if exit_improved:
+    st.info(
+        "🔎 **추가 검증 후보: 반도체 완전 이탈** — 2022년 이후에는 현재 전략보다 "
+        "수익률이 높고 MDD도 낮았습니다. 다만 이전 기간까지 항상 우월하지는 않았습니다."
     )
 
-best_metrics = calc_metrics(strategy_returns[best_calmar["Strategy"]])
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("Best Strategy", best_calmar["Strategy"])
-c2.metric("CAGR", f"{best_metrics['cagr']:.1%}")
-c3.metric("MDD", f"{best_metrics['mdd']:.1%}")
-c4.metric("Sharpe", f"{best_metrics['sharpe']:.2f}")
-c5.metric("Calmar", f"{best_metrics['calmar']:.2f}")
-c6.metric("Monthly Win", f"{best_metrics['monthly_win']:.1%}")
+rejected = []
+for name in STRATEGY_NAMES[2:]:
+    row = validation_by_name.loc[name]
+    if row["Calmar"] < baseline_validation["Calmar"] or row["Annual Turnover"] > 5:
+        rejected.append(short_names[name])
+if rejected:
+    st.error(
+        "❌ **현재 방식으로 채택 제외** — " + ", ".join(rejected)
+        + ". 성과가 낮고 매매 회전율이 지나치게 높습니다."
+    )
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("전체 기간 1위", short_names[full_winner])
+c2.metric("2022년 이후 1위", short_names[validation_winner])
+c3.metric("현재 권고", "반도체 40% 유지" if full_winner == STRATEGY_NAMES[0] else short_names[full_winner])
+c4.metric("개선 후보", "완전 이탈" if exit_improved else "없음")
+
+simple_rows = []
+for name in research_names:
+    full_row = full_by_name.loc[name]
+    recent_row = validation_by_name.loc[name]
+    if name == full_winner:
+        verdict = "유지/추천"
+    elif name == STRATEGY_NAMES[1] and exit_improved:
+        verdict = "추가 검증"
+    elif short_names[name] in rejected:
+        verdict = "탈락"
+    else:
+        verdict = "보류"
+    if name == STRATEGY_NAMES[0]:
+        comment = "전체 기간 기준점"
+    elif name == STRATEGY_NAMES[1]:
+        comment = "최근 구간은 우수, 과거 구간은 열세"
+    else:
+        comment = "회전율이 높고 MDD 개선 실패"
+    simple_rows.append({
+        "판정": verdict,
+        "전략": short_names[name],
+        "전체 CAGR": full_row["CAGR"],
+        "전체 MDD": full_row["MDD"],
+        "2022+ CAGR": recent_row["CAGR"],
+        "2022+ MDD": recent_row["MDD"],
+        "연간 회전율": recent_row["Annual Turnover"],
+        "한줄 평가": comment,
+    })
+st.dataframe(
+    pd.DataFrame(simple_rows).style.format({
+        "전체 CAGR": "{:.1%}", "전체 MDD": "{:.1%}",
+        "2022+ CAGR": "{:.1%}", "2022+ MDD": "{:.1%}", "연간 회전율": "{:.0%}",
+    }),
+    use_container_width=True, hide_index=True,
+)
 
 tab_perf, tab_period, tab_weights, tab_monthly, tab_data = st.tabs(
     ["Performance", "기간별 검증", "선택 업종 / 비중", "Monthly", "Data"]
@@ -395,29 +458,28 @@ with tab_perf:
     st.plotly_chart(line_chart(nav, "Cumulative NAV"), use_container_width=True)
     drawdown = pd.DataFrame({name: calc_metrics(ret)["drawdown"] for name, ret in strategy_returns.items()})
     st.plotly_chart(line_chart(drawdown, "Drawdown", percent=True), use_container_width=True)
-    st.dataframe(
-        full_summary.style.format({
-            "Total": "{:.1%}", "CAGR": "{:.1%}", "MDD": "{:.1%}", "Volatility": "{:.1%}",
-            "Sharpe": "{:.2f}", "Calmar": "{:.2f}", "Monthly Win": "{:.1%}",
-            "Annual Turnover": "{:.1%}",
-        }),
-        use_container_width=True, hide_index=True,
-    )
+    with st.expander("전체 세부 지표 보기", expanded=False):
+        st.dataframe(
+            full_summary.style.format({
+                "Total": "{:.1%}", "CAGR": "{:.1%}", "MDD": "{:.1%}", "Volatility": "{:.1%}",
+                "Sharpe": "{:.2f}", "Calmar": "{:.2f}", "Monthly Win": "{:.1%}",
+                "Annual Turnover": "{:.1%}",
+            }),
+            use_container_width=True, hide_index=True,
+        )
 
 with tab_period:
-    split_date = pd.Timestamp("2022-01-01")
-    train = period_summary(strategy_returns, turnovers, end=split_date - pd.Timedelta(days=1))
-    validation = period_summary(strategy_returns, turnovers, start=split_date)
-    st.subheader("설계 확인 구간: 시작일 ~ 2021년")
-    st.dataframe(train.style.format({"Total": "{:.1%}", "CAGR": "{:.1%}", "MDD": "{:.1%}",
-                                     "Volatility": "{:.1%}", "Sharpe": "{:.2f}", "Calmar": "{:.2f}",
-                                     "Monthly Win": "{:.1%}", "Annual Turnover": "{:.1%}"}),
-                 use_container_width=True, hide_index=True)
-    st.subheader("미래 검증 구간: 2022년 ~ 종료일")
-    st.dataframe(validation.style.format({"Total": "{:.1%}", "CAGR": "{:.1%}", "MDD": "{:.1%}",
-                                          "Volatility": "{:.1%}", "Sharpe": "{:.2f}", "Calmar": "{:.2f}",
-                                          "Monthly Win": "{:.1%}", "Annual Turnover": "{:.1%}"}),
-                 use_container_width=True, hide_index=True)
+    st.info("위의 '한눈에 보는 결론'만 확인해도 됩니다. 아래 표는 숫자를 자세히 검토할 때만 펼치세요.")
+    with st.expander("시작일 ~ 2021년 세부 지표", expanded=False):
+        st.dataframe(train.style.format({"Total": "{:.1%}", "CAGR": "{:.1%}", "MDD": "{:.1%}",
+                                         "Volatility": "{:.1%}", "Sharpe": "{:.2f}", "Calmar": "{:.2f}",
+                                         "Monthly Win": "{:.1%}", "Annual Turnover": "{:.1%}"}),
+                     use_container_width=True, hide_index=True)
+    with st.expander("2022년 이후 세부 지표", expanded=False):
+        st.dataframe(validation.style.format({"Total": "{:.1%}", "CAGR": "{:.1%}", "MDD": "{:.1%}",
+                                              "Volatility": "{:.1%}", "Sharpe": "{:.2f}", "Calmar": "{:.2f}",
+                                              "Monthly Win": "{:.1%}", "Annual Turnover": "{:.1%}"}),
+                     use_container_width=True, hide_index=True)
 
 with tab_weights:
     selected_strategy = st.selectbox("비중을 확인할 전략", STRATEGY_NAMES, index=3)

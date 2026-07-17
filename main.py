@@ -38,6 +38,13 @@ STRATEGIES = [
         "note": "Use v3 as the practical US bull/bear strategy.",
     },
     {
+        "page": "3_kodex_semiconductor_vol_target_app_v1.py",
+        "name": "KODEX Semiconductor Vol Target v1",
+        "role": "Defensive semiconductor core",
+        "decision": "Keep",
+        "note": "Use KODEX semiconductor and short-term bond ETFs to reduce drawdown without leverage.",
+    },
+    {
         "page": "5_soxx_vol_target_app_v1.py",
         "name": "SOXX Vol Target v1",
         "role": "Defensive semiconductor core",

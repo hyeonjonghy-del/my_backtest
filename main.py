@@ -45,6 +45,13 @@ STRATEGIES = [
         "note": "Use KODEX semiconductor and short-term bond ETFs to reduce drawdown without leverage.",
     },
     {
+        "page": "3_kodex_sector_rotation_app_v1.py",
+        "name": "KODEX Sector Rotation Research v1",
+        "role": "Research / rotation candidate",
+        "decision": "Review",
+        "note": "Compare semiconductor exit, replacement-sector, and top-2 sector rotation rules.",
+    },
+    {
         "page": "5_soxx_vol_target_app_v1.py",
         "name": "SOXX Vol Target v1",
         "role": "Defensive semiconductor core",

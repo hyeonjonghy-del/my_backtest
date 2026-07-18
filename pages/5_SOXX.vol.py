@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 
@@ -192,7 +193,9 @@ def line_chart(data: pd.DataFrame, title: str, yaxis: str = "", percent: bool = 
     fig.update_layout(title=title, height=390, hovermode="x unified", plot_bgcolor="white",
                       paper_bgcolor="white", margin=dict(l=10, r=10, t=48, b=20),
                       legend=dict(orientation="h", y=1.08),
-                      xaxis=dict(showgrid=False),
+                      xaxis=dict(showgrid=False, hoverformat="%Y-%m-%d",
+                                 showspikes=True, spikemode="across", spikesnap="cursor",
+                                 spikedash="dot", spikethickness=1),
                       yaxis=dict(title=yaxis, showgrid=True, gridcolor="#E5E7EB",
                                  tickformat=".1%" if percent else None))
     return fig
@@ -206,7 +209,106 @@ def area_chart(weights: pd.DataFrame):
                              line=dict(width=0.7, color=COLORS["bil"])))
     fig.update_layout(title="Portfolio Weights", height=330, hovermode="x unified", plot_bgcolor="white",
                       paper_bgcolor="white", margin=dict(l=10, r=10, t=48, b=20),
-                      legend=dict(orientation="h", y=1.08), yaxis=dict(tickformat=".0%", range=[0, 1]))
+                      legend=dict(orientation="h", y=1.08),
+                      xaxis=dict(hoverformat="%Y-%m-%d", showspikes=True, spikemode="across",
+                                 spikesnap="cursor", spikedash="dot", spikethickness=1),
+                      yaxis=dict(tickformat=".0%", range=[0, 1]))
+    return fig
+
+
+def signal_dashboard(
+    weights: pd.DataFrame,
+    signal_frame: pd.DataFrame,
+    vol_frame: pd.DataFrame,
+):
+    """Build linked signal charts so one hover date is shared by all three panels."""
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.07,
+        row_heights=[0.28, 0.42, 0.30],
+        subplot_titles=("Portfolio Weights", "SOXX Price and Trend Filter", "Realized Volatility"),
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=weights.index,
+            y=weights["SOXX"],
+            name="SOXX Weight",
+            stackgroup="weights",
+            line=dict(width=0.7, color=COLORS["soxx"]),
+            hovertemplate="%{x|%Y-%m-%d}<br>SOXX: %{y:.1%}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=weights.index,
+            y=weights["BIL"],
+            name="BIL / Cash Weight",
+            stackgroup="weights",
+            line=dict(width=0.7, color=COLORS["bil"]),
+            hovertemplate="%{x|%Y-%m-%d}<br>BIL / Cash: %{y:.1%}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+
+    signal_colors = [COLORS["strategy"], COLORS["fast"], COLORS["slow"]]
+    for column, color in zip(signal_frame.columns, signal_colors):
+        fig.add_trace(
+            go.Scatter(
+                x=signal_frame.index,
+                y=signal_frame[column],
+                mode="lines",
+                name=str(column),
+                line=dict(color=color, width=2.1 if column == "SOXX" else 1.6),
+                hovertemplate=f"%{{x|%Y-%m-%d}}<br>{column}: %{{y:,.2f}}<extra></extra>",
+            ),
+            row=2,
+            col=1,
+        )
+
+    for column, color in zip(vol_frame.columns, [COLORS["vol"], COLORS["soxx"]]):
+        fig.add_trace(
+            go.Scatter(
+                x=vol_frame.index,
+                y=vol_frame[column],
+                mode="lines",
+                name=str(column),
+                line=dict(color=color, width=2.0 if column != "Target Volatility" else 1.5),
+                hovertemplate=f"%{{x|%Y-%m-%d}}<br>{column}: %{{y:.1%}}<extra></extra>",
+            ),
+            row=3,
+            col=1,
+        )
+
+    fig.update_layout(
+        height=940,
+        hovermode="x unified",
+        hoversubplots="axis",
+        hoverdistance=100,
+        spikedistance=-1,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=10, r=10, t=70, b=30),
+        legend=dict(orientation="h", y=1.04),
+    )
+    fig.update_xaxes(
+        hoverformat="%Y-%m-%d",
+        showgrid=False,
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        spikedash="dot",
+        spikethickness=1,
+    )
+    fig.update_yaxes(showgrid=True, gridcolor="#E5E7EB")
+    fig.update_yaxes(tickformat=".0%", range=[0, 1], row=1, col=1)
+    fig.update_yaxes(title_text="Adjusted price", row=2, col=1)
+    fig.update_yaxes(tickformat=".1%", row=3, col=1)
     return fig
 
 
@@ -367,6 +469,34 @@ with tab_performance:
     })
     st.plotly_chart(line_chart(dd_data, "Drawdown", percent=True), use_container_width=True)
 
+    performance_yearly = pd.DataFrame({
+        "Strategy": yearly_returns(strategy_ret),
+        "SOXX": yearly_returns(bench_soxx),
+    })
+    performance_yearly_fig = go.Figure()
+    for column, color in zip(performance_yearly.columns, [COLORS["strategy"], COLORS["soxx"]]):
+        performance_yearly_fig.add_trace(
+            go.Bar(
+                x=performance_yearly.index.year,
+                y=performance_yearly[column],
+                name=column,
+                marker_color=color,
+                hovertemplate=f"Year %{{x}}<br>{column}: %{{y:.1%}}<extra></extra>",
+            )
+        )
+    performance_yearly_fig.update_layout(
+        title="Yearly Returns: Strategy vs SOXX",
+        barmode="group",
+        height=380,
+        hovermode="x unified",
+        yaxis=dict(tickformat=".0%"),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        legend=dict(orientation="h", y=1.08),
+    )
+    st.plotly_chart(performance_yearly_fig, use_container_width=True)
+    st.plotly_chart(area_chart(weights), use_container_width=True)
+
 with tab_execution:
     effective_value = account_value
     if effective_value <= 0:
@@ -398,18 +528,23 @@ with tab_execution:
     st.metric("Estimated residual cash after whole-share orders", f"${max(effective_value - invested, 0):,.2f}")
 
 with tab_signal:
-    st.plotly_chart(area_chart(weights), use_container_width=True)
     signal_frame = pd.DataFrame({
         "SOXX": price.reindex(common_idx),
         f"MA{fast_window}": fast_ma.reindex(common_idx),
         f"MA{slow_window}": slow_ma.reindex(common_idx),
     })
-    st.plotly_chart(line_chart(signal_frame, "SOXX Price and Trend Filter", "Adjusted price"), use_container_width=True)
     vol_frame = pd.DataFrame({
         f"SOXX {vol_window}D Volatility": realized_vol.reindex(common_idx),
         "Target Volatility": target_vol,
     })
-    st.plotly_chart(line_chart(vol_frame, "Realized Volatility", percent=True), use_container_width=True)
+    st.plotly_chart(
+        signal_dashboard(weights, signal_frame, vol_frame),
+        use_container_width=True,
+    )
+    st.caption(
+        "Move the cursor over any panel to inspect the same YYYY-MM-DD date "
+        "across portfolio weights, trend, and volatility."
+    )
     st.dataframe(pd.DataFrame({
         "Date": common_idx,
         "Regime": np.where(close_bull.reindex(common_idx).fillna(False), "Bull", "Bear"),

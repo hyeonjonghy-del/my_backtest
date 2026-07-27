@@ -44,7 +44,7 @@ with run_col:
 st.caption(
     "Default: Strong Bull uses TQQQ tactically, Weak Bull shifts toward QQQ, "
     "and deep-drawdown turnarounds stay active until short-term momentum breaks. "
-    "V2 keeps share quantities unchanged until the target allocation changes."
+    "V2 starts with a fixed dollar balance, trades whole shares only, and keeps residual cash."
 )
 
 
@@ -455,14 +455,17 @@ def holdings_backtest(
     target_weights: pd.DataFrame,
     open_prices: pd.DataFrame,
     cost_rate: float,
-) -> tuple[pd.Series, pd.DataFrame, pd.Series]:
-    """Hold shares and cash unchanged until the target allocation changes."""
+    initial_capital: float,
+) -> tuple[pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+    """Trade whole shares when targets change and retain all residual cash."""
     shares = pd.Series(0.0, index=["QQQ", "TQQQ"])
-    cash = 1.0
+    cash = float(initial_capital)
     prior_target: pd.Series | None = None
     daily_ret = pd.Series(0.0, index=target_weights.index)
     actual_weights = pd.DataFrame(0.0, index=target_weights.index, columns=["QQQ", "TQQQ"])
     turnover = pd.Series(0.0, index=target_weights.index)
+    share_history = pd.DataFrame(0.0, index=target_weights.index, columns=["QQQ", "TQQQ"])
+    cash_history = pd.Series(0.0, index=target_weights.index)
 
     for index_number, date in enumerate(target_weights.index):
         prices = open_prices.loc[date]
@@ -477,13 +480,32 @@ def holdings_backtest(
         )
 
         if should_rebalance and nav_before > 0:
-            current_weights = asset_values / nav_before
-            target_turnover = float((target - current_weights).abs().sum())
-            trading_cost = nav_before * target_turnover * cost_rate
+            target_shares = np.floor(nav_before * target / prices).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+
+            def remaining_cash(candidate_shares: pd.Series) -> float:
+                trade_value = ((candidate_shares - shares).abs() * prices).sum()
+                trading_cost = float(trade_value * cost_rate)
+                return float(nav_before - (candidate_shares * prices).sum() - trading_cost)
+
+            cash_after_trade = remaining_cash(target_shares)
+            while cash_after_trade < -1e-9 and bool((target_shares > 0).any()):
+                candidates: list[tuple[float, str, pd.Series, float]] = []
+                for symbol in target_shares.index[target_shares > 0]:
+                    candidate = target_shares.copy()
+                    candidate.loc[symbol] -= 1
+                    candidate_cash = remaining_cash(candidate)
+                    candidate_weights = candidate * prices / nav_before
+                    allocation_error = float(((candidate_weights - target) ** 2).sum())
+                    candidates.append((allocation_error, str(symbol), candidate, candidate_cash))
+                _, _, target_shares, cash_after_trade = min(candidates, key=lambda item: (item[0], item[1]))
+
+            order_shares = target_shares - shares
+            traded_value = float((order_shares.abs() * prices).sum())
+            trading_cost = traded_value * cost_rate
             nav_after_trade = max(nav_before - trading_cost, 0.0)
-            shares = (nav_after_trade * target / prices).replace([np.inf, -np.inf], 0.0).fillna(0.0)
-            cash = nav_after_trade * max(0.0, 1 - float(target.sum()))
-            turnover.loc[date] = target_turnover
+            shares = target_shares
+            cash = max(float(nav_before - (shares * prices).sum() - trading_cost), 0.0)
+            turnover.loc[date] = traded_value / nav_before
             prior_target = target.copy()
         else:
             nav_after_trade = nav_before
@@ -492,6 +514,8 @@ def holdings_backtest(
         marked_nav = float(cash + marked_values.sum())
         if marked_nav > 0:
             actual_weights.loc[date] = marked_values / marked_nav
+        share_history.loc[date] = shares
+        cash_history.loc[date] = cash
 
         if index_number + 1 < len(target_weights.index):
             next_date = target_weights.index[index_number + 1]
@@ -500,7 +524,13 @@ def holdings_backtest(
         else:
             daily_ret.loc[date] = nav_after_trade / nav_before - 1 if nav_before > 0 else 0.0
 
-    return daily_ret.replace([np.inf, -np.inf], np.nan).fillna(0.0), actual_weights, turnover
+    return (
+        daily_ret.replace([np.inf, -np.inf], np.nan).fillna(0.0),
+        actual_weights,
+        turnover,
+        share_history,
+        cash_history,
+    )
 
 
 def build_execution_plan(
@@ -574,6 +604,12 @@ with st.sidebar:
     bear_qqq = st.slider("Bear-regime QQQ weight (%)", 0, 100, 30, 5) / 100
     rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=0, horizontal=True)
     cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.25, step=0.01) / 100
+    initial_capital = st.number_input(
+        "Backtest initial capital ($)",
+        min_value=1000.0,
+        value=10000.0,
+        step=1000.0,
+    )
 
     st.subheader("Execution")
     account_value = st.number_input("Account value ($)", min_value=0.0, value=10000.0, step=1000.0)
@@ -733,10 +769,11 @@ open_prices = pd.DataFrame(
         "TQQQ": tqqq_adjopen.reindex(common_idx).ffill(),
     }
 )
-strategy_ret, actual_weights, executed_turnover = holdings_backtest(
+strategy_ret, actual_weights, executed_turnover, share_history, backtest_cash = holdings_backtest(
     weights,
     open_prices,
     cost_rate,
+    initial_capital,
 )
 
 bench_qqq = ret_qqq
@@ -803,7 +840,7 @@ st.success(
     f"QQQ {vol_window}D volatility {latest_vol:.1%}"
 )
 st.info(
-    f"V2 holdings vs legacy daily-target calculation | "
+    f"V2 ${initial_capital:,.0f} whole-share holdings vs legacy fractional daily-target calculation | "
     f"Total return difference {strategy_metrics['total'] - legacy_metrics['total']:+.1%}p | "
     f"CAGR difference {strategy_metrics['cagr'] - legacy_metrics['cagr']:+.2%}p | "
     f"MDD difference {strategy_metrics['mdd'] - legacy_metrics['mdd']:+.2%}p"
@@ -944,6 +981,9 @@ with tab_signal:
             "Applied Target TQQQ": weights["TQQQ"],
             "Actual QQQ": actual_weights["QQQ"],
             "Actual TQQQ": actual_weights["TQQQ"],
+            "QQQ Shares": share_history["QQQ"],
+            "TQQQ Shares": share_history["TQQQ"],
+            "Actual Cash": backtest_cash,
             "Next Target QQQ": close_target_weights["QQQ"],
             "Next Target TQQQ": close_target_weights["TQQQ"],
             "Target Cash": (1 - close_target_weights.sum(axis=1)).clip(0, 1),
@@ -968,3 +1008,4 @@ with tab_monthly:
     pivot.columns = [f"{month}M" for month in pivot.columns]
     pivot["Yearly"] = (1 + monthly).groupby(monthly.index.year).prod() - 1
     st.dataframe(pivot.applymap(lambda x: f"{x:.1%}" if pd.notna(x) else "-"), use_container_width=True)
+

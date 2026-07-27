@@ -600,16 +600,20 @@ with st.sidebar:
     turnaround_exit_slow = st.slider("Turnaround exit slow MA", 10, 60, 60, 5)
     turnaround_exit_confirm = st.slider("Exit confirmation days", 1, 5, 2, 1)
 
+    st.subheader("Backtest Capital")
+    initial_capital = st.number_input(
+        "Initial capital ($)",
+        min_value=1000.0,
+        value=10000.0,
+        step=1000.0,
+        help="The backtest starts with this cash balance, buys whole shares, and retains any residual cash.",
+    )
+    st.caption("Whole-share purchases only; uninvested cash remains in the portfolio.")
+
     st.subheader("Bear / Trading")
     bear_qqq = st.slider("Bear-regime QQQ weight (%)", 0, 100, 30, 5) / 100
     rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=0, horizontal=True)
     cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.25, step=0.01) / 100
-    initial_capital = st.number_input(
-        "Backtest initial capital ($)",
-        min_value=1000.0,
-        value=10000.0,
-        step=1000.0,
-    )
 
     st.subheader("Execution")
     account_value = st.number_input("Account value ($)", min_value=0.0, value=10000.0, step=1000.0)

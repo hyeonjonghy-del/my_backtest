@@ -190,8 +190,8 @@ def request_kiwoom_tr(
     return merged
 
 
-def find_kiwoom_cash(payload: object) -> float | None:
-    """Return only cash explicitly identified as USD; reject KRW and unknown currencies."""
+def find_kiwoom_cash_details(payload: object) -> tuple[float | None, str | None]:
+    """Return verified USD cash together with the Kiwoom response field used."""
     candidate_fields = (
         # Official ust21110 fields. Use orderable USD first for executable guidance.
         "fc_ord_alowa",
@@ -230,7 +230,7 @@ def find_kiwoom_cash(payload: object) -> float | None:
         # A field whose name itself says USD is safe even when the row has no currency column.
         usd_named_amount = parse_kiwoom_number(lowered.get("usd_ord_psbl_amt"))
         if usd_named_amount is not None:
-            return max(usd_named_amount, 0.0)
+            return max(usd_named_amount, 0.0), "usd_ord_psbl_amt"
 
         if currency != "USD":
             continue
@@ -238,8 +238,14 @@ def find_kiwoom_cash(payload: object) -> float | None:
             if field in lowered:
                 amount = parse_kiwoom_number(lowered[field])
                 if amount is not None:
-                    return max(amount, 0.0)
-    return None
+                    return max(amount, 0.0), field
+    return None, None
+
+
+def find_kiwoom_cash(payload: object) -> float | None:
+    """Compatibility wrapper returning only the verified USD amount."""
+    amount, _ = find_kiwoom_cash_details(payload)
+    return amount
 
 
 def load_kiwoom_account(config: dict[str, str]) -> dict[str, object]:
@@ -285,10 +291,11 @@ def load_kiwoom_account(config: dict[str, str]) -> dict[str, object]:
             other_positions.append(symbol or str(row.get("frgn_stk_nm", "Unknown")))
 
     cash = None
+    cash_field = None
     cash_warning = None
     try:
         cash_payload = request_kiwoom_tr(config["base_url"], token, "ust21110")
-        cash = find_kiwoom_cash(cash_payload)
+        cash, cash_field = find_kiwoom_cash_details(cash_payload)
         if cash is None:
             cash_warning = "The USD cash field could not be recognized; enter cash manually."
     except RuntimeError as exc:
@@ -299,6 +306,7 @@ def load_kiwoom_account(config: dict[str, str]) -> dict[str, object]:
         "shares": shares,
         "prices": prices,
         "cash": cash,
+        "cash_field": cash_field,
         "cash_warning": cash_warning,
         "other_positions": sorted(set(other_positions)),
         "non_usd_positions_skipped": non_usd_positions_skipped,
@@ -904,6 +912,12 @@ with st.sidebar:
             current_qqq_shares = float(snapshot_shares.get(QQQ, 0.0))
             current_tqqq_shares = float(snapshot_shares.get(TQQQ, 0.0))
             snapshot_cash = kiwoom_snapshot.get("cash")
+            snapshot_cash_field = str(kiwoom_snapshot.get("cash_field") or "")
+            cash_display_label = {
+                "fc_ord_alowa": "USD orderable cash",
+                "fc_entra": "USD cash deposit",
+                "usd_ord_psbl_amt": "USD orderable cash",
+            }.get(snapshot_cash_field, "USD cash")
             if snapshot_cash is None:
                 st.warning(str(kiwoom_snapshot.get("cash_warning") or "Enter USD cash manually."))
                 current_cash = st.number_input(
@@ -912,8 +926,12 @@ with st.sidebar:
                     value=0.0,
                     step=1000.0,
                 )
+                cash_display_label = "USD cash (manual)"
             else:
                 current_cash = float(snapshot_cash)
+            st.metric(cash_display_label, f"${current_cash:,.2f}")
+            if snapshot_cash_field:
+                st.caption(f"Kiwoom response field: ${snapshot_cash_field}")
             snapshot_prices = kiwoom_snapshot.get("prices", {})
             account_value = current_cash + sum(
                 float(snapshot_shares.get(symbol, 0.0)) * float(snapshot_prices.get(symbol, 0.0))
@@ -939,9 +957,11 @@ with st.sidebar:
             current_qqq_shares = 0.0
             current_tqqq_shares = 0.0
             current_cash = 0.0
+            cash_display_label = "USD cash"
             account_value = 0.0
             st.info("Click 'Load Kiwoom real account' before running the backtest.")
     else:
+        cash_display_label = "Current cash (manual)"
         account_value = st.number_input("Account value ($)", min_value=0.0, value=10000.0, step=1000.0)
         current_qqq_shares = st.number_input("Current QQQ shares", min_value=0.0, value=0.0, step=1.0)
         current_tqqq_shares = st.number_input("Current TQQQ shares", min_value=0.0, value=0.0, step=1.0)
@@ -1258,6 +1278,19 @@ with tab_perf:
     st.pyplot(static_area_chart(performance_weight_df, "Portfolio Weights", height=300), clear_figure=True)
 
 with tab_execute:
+    if execution_source == KIWOOM_SOURCE and kiwoom_snapshot:
+        st.subheader("Loaded Kiwoom Account")
+        account_col1, account_col2, account_col3, account_col4 = st.columns(4)
+        account_col1.metric("Current QQQ shares", f"${current_qqq_shares:,.0f}")
+        account_col2.metric("Current TQQQ shares", f"${current_tqqq_shares:,.0f}")
+        account_col3.metric(cash_display_label, f"${current_cash:,.2f}")
+        account_col4.metric("Estimated account value", f"${account_value:,.2f}")
+        cash_field_used = str(kiwoom_snapshot.get("cash_field") or "manual")
+        st.caption(
+            f"Loaded ${kiwoom_snapshot.get('fetched_at', '')} | "
+            f"Cash source: ${cash_field_used} | KRW assets excluded"
+        )
+
     st.subheader("Next Trade Plan")
     st.caption(
         "Signal uses the latest close. Backtest returns assume rebalancing at the next regular-session open. "

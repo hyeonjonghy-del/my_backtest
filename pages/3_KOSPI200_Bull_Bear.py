@@ -19,6 +19,13 @@ import pandas as pd
 import streamlit as st
 from chart_utils import static_area_chart
 
+from kiwoom_account import (
+    KIWOOM_DOMESTIC_SOURCE,
+    build_holdings_trade_plan,
+    render_domestic_account_controls,
+    render_domestic_account_summary,
+)
+
 warnings.filterwarnings("ignore")
 
 KODEX_200 = "069500"
@@ -672,10 +679,18 @@ with st.sidebar:
     fee = st.number_input("Trading cost per turnover (%)", value=0.03, step=0.01, min_value=0.0) / 100
 
     st.subheader("Execution Planner")
-    account_value = st.number_input("Account value (KRW)", min_value=0.0, value=0.0, step=1_000_000.0)
-    current_lev_shares = st.number_input("Current KODEX Leverage shares", min_value=0.0, value=0.0, step=1.0)
-    current_kodex_shares = st.number_input("Current KODEX 200 shares", min_value=0.0, value=0.0, step=1.0)
-    current_cash = st.number_input("Current cash (KRW)", min_value=0.0, value=0.0, step=1_000_000.0)
+    account_state = render_domestic_account_controls(
+        {
+            "KODEX 200": KODEX_200,
+            "KODEX Leverage": KODEX_LEVERAGE,
+        },
+        "kospi200_bull_bear",
+        preferred_profile="korea",
+    )
+    account_value = float(account_state["account_value"])
+    current_cash = float(account_state["cash"])
+    current_lev_shares = float(account_state["shares"].get(KODEX_LEVERAGE, 0.0))
+    current_kodex_shares = float(account_state["shares"].get(KODEX_200, 0.0))
 
     st.subheader("Diagnostics")
     run_sensitivity = st.checkbox("Show sensitivity table", value=False)
@@ -708,6 +723,9 @@ if not run_btn:
 
 if start_date >= end_date:
     st.error("Start date must be earlier than end date.")
+    st.stop()
+if account_state["source"] == KIWOOM_DOMESTIC_SOURCE and not account_state["snapshot"]:
+    st.error("Load the selected Kiwoom domestic account before running the strategy.")
     st.stop()
 
 end_str = end_date.strftime("%Y%m%d")
@@ -793,9 +811,8 @@ latest_close = kodex_close.reindex(common_idx).iloc[-1]
 latest_ma = ma.reindex(common_idx).iloc[-1]
 latest_vol = realized_vol.reindex(common_idx).iloc[-1]
 target_weights_for_plan = target_weights.iloc[-1]
-execution_plan, execution_summary = build_multi_asset_execution_plan(
+execution_plan, execution_summary = build_holdings_trade_plan(
     target_weights_for_plan,
-    after_close_fill_pct / 100,
     {
         "KODEX Leverage": float(kodex_lev["close"].reindex(common_idx).ffill().iloc[-1]),
         "KODEX 200": float(kodex_200["close"].reindex(common_idx).ffill().iloc[-1]),
@@ -877,27 +894,41 @@ with tab_perf:
     st.pyplot(static_area_chart(weight_chart, "Portfolio Weights", height=300), clear_figure=True)
 
 with tab_execution:
-    st.subheader("Practical Order Plan")
+    render_domestic_account_summary(account_state, execution_summary["effective_value"])
+    st.subheader("Next Trade Plan")
     st.caption(
-        "The plan uses the latest KODEX Leverage and KODEX 200 closes as reference prices. "
-        "After-close orders target the fixed closing price; any unfilled portion is planned as next-open residual."
+        "The latest close determines target weights for the next regular-session open. "
+        "Current Kiwoom holdings are compared with whole-share targets; this page never submits orders."
     )
-    exec_cols = st.columns(5)
-    exec_cols[0].metric("LEV Target", f"{execution_summary['target_leverage_weight']:.0%}")
-    exec_cols[1].metric("KODEX200 Target", f"{execution_summary['target_kodex_weight']:.0%}")
-    exec_cols[2].metric("Cash Target", f"{execution_summary['target_cash_weight']:.0%}")
+    exec_cols = st.columns(4)
+    exec_cols[0].metric(
+        "LEV Target",
+        f"{float(target_weights_for_plan.get('KODEX Leverage', 0.0)):.0%}",
+    )
+    exec_cols[1].metric(
+        "KODEX200 Target",
+        f"{float(target_weights_for_plan.get('KODEX 200', 0.0)):.0%}",
+    )
+    exec_cols[2].metric("Target Cash", f"{execution_summary['target_cash']:,.0f} KRW")
     exec_cols[3].metric("Order Value", f"{execution_summary['total_order_value']:,.0f} KRW")
-    exec_cols[4].metric("Target Cash", f"{execution_summary['target_cash']:,.0f} KRW")
-
-    shown_plan = execution_plan.copy()
-    shown_plan["Shares"] = shown_plan["Shares"].map(lambda x: f"{x:,.0f}")
-    shown_plan["Reference Price"] = shown_plan["Reference Price"].map(lambda x: f"{x:,.0f} KRW")
-    shown_plan["Estimated Value"] = shown_plan["Estimated Value"].map(lambda x: f"{x:,.0f} KRW")
-    st.dataframe(shown_plan, use_container_width=True, hide_index=True)
-
+    st.dataframe(
+        execution_plan.style.format(
+            {
+                "Latest Price": "₩{:,.0f}",
+                "Target Weight": "{:.1%}",
+                "Target Value": "₩{:,.0f}",
+                "Target Shares": "{:,.0f}",
+                "Current Shares": "{:,.0f}",
+                "Order Shares": "{:+,.0f}",
+                "Estimated Order Value": "₩{:,.0f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
     st.info(
-        "Operational sequence: calculate the signal after the 15:30 close, place the after-close fixed-price order from 15:40 to 16:00, "
-        "then handle any unfilled residual at the next open."
+        "Operational rule: after the close signal is confirmed, execute positive Order Shares as buys "
+        "and negative Order Shares as sells at the next regular-session open."
     )
 
 with tab_periods:

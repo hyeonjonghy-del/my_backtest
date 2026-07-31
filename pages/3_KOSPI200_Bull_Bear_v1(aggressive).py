@@ -16,6 +16,13 @@ import pandas as pd
 import streamlit as st
 from chart_utils import static_yearly_returns_chart
 
+from kiwoom_account import (
+    KIWOOM_DOMESTIC_SOURCE,
+    build_holdings_trade_plan,
+    render_domestic_account_controls,
+    render_domestic_account_summary,
+)
+
 warnings.filterwarnings("ignore")
 
 KODEX_200 = "069500"
@@ -470,12 +477,29 @@ with st.sidebar:
     after_close_fill_pct = st.slider("After-close fixed-price fill rate (%)", 0, 100, 70, 10)
     fee_pct = st.number_input("Trading cost per turnover (%)", min_value=0.0, value=0.03, step=0.01)
 
+    st.subheader("Execution Planner")
+    account_state = render_domestic_account_controls(
+        {
+            "KODEX 200": KODEX_200,
+            "KODEX Leverage": KODEX_LEVERAGE,
+        },
+        "kospi200_bull_bear_aggressive",
+        preferred_profile="korea",
+    )
+    account_value = float(account_state["account_value"])
+    current_cash = float(account_state["cash"])
+    current_lev_shares = float(account_state["shares"].get(KODEX_LEVERAGE, 0.0))
+    current_kodex_shares = float(account_state["shares"].get(KODEX_200, 0.0))
+
 if not run_btn:
     st.info("Run the v5 strategy with high-volatility bull split and optional early reentry below the long moving average.")
     st.stop()
 
 if start_date >= end_date:
     st.error("Start date must be earlier than end date.")
+    st.stop()
+if account_state["source"] == KIWOOM_DOMESTIC_SOURCE and not account_state["snapshot"]:
+    st.error("Load the selected Kiwoom domestic account before running the strategy.")
     st.stop()
 
 end_str = end_date.strftime("%Y%m%d")
@@ -565,11 +589,27 @@ latest_price = float(kodex_close_full.reindex(common_idx).iloc[-1])
 latest_long_ma = float(result["long_ma"].reindex(common_idx).iloc[-1])
 latest_short_ma = float(result["short_ma"].reindex(common_idx).iloc[-1])
 latest_vol = float(result["realized_vol"].reindex(common_idx).iloc[-1])
+target_weights_for_plan = target_weights.iloc[-1]
+execution_plan, execution_summary = build_holdings_trade_plan(
+    target_weights_for_plan,
+    {
+        "KODEX Leverage": float(lev_close_full.reindex(common_idx).ffill().iloc[-1]),
+        "KODEX 200": float(kodex_close_full.reindex(common_idx).ffill().iloc[-1]),
+    },
+    {
+        "KODEX Leverage": current_lev_shares,
+        "KODEX 200": current_kodex_shares,
+    },
+    current_cash,
+    account_value,
+)
+action_label = "Hold" if execution_summary["total_order_value"] <= 0 else "Rebalance"
 
 st.success(
-    f"Current state ({latest_date.date()}): {latest_regime} | "
-    f"KODEX 200 {latest_weights['KODEX 200']:.0%}, "
-    f"KODEX Leverage {latest_weights['KODEX Leverage']:.0%}, Cash {latest_weights['Cash']:.0%}"
+    f"{action_label} | Target for next open from close signal ({latest_date.date()}): {latest_regime} | "
+    f"KODEX 200 {target_weights_for_plan['KODEX 200']:.0%}, "
+    f"KODEX Leverage {target_weights_for_plan['KODEX Leverage']:.0%}, "
+    f"Cash {target_weights_for_plan['Cash']:.0%}"
 )
 st.caption(
     f"KODEX 200 {latest_price:,.0f} / MA{long_ma_window} {latest_long_ma:,.0f} / "
@@ -667,6 +707,43 @@ with tab_perf:
     st.dataframe(diag, use_container_width=True, hide_index=True)
 
 with tab_execution:
+    render_domestic_account_summary(account_state, execution_summary["effective_value"])
+    st.subheader("Next Trade Plan")
+    st.caption(
+        "The latest close determines target weights for the next regular-session open. "
+        "Current Kiwoom holdings are compared with whole-share targets; this page never submits orders."
+    )
+    exec_cols = st.columns(4)
+    exec_cols[0].metric(
+        "LEV Target",
+        f"{float(target_weights_for_plan.get('KODEX Leverage', 0.0)):.0%}",
+    )
+    exec_cols[1].metric(
+        "KODEX200 Target",
+        f"{float(target_weights_for_plan.get('KODEX 200', 0.0)):.0%}",
+    )
+    exec_cols[2].metric("Target Cash", f"{execution_summary['target_cash']:,.0f} KRW")
+    exec_cols[3].metric("Order Value", f"{execution_summary['total_order_value']:,.0f} KRW")
+    st.dataframe(
+        execution_plan.style.format(
+            {
+                "Latest Price": "₩{:,.0f}",
+                "Target Weight": "{:.1%}",
+                "Target Value": "₩{:,.0f}",
+                "Target Shares": "{:,.0f}",
+                "Current Shares": "{:,.0f}",
+                "Order Shares": "{:+,.0f}",
+                "Estimated Order Value": "₩{:,.0f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.info(
+        "Operational rule: after the close signal is confirmed, execute positive Order Shares as buys "
+        "and negative Order Shares as sells at the next regular-session open."
+    )
+
     execution_comparison = pd.DataFrame(
         [
             {"Execution": "Next open", **{k: next_open_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},

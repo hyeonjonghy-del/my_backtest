@@ -1,6 +1,6 @@
 param(
     [string]$TaskName = "US Holdings Telegram Execution",
-    [string]$Time = "07:15",
+    [string]$Time = "06:30",
     [string]$Python = "C:\Users\user\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
 )
 
@@ -26,7 +26,7 @@ Register-ScheduledTask `
     -Action $Action `
     -Trigger $Trigger `
     -Settings $Settings `
-    -Description "Send exact SOXX/SOXL and QQQ/TQQQ next-open execution quantities to Telegram." `
+    -Description "Send separate SOXX/SOXL and QQQ/TQQQ next-open execution messages to Telegram." `
     -Force | Out-Null
 
 Write-Host "Registered task: $TaskName"

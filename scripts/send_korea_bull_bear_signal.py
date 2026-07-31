@@ -7,6 +7,7 @@ from environment variables first, then from .streamlit/secrets.toml.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import time
@@ -23,6 +24,12 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from core.execution_alerts import (  # noqa: E402
+    kiwoom_profile,
+    load_domestic_account,
+    load_secrets,
+)
 
 YFINANCE_CACHE = ROOT / "data" / "yfinance-cache"
 YFINANCE_CACHE.mkdir(parents=True, exist_ok=True)
@@ -156,15 +163,7 @@ def fmt_allocation(weights: pd.Series) -> str:
 
 
 def load_streamlit_secrets() -> dict[str, object]:
-    secrets_path = ROOT / ".streamlit" / "secrets.toml"
-    if not secrets_path.exists():
-        return {}
-    try:
-        import tomllib
-
-        return tomllib.loads(secrets_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return load_secrets(ROOT)
 
 
 def get_telegram_config() -> tuple[str, str]:
@@ -275,12 +274,7 @@ def calculate_message(now: datetime) -> str:
         DEFAULTS["vol_threshold"],
     )
 
-    intraday_weights = target_weights.shift(1).reindex(common_idx).fillna(0.0).iloc[-1]
     full_target = target_weights.iloc[-1]
-    after_close_target = intraday_weights + (full_target - intraday_weights) * DEFAULTS["after_close_fill_rate"]
-    after_close_target["Cash"] = max(1.0 - float(after_close_target.drop("Cash").sum()), 0.0)
-    residual = full_target - after_close_target
-    turnover = float((after_close_target.drop("Cash") - intraday_weights.drop("Cash")).abs().sum())
 
     latest_signal = bool(signal.reindex(common_idx).iloc[-1])
     latest_trend = bool(trend_signal.reindex(common_idx).iloc[-1])
@@ -289,18 +283,70 @@ def calculate_message(now: datetime) -> str:
     latest_ma = float(ma.reindex(common_idx).iloc[-1])
     latest_vol = float(realized_vol.reindex(common_idx).iloc[-1])
 
-    action = "비중 변경 필요" if turnover > 0.0001 else "비중 변경 없음"
+    secrets = load_streamlit_secrets()
+    profile = kiwoom_profile(secrets, "korea")
+    snapshot = load_domestic_account(profile, (KODEX_LEVERAGE, KODEX_200))
+    if snapshot.get("cash") is None:
+        raise RuntimeError(
+            "원화 주문가능 예수금을 읽지 못했습니다. "
+            + str(snapshot.get("cash_warning") or "")
+        )
+    cash = float(snapshot["cash"])
+    current = {
+        KODEX_LEVERAGE: int(float(snapshot["shares"].get(KODEX_LEVERAGE, 0.0))),
+        KODEX_200: int(float(snapshot["shares"].get(KODEX_200, 0.0))),
+    }
+    prices = {KODEX_LEVERAGE: latest_lev_close, KODEX_200: latest_close}
+    account_value = cash + sum(current[code] * prices[code] for code in prices)
+    target = {
+        KODEX_LEVERAGE: math.floor(
+            account_value * float(full_target["KODEX Leverage"]) / latest_lev_close
+        ),
+        KODEX_200: math.floor(
+            account_value * float(full_target["KODEX 200"]) / latest_close
+        ),
+    }
+    delta = {code: target[code] - current[code] for code in target}
+    after_close = {
+        code: math.trunc(delta[code] * DEFAULTS["after_close_fill_rate"])
+        for code in delta
+    }
+    next_open = {code: delta[code] - after_close[code] for code in delta}
+    target_invested = sum(target[code] * prices[code] for code in target)
+    target_cash = max(account_value - target_invested, 0.0)
+    action = "비중 변경 필요" if any(delta.values()) else "비중 변경 없음"
+
+    def order_text(name: str, quantity: int) -> str:
+        if quantity > 0:
+            return f"- {name}: 매수 {quantity}주"
+        if quantity < 0:
+            return f"- {name}: 매도 {abs(quantity)}주"
+        return f"- {name}: 유지 (주문 없음)"
+
     lines = [
         "[KODEX 200 / Leverage ON-OFF v1]",
         f"실행시각: {now:%Y-%m-%d %H:%M} KST",
         f"기준일: {latest_date}",
         f"상태: {action}",
         "",
-        "15:40 종가매매 기준:",
-        f"현재 장중 기준: {fmt_allocation(intraday_weights)}",
-        f"오늘 종가 신호 목표: {fmt_allocation(full_target)}",
-        f"15:40 반영 후 목표: {fmt_allocation(after_close_target)}",
-        f"다음 시초가 잔여 변화: KODEX Leverage {residual['KODEX Leverage']:+.0%}, KODEX 200 {residual['KODEX 200']:+.0%}",
+        f"계좌: {profile['label']}",
+        f"목표비중: {fmt_allocation(full_target)}",
+        (
+            f"현재: KODEX Leverage {current[KODEX_LEVERAGE]}주, "
+            f"KODEX 200 {current[KODEX_200]}주, 예수금 {cash:,.0f}원"
+        ),
+        (
+            f"목표: KODEX Leverage {target[KODEX_LEVERAGE]}주, "
+            f"KODEX 200 {target[KODEX_200]}주, 목표현금 약 {target_cash:,.0f}원"
+        ),
+        "",
+        "EXECUTION 1 — 오늘 시간외 종가 (70%):",
+        order_text("KODEX Leverage", after_close[KODEX_LEVERAGE]),
+        order_text("KODEX 200", after_close[KODEX_200]),
+        "",
+        "EXECUTION 2 — 다음 정규장 시가 (잔여 30%):",
+        order_text("KODEX Leverage", next_open[KODEX_LEVERAGE]),
+        order_text("KODEX 200", next_open[KODEX_200]),
         "",
         "신호:",
         f"Leverage Signal: {'Pass' if latest_signal else 'Wait'}",
@@ -308,6 +354,8 @@ def calculate_message(now: datetime) -> str:
         f"KODEX 200: {latest_close:,.0f} / MA{DEFAULTS['ma_window']}: {latest_ma:,.0f}",
         f"{DEFAULTS['vol_source']} RV{DEFAULTS['vol_window']}: {latest_vol:.1%} / cap {DEFAULTS['vol_threshold']:.0%}",
         f"KODEX Leverage close: {latest_lev_close:,.0f}",
+        "",
+        "※ 읽기 전용입니다. 주문은 자동 제출되지 않습니다.",
     ]
     return "\n".join(lines)
 
@@ -339,3 +387,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

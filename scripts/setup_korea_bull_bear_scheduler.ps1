@@ -30,7 +30,7 @@ Register-ScheduledTask `
     -Action $Action `
     -Trigger $Trigger `
     -Settings $Settings `
-    -Description "Send KODEX exact after-hours-close and next-open execution quantities to Telegram." `
+    -Description "Send separate KODEX base and aggressive execution messages to Telegram." `
     -Force | Out-Null
 
 Write-Host "Registered task: $TaskName"

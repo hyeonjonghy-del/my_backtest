@@ -282,7 +282,12 @@ def cash_display_label(field: str) -> str:
     }.get(field, "USD cash")
 
 
-def render_account_controls(symbols: tuple[str, ...], widget_key: str) -> dict[str, object]:
+def render_account_controls(
+    symbols: tuple[str, ...],
+    widget_key: str,
+    *,
+    preferred_profile: str | None = None,
+) -> dict[str, object]:
     symbols = tuple(symbol.upper() for symbol in symbols)
     source = st.radio(
         "Account source",
@@ -301,13 +306,21 @@ def render_account_controls(symbols: tuple[str, ...], widget_key: str) -> dict[s
     if source == KIWOOM_SOURCE:
         profiles = read_kiwoom_profiles()
         if profiles:
+            profile_names = list(profiles)
+            profile_index = (
+                profile_names.index(preferred_profile)
+                if preferred_profile in profiles
+                else 0
+            )
             profile_name = st.selectbox(
                 "Kiwoom account",
-                list(profiles),
+                profile_names,
+                index=profile_index,
                 format_func=lambda name: profiles[name]["label"],
-                key=f"{widget_key}_profile",
+                key=f"{widget_key}_profile_v2",
             )
             profile_label = profiles[profile_name]["label"]
+            st.caption(f"Selected API account: {profile_label}")
         st.caption(
             f"Read-only: only USD cash and USD-denominated {', '.join(symbols)} are used; "
             "KRW assets are excluded and orders are never submitted."

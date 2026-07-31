@@ -135,3 +135,5 @@ st.markdown(
 
 st.markdown("---")
 st.caption("Use the Pages menu in the sidebar to run each remaining strategy.")
+# Deployment sync: 2026-07-31 account helpers
+

@@ -29,6 +29,7 @@ from core.execution_alerts import (  # noqa: E402
     kiwoom_profile,
     load_domestic_account,
     load_secrets,
+    load_yahoo_chart,
 )
 
 YFINANCE_CACHE = ROOT / "data" / "yfinance-cache"
@@ -92,6 +93,27 @@ def load_krx_ohlcv(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
 
 
 def load_krx_ohlcv_with_retry(ticker: str, start_str: str, end_str: str, attempts: int = 5, delay_seconds: int = 15) -> pd.DataFrame:
+    try:
+        yahoo = load_yahoo_chart(
+            f"{ticker}.KS",
+            datetime.strptime(start_str, "%Y%m%d"),
+            datetime.strptime(end_str, "%Y%m%d"),
+        )
+        if not yahoo.empty:
+            close = pd.to_numeric(yahoo["close"], errors="coerce")
+            return pd.DataFrame(
+                {
+                    "open": close,
+                    "high": close,
+                    "low": close,
+                    "close": close,
+                    "volume": np.nan,
+                },
+                index=yahoo.index,
+            )
+    except Exception as exc:
+        write_log(f"Yahoo fallback for {ticker} failed: {exc!r}")
+
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
@@ -192,8 +214,11 @@ def get_telegram_config() -> tuple[str, str]:
 def write_log(text: str) -> None:
     now = datetime.now(KST)
     log_path = LOG_DIR / f"kodex_signal_{now:%Y%m%d}.log"
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write(f"[{now:%Y-%m-%d %H:%M:%S}] {text}\n")
+    try:
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"[{now:%Y-%m-%d %H:%M:%S}] {text}\n")
+    except OSError:
+        pass
 
 
 def send_telegram(text: str) -> None:
@@ -340,11 +365,11 @@ def calculate_message(now: datetime) -> str:
             f"KODEX 200 {target[KODEX_200]}주, 목표현금 약 {target_cash:,.0f}원"
         ),
         "",
-        "EXECUTION 1 — 오늘 시간외 종가 (70%):",
+        "EXECUTION 1 - 오늘 시간외 종가 (70%):",
         order_text("KODEX Leverage", after_close[KODEX_LEVERAGE]),
         order_text("KODEX 200", after_close[KODEX_200]),
         "",
-        "EXECUTION 2 — 다음 정규장 시가 (잔여 30%):",
+        "EXECUTION 2 - 다음 정규장 시가 (잔여 30%):",
         order_text("KODEX Leverage", next_open[KODEX_LEVERAGE]),
         order_text("KODEX 200", next_open[KODEX_200]),
         "",

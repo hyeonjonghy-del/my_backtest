@@ -30,9 +30,10 @@ Register-ScheduledTask `
     -Action $Action `
     -Trigger $Trigger `
     -Settings $Settings `
-    -Description "Send KODEX 200 / Leverage ON-OFF v1 target weights to Telegram after KRX close." `
+    -Description "Send KODEX exact after-hours-close and next-open execution quantities to Telegram." `
     -Force | Out-Null
 
 Write-Host "Registered task: $TaskName"
 Write-Host "Schedule: weekdays at $Time"
 Write-Host "Runner: $Runner"
+

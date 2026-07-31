@@ -34,8 +34,11 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def write_log(message: str) -> None:
     now = datetime.now(KST)
-    with (LOG_DIR / f"us_execution_{now:%Y%m%d}.log").open("a", encoding="utf-8") as log:
-        log.write(f"[{now:%Y-%m-%d %H:%M:%S}] {message}\n")
+    try:
+        with (LOG_DIR / f"us_execution_{now:%Y%m%d}.log").open("a", encoding="utf-8") as log:
+            log.write(f"[{now:%Y-%m-%d %H:%M:%S}] {message}\n")
+    except OSError:
+        pass
 
 
 def build_message(now: datetime) -> str:

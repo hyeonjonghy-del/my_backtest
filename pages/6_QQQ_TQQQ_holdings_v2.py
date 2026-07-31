@@ -931,7 +931,7 @@ with st.sidebar:
                 current_cash = float(snapshot_cash)
             st.metric(cash_display_label, f"${current_cash:,.2f}")
             if snapshot_cash_field:
-                st.caption(f"Kiwoom response field: ${snapshot_cash_field}")
+                st.caption(f"Kiwoom response field: {snapshot_cash_field}")
             snapshot_prices = kiwoom_snapshot.get("prices", {})
             account_value = current_cash + sum(
                 float(snapshot_shares.get(symbol, 0.0)) * float(snapshot_prices.get(symbol, 0.0))
@@ -1281,14 +1281,14 @@ with tab_execute:
     if execution_source == KIWOOM_SOURCE and kiwoom_snapshot:
         st.subheader("Loaded Kiwoom Account")
         account_col1, account_col2, account_col3, account_col4 = st.columns(4)
-        account_col1.metric("Current QQQ shares", f"${current_qqq_shares:,.0f}")
-        account_col2.metric("Current TQQQ shares", f"${current_tqqq_shares:,.0f}")
+        account_col1.metric("Current QQQ shares", f"{current_qqq_shares:,.0f}")
+        account_col2.metric("Current TQQQ shares", f"{current_tqqq_shares:,.0f}")
         account_col3.metric(cash_display_label, f"${current_cash:,.2f}")
         account_col4.metric("Estimated account value", f"${account_value:,.2f}")
         cash_field_used = str(kiwoom_snapshot.get("cash_field") or "manual")
         st.caption(
-            f"Loaded ${kiwoom_snapshot.get('fetched_at', '')} | "
-            f"Cash source: ${cash_field_used} | KRW assets excluded"
+            f"Loaded {kiwoom_snapshot.get('fetched_at', '')} | "
+            f"Cash source: {cash_field_used} | KRW assets excluded"
         )
 
     st.subheader("Next Trade Plan")

@@ -193,6 +193,9 @@ def request_kiwoom_tr(
 def find_kiwoom_cash(payload: object) -> float | None:
     """Return only cash explicitly identified as USD; reject KRW and unknown currencies."""
     candidate_fields = (
+        # Official ust21110 fields. Use orderable USD first for executable guidance.
+        "fc_ord_alowa",
+        "fc_entra",
         "ord_psbl_amt",
         "frgn_ord_psbl_amt",
         "frgn_stk_ord_psbl_amt",

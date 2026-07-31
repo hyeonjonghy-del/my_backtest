@@ -249,7 +249,143 @@ def send_telegram_with_retry(text: str, attempts: int = 3, delay_seconds: int = 
         raise last_error
 
 
-def calculate_message(now: datetime) -> str:
+def build_aggressive_target(
+    kodex_close: pd.Series,
+    lev_close: pd.Series,
+) -> tuple[pd.Series, str, list[str]]:
+    long_ma = kodex_close.rolling(100).mean()
+    short_ma = kodex_close.rolling(20).mean()
+    returns = finite_return(kodex_close.pct_change())
+    realized_vol = returns.rolling(20).std() * np.sqrt(TRADING_DAYS)
+    upside_vol = returns.where(returns > 0, 0.0).rolling(20).std() * np.sqrt(TRADING_DAYS)
+    downside_vol = returns.where(returns < 0, 0.0).rolling(20).std() * np.sqrt(TRADING_DAYS)
+    recent_return = kodex_close / kodex_close.shift(20) - 1
+    pullback = kodex_close / kodex_close.rolling(20).max() - 1
+    trend = kodex_close > long_ma
+    low_vol = realized_vol < 0.50
+    bull = trend & low_vol
+    high_vol_bull = trend & ~low_vol
+    short_rising = short_ma > short_ma.shift(5)
+    short_trend_ok = (kodex_close > short_ma) & short_rising
+    downside_stress = (
+        (recent_return < 0)
+        | (pullback <= -0.05)
+        | (downside_vol > upside_vol)
+        | (~short_trend_ok)
+    )
+    upside_high_vol = high_vol_bull & ~downside_stress
+    stress_high_vol = high_vol_bull & downside_stress
+    rebound = kodex_close / kodex_close.rolling(20).min() - 1
+    early_reentry = (~trend) & (kodex_close > short_ma) & short_rising & (rebound >= 0.05)
+
+    weights = pd.DataFrame(0.0, index=kodex_close.index, columns=["KODEX Leverage", "KODEX 200"])
+    weights.loc[bull, "KODEX Leverage"] = 1.00
+    weights.loc[upside_high_vol, ["KODEX Leverage", "KODEX 200"]] = [0.25, 0.60]
+    weights.loc[stress_high_vol, ["KODEX Leverage", "KODEX 200"]] = [0.10, 0.50]
+    weights.loc[early_reentry, ["KODEX Leverage", "KODEX 200"]] = [0.20, 0.50]
+    invested = weights.sum(axis=1)
+    scale = pd.Series(np.where(invested > 1, 1 / invested, 1), index=weights.index)
+    weights = weights.mul(scale, axis=0)
+    weights["Cash"] = (1 - weights.sum(axis=1)).clip(0, 1)
+
+    regime = "Bear / Cash"
+    if bool(upside_high_vol.iloc[-1]):
+        regime = "Upside High Vol Bull"
+    if bool(stress_high_vol.iloc[-1]):
+        regime = "Downside Stress Bull"
+    if bool(bull.iloc[-1]):
+        regime = "Bull / KODEX Leverage"
+    if bool(early_reentry.iloc[-1]):
+        regime = "Early Reentry"
+    return weights.iloc[-1], regime, [
+        f"Regime: {regime}",
+        f"KODEX 200: {kodex_close.iloc[-1]:,.0f} / MA100: {long_ma.iloc[-1]:,.0f} / MA20: {short_ma.iloc[-1]:,.0f}",
+        f"KODEX 200 RV20: {realized_vol.iloc[-1]:.1%} / cap 50%",
+        f"KODEX Leverage close: {lev_close.iloc[-1]:,.0f}",
+    ]
+
+
+def format_kodex_execution(
+    *,
+    title: str,
+    now: datetime,
+    latest_date: object,
+    target_weights: pd.Series,
+    current: dict[str, int],
+    cash: float,
+    prices: dict[str, float],
+    profile_label: str,
+    signal_lines: list[str],
+) -> str:
+    account_value = cash + sum(current[code] * prices[code] for code in prices)
+    target = {
+        KODEX_LEVERAGE: math.floor(
+            account_value * float(target_weights["KODEX Leverage"]) / prices[KODEX_LEVERAGE]
+        ),
+        KODEX_200: math.floor(
+            account_value * float(target_weights["KODEX 200"]) / prices[KODEX_200]
+        ),
+    }
+    delta = {code: target[code] - current[code] for code in target}
+    after_close_available = clock_time(15, 30) <= now.time() < clock_time(16, 0)
+    after_close = (
+        {code: math.trunc(delta[code] * DEFAULTS["after_close_fill_rate"]) for code in delta}
+        if after_close_available
+        else {code: 0 for code in delta}
+    )
+    next_open = {code: delta[code] - after_close[code] for code in delta}
+    target_cash = max(account_value - sum(target[code] * prices[code] for code in target), 0.0)
+
+    def order_text(name: str, quantity: int) -> str:
+        if quantity > 0:
+            return f"- {name}: 매수 {quantity}주"
+        if quantity < 0:
+            return f"- {name}: 매도 {abs(quantity)}주"
+        return f"- {name}: 유지 (주문 없음)"
+
+    return "\n".join(
+        [
+            f"[{title}]",
+            f"실행시각: {now:%Y-%m-%d %H:%M} KST",
+            f"기준일: {latest_date}",
+            f"상태: {'비중 변경 필요' if any(delta.values()) else '비중 변경 없음'}",
+            "",
+            f"계좌: {profile_label}",
+            f"목표비중: {fmt_allocation(target_weights)}",
+            (
+                f"현재: KODEX Leverage {current[KODEX_LEVERAGE]}주, "
+                f"KODEX 200 {current[KODEX_200]}주, 예수금 {cash:,.0f}원"
+            ),
+            (
+                f"목표: KODEX Leverage {target[KODEX_LEVERAGE]}주, "
+                f"KODEX 200 {target[KODEX_200]}주, 목표현금 약 {target_cash:,.0f}원"
+            ),
+            "",
+            (
+                "EXECUTION 1 - 오늘 시간외 종가 (70%):"
+                if after_close_available
+                else "EXECUTION 1 - 시간외 종가 마감 (지금 실행하지 않음):"
+            ),
+            order_text("KODEX Leverage", after_close[KODEX_LEVERAGE]),
+            order_text("KODEX 200", after_close[KODEX_200]),
+            "",
+            (
+                "EXECUTION 2 - 다음 정규장 시가 (잔여 30%):"
+                if after_close_available
+                else "EXECUTION 2 - 다음 정규장 시가 (미체결분 전량):"
+            ),
+            order_text("KODEX Leverage", next_open[KODEX_LEVERAGE]),
+            order_text("KODEX 200", next_open[KODEX_200]),
+            "",
+            "신호:",
+            *signal_lines,
+            "",
+            "※ 읽기 전용입니다. 주문은 자동 제출되지 않습니다.",
+        ]
+    )
+
+
+def calculate_messages(now: datetime) -> list[str]:
     today = now.date()
     end_str = today.strftime("%Y%m%d")
     warmup_days = max(DEFAULTS["ma_window"], DEFAULTS["vol_window"], 120) * 3
@@ -267,13 +403,15 @@ def calculate_message(now: datetime) -> str:
 
     latest_date = common_idx[-1].date()
     if latest_date != today:
-        return (
-            "[KODEX 200 / Leverage ON-OFF v1]\n"
+        warning = (
             f"실행시각: {now:%Y-%m-%d %H:%M} KST\n"
             f"상태: 오늘({today}) KRX 데이터가 아직 없습니다.\n"
-            f"마지막 데이터: {latest_date}\n"
-            "조치: 매매 전 Streamlit 화면 또는 증권사 가격을 한 번 더 확인하세요."
+            f"마지막 데이터: {latest_date}"
         )
+        return [
+            f"[KODEX 기본 전략]\n{warning}",
+            f"[KODEX 공격형 v5]\n{warning}",
+        ]
 
     full_idx = kodex_200.index.intersection(kodex_lev.index)
     full_idx = full_idx[full_idx <= common_idx[-1]]
@@ -322,90 +460,52 @@ def calculate_message(now: datetime) -> str:
         KODEX_200: int(float(snapshot["shares"].get(KODEX_200, 0.0))),
     }
     prices = {KODEX_LEVERAGE: latest_lev_close, KODEX_200: latest_close}
-    account_value = cash + sum(current[code] * prices[code] for code in prices)
-    target = {
-        KODEX_LEVERAGE: math.floor(
-            account_value * float(full_target["KODEX Leverage"]) / latest_lev_close
-        ),
-        KODEX_200: math.floor(
-            account_value * float(full_target["KODEX 200"]) / latest_close
-        ),
-    }
-    delta = {code: target[code] - current[code] for code in target}
-    after_close_available = clock_time(15, 30) <= now.time() < clock_time(16, 0)
-    after_close = (
-        {
-            code: math.trunc(delta[code] * DEFAULTS["after_close_fill_rate"])
-            for code in delta
-        }
-        if after_close_available
-        else {code: 0 for code in delta}
+    aggressive_target, aggressive_regime, aggressive_signals = build_aggressive_target(
+        kodex_close,
+        lev_close,
     )
-    next_open = {code: delta[code] - after_close[code] for code in delta}
-    target_invested = sum(target[code] * prices[code] for code in target)
-    target_cash = max(account_value - target_invested, 0.0)
-    action = "비중 변경 필요" if any(delta.values()) else "비중 변경 없음"
-
-    def order_text(name: str, quantity: int) -> str:
-        if quantity > 0:
-            return f"- {name}: 매수 {quantity}주"
-        if quantity < 0:
-            return f"- {name}: 매도 {abs(quantity)}주"
-        return f"- {name}: 유지 (주문 없음)"
-
-    lines = [
-        "[KODEX 200 / Leverage ON-OFF v1]",
-        f"실행시각: {now:%Y-%m-%d %H:%M} KST",
-        f"기준일: {latest_date}",
-        f"상태: {action}",
-        "",
-        f"계좌: {profile['label']}",
-        f"목표비중: {fmt_allocation(full_target)}",
-        (
-            f"현재: KODEX Leverage {current[KODEX_LEVERAGE]}주, "
-            f"KODEX 200 {current[KODEX_200]}주, 예수금 {cash:,.0f}원"
+    return [
+        format_kodex_execution(
+            title="KODEX 기본 전략",
+            now=now,
+            latest_date=latest_date,
+            target_weights=full_target,
+            current=current,
+            cash=cash,
+            prices=prices,
+            profile_label=profile["label"],
+            signal_lines=[
+                f"Leverage Signal: {'Pass' if latest_signal else 'Wait'}",
+                f"Trend: {'Pass' if latest_trend else 'Wait'}",
+                f"KODEX 200: {latest_close:,.0f} / MA{DEFAULTS['ma_window']}: {latest_ma:,.0f}",
+                f"{DEFAULTS['vol_source']} RV{DEFAULTS['vol_window']}: {latest_vol:.1%} / cap {DEFAULTS['vol_threshold']:.0%}",
+                f"KODEX Leverage close: {latest_lev_close:,.0f}",
+            ],
         ),
-        (
-            f"목표: KODEX Leverage {target[KODEX_LEVERAGE]}주, "
-            f"KODEX 200 {target[KODEX_200]}주, 목표현금 약 {target_cash:,.0f}원"
+        format_kodex_execution(
+            title="KODEX 공격형 v5",
+            now=now,
+            latest_date=latest_date,
+            target_weights=aggressive_target,
+            current=current,
+            cash=cash,
+            prices=prices,
+            profile_label=profile["label"],
+            signal_lines=aggressive_signals,
         ),
-        "",
-        (
-            "EXECUTION 1 - 오늘 시간외 종가 (70%):"
-            if after_close_available
-            else "EXECUTION 1 - 시간외 종가 마감 (지금 실행하지 않음):"
-        ),
-        order_text("KODEX Leverage", after_close[KODEX_LEVERAGE]),
-        order_text("KODEX 200", after_close[KODEX_200]),
-        "",
-        (
-            "EXECUTION 2 - 다음 정규장 시가 (잔여 30%):"
-            if after_close_available
-            else "EXECUTION 2 - 다음 정규장 시가 (미체결분 전량):"
-        ),
-        order_text("KODEX Leverage", next_open[KODEX_LEVERAGE]),
-        order_text("KODEX 200", next_open[KODEX_200]),
-        "",
-        "신호:",
-        f"Leverage Signal: {'Pass' if latest_signal else 'Wait'}",
-        f"Trend: {'Pass' if latest_trend else 'Wait'}",
-        f"KODEX 200: {latest_close:,.0f} / MA{DEFAULTS['ma_window']}: {latest_ma:,.0f}",
-        f"{DEFAULTS['vol_source']} RV{DEFAULTS['vol_window']}: {latest_vol:.1%} / cap {DEFAULTS['vol_threshold']:.0%}",
-        f"KODEX Leverage close: {latest_lev_close:,.0f}",
-        "",
-        "※ 읽기 전용입니다. 주문은 자동 제출되지 않습니다.",
     ]
-    return "\n".join(lines)
 
 
 def main() -> int:
     now = datetime.now(KST)
     try:
         write_log("Start KODEX notifier")
-        message = calculate_message(now)
-        send_telegram_with_retry(message)
-        write_log("Telegram message sent successfully")
-        print(message)
+        messages = calculate_messages(now)
+        for message in messages:
+            send_telegram_with_retry(message)
+            print(message)
+            print()
+        write_log("Telegram messages sent successfully")
         return 0
     except Exception as exc:
         error_message = (

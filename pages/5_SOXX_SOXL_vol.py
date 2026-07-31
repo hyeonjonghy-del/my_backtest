@@ -10,6 +10,11 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from kiwoom_account import (
+    KIWOOM_SOURCE,
+    render_account_controls,
+    render_account_summary,
+)
 from chart_utils import static_area_chart as mpl_static_area_chart
 from chart_utils import static_line_chart as mpl_static_line_chart
 from chart_utils import position_action_label
@@ -505,10 +510,13 @@ with st.sidebar:
     cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.25, step=0.01) / 100
 
     st.subheader("Execution")
-    account_value = st.number_input("Account value ($)", min_value=0.0, value=10000.0, step=1000.0)
-    current_soxx_shares = st.number_input("Current SOXX shares", min_value=0.0, value=0.0, step=1.0)
-    current_soxl_shares = st.number_input("Current SOXL shares", min_value=0.0, value=0.0, step=1.0)
-    current_cash = st.number_input("Current cash ($)", min_value=0.0, value=10000.0, step=1000.0)
+    account_state = render_account_controls((SOXX, SOXL), "soxx_soxl")
+    execution_source = account_state["source"]
+    kiwoom_snapshot = account_state["snapshot"]
+    current_soxx_shares = float(account_state["shares"][SOXX])
+    current_soxl_shares = float(account_state["shares"][SOXL])
+    current_cash = float(account_state["cash"])
+    account_value = float(account_state["account_value"])
 
 with st.expander("Default Strategy", expanded=False):
     st.markdown(
@@ -531,6 +539,10 @@ with st.expander("Default Strategy", expanded=False):
 
 if not run_btn:
     st.info("Check the settings in the sidebar, then run the backtest.")
+    st.stop()
+
+if execution_source == KIWOOM_SOURCE and not kiwoom_snapshot:
+    st.error("Load the selected Kiwoom account before running the backtest.")
     st.stop()
 
 if start_date >= end_date:
@@ -698,6 +710,8 @@ latest_prices = pd.Series(
     }
 )
 current_shares = pd.Series({"SOXX": current_soxx_shares, "SOXL": current_soxl_shares})
+if execution_source == KIWOOM_SOURCE:
+    account_value = float(current_cash + (current_shares * latest_prices).sum())
 execution_plan, target_cash = build_execution_plan(
     next_target,
     latest_prices,
@@ -785,6 +799,8 @@ with tab_perf:
     st.pyplot(static_area_chart(performance_weight_df, "Portfolio Weights", height=300), clear_figure=True)
 
 with tab_execute:
+    render_account_summary(account_state, account_value)
+
     st.subheader("Next Trade Plan")
     st.caption(
         "Signal uses the latest close. Backtest returns assume rebalancing at the next regular-session open. "

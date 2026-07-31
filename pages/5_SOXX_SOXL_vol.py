@@ -510,7 +510,11 @@ with st.sidebar:
     cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.25, step=0.01) / 100
 
     st.subheader("Execution")
-    account_state = render_account_controls((SOXX, SOXL), "soxx_soxl")
+    account_state = render_account_controls(
+        (SOXX, SOXL),
+        "soxx_soxl",
+        preferred_profile="soxx",
+    )
     execution_source = account_state["source"]
     kiwoom_snapshot = account_state["snapshot"]
     current_soxx_shares = float(account_state["shares"][SOXX])

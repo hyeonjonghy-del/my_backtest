@@ -41,14 +41,9 @@ def write_log(message: str) -> None:
         pass
 
 
-def build_message(now: datetime) -> str:
+def build_messages(now: datetime) -> list[str]:
     secrets = load_secrets(ROOT)
-    sections: list[str] = [
-        "[미국 전략 EXECUTION]",
-        f"조회시각: {now:%Y-%m-%d %H:%M} KST",
-        "지침: 아래 수량을 다음 미국 정규장 시가에 실행",
-    ]
-    signal_dates: list[str] = []
+    messages: list[str] = []
 
     for strategy in US_STRATEGIES:
         result = calculate_us_target(strategy, datetime.now(NEW_YORK))
@@ -63,13 +58,13 @@ def build_message(now: datetime) -> str:
         cash = float(snapshot["cash"])
         shares = {symbol: float(snapshot["shares"].get(symbol, 0.0)) for symbol in symbols}
         plan = whole_share_plan(result["weights"], result["prices"], shares, cash)
-        signal_dates.append(str(result["signal_date"]))
         base, leveraged = symbols
 
-        sections.extend(
+        sections = (
             [
-                "",
-                f"[{strategy['name']}]  계좌: {profile['label']}",
+                f"[{strategy['name']} EXECUTION]",
+                f"조회시각: {now:%Y-%m-%d %H:%M} KST",
+                f"계좌: {profile['label']}",
                 f"종가 신호: {result['signal_date']} / {result['regime']}",
                 (
                     f"목표비중: {base} {result['weights'][base]:.1%}, "
@@ -89,13 +84,13 @@ def build_message(now: datetime) -> str:
                 "EXECUTION:",
                 _order_line(base, plan["orders"][base]),
                 _order_line(leveraged, plan["orders"][leveraged]),
+                "",
+                "※ 다음 미국 정규장 시가 지침이며 주문은 자동 제출되지 않습니다.",
             ]
         )
+        messages.append("\n".join(sections))
 
-    if len(set(signal_dates)) > 1:
-        sections.append("\n주의: 두 전략의 최신 종가 기준일이 서로 다릅니다.")
-    sections.append("\n※ 읽기 전용입니다. 주문은 자동 제출되지 않습니다.")
-    return "\n".join(sections)
+    return messages
 
 
 def _order_line(symbol: str, order: dict[str, object]) -> str:
@@ -125,11 +120,14 @@ def main() -> int:
     args = parser.parse_args()
     now = datetime.now(KST)
     try:
-        message = build_message(now)
+        messages = build_messages(now)
+        for message in messages:
+            if not args.dry_run:
+                send_with_retry(message)
+            print(message)
+            print()
         if not args.dry_run:
-            send_with_retry(message)
-            write_log("Execution alert sent")
-        print(message)
+            write_log("Execution alerts sent")
         return 0
     except Exception as exc:
         write_log(f"Execution alert failed: {exc!r}")

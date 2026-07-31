@@ -11,16 +11,17 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from kiwoom_account import (
+    KIWOOM_SOURCE,
+    render_account_controls,
+    render_account_summary,
+)
 from chart_utils import static_area_chart as mpl_static_area_chart
 from chart_utils import static_line_chart as mpl_static_line_chart
 from chart_utils import position_action_label
 from chart_utils import static_yearly_returns_chart
 
 TRADING_DAYS = 252
-KIWOOM_DEFAULT_BASE_URL = "https://api.kiwoom.com"
-KIWOOM_ACCOUNT_PATH = "/api/us/acnt"
-KIWOOM_SOURCE = "Kiwoom account (read only)"
-MANUAL_SOURCE = "Manual input"
 QQQ = "QQQ"
 TQQQ = "TQQQ"
 STATIC_CHART_CONFIG = {
@@ -52,265 +53,6 @@ st.caption(
     "V2 starts with a fixed dollar balance, trades whole shares only, and keeps residual cash."
 )
 
-
-
-def parse_kiwoom_number(value: object) -> float | None:
-    """Convert a Kiwoom numeric response to float without guessing non-numeric values."""
-    if value is None or isinstance(value, bool):
-        return None
-    text = str(value).strip().replace(",", "")
-    if not text:
-        return None
-    try:
-        return float(text)
-    except (TypeError, ValueError):
-        return None
-
-
-def read_kiwoom_config() -> dict[str, str] | None:
-    """Read local Streamlit secrets without exposing their values in the UI or logs."""
-    try:
-        section = st.secrets["kiwoom"]
-        config = {
-            "app_key": str(section.get("app_key", "")).strip(),
-            "app_secret": str(section.get("app_secret", "")).strip(),
-            "base_url": str(section.get("base_url", KIWOOM_DEFAULT_BASE_URL)).strip().rstrip("/"),
-        }
-    except (KeyError, TypeError, AttributeError):
-        return None
-    if not config["app_key"] or not config["app_secret"]:
-        return None
-    if config["base_url"] != KIWOOM_DEFAULT_BASE_URL:
-        raise RuntimeError("Real-account mode requires base_url=https://api.kiwoom.com")
-    return config
-
-
-def kiwoom_post(
-    base_url: str,
-    path: str,
-    body: dict[str, object],
-    *,
-    token: str | None = None,
-    api_id: str | None = None,
-    continuation: tuple[str, str] | None = None,
-) -> tuple[dict[str, object], dict[str, str]]:
-    headers = {"Content-Type": "application/json;charset=UTF-8"}
-    if token:
-        headers["authorization"] = f"Bearer {token}"
-    if api_id:
-        headers["api-id"] = api_id
-    if continuation:
-        headers["cont-yn"], headers["next-key"] = continuation
-
-    request = urllib.request.Request(
-        f"{base_url}{path}",
-        data=json.dumps(body).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            response_headers = {key.lower(): value for key, value in response.headers.items()}
-    except urllib.error.HTTPError as exc:
-        message = "HTTP request failed"
-        try:
-            error_payload = json.loads(exc.read().decode("utf-8"))
-            message = str(
-                error_payload.get("return_msg")
-                or error_payload.get("message")
-                or error_payload.get("error_description")
-                or message
-            )
-        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-            pass
-        raise RuntimeError(f"Kiwoom API error ({exc.code}): {message[:200]}") from None
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Could not connect to Kiwoom API: {exc.reason}") from None
-    except (TimeoutError, json.JSONDecodeError):
-        raise RuntimeError("Kiwoom API timed out or returned an invalid response.") from None
-
-    return_code = payload.get("return_code")
-    if return_code not in (None, 0, "0"):
-        message = str(payload.get("return_msg") or "Request was rejected")
-        raise RuntimeError(f"Kiwoom API rejected the request ({return_code}): {message[:200]}")
-    return payload, response_headers
-
-
-@st.cache_data(ttl=23 * 60 * 60, show_spinner=False)
-def issue_kiwoom_token(app_key: str, app_secret: str, base_url: str) -> str:
-    payload, _ = kiwoom_post(
-        base_url,
-        "/oauth2/token",
-        {
-            "grant_type": "client_credentials",
-            "appkey": app_key,
-            "secretkey": app_secret,
-        },
-    )
-    token = str(payload.get("token", "")).strip()
-    if not token:
-        raise RuntimeError("Kiwoom did not return an access token.")
-    return token
-
-
-def request_kiwoom_tr(
-    base_url: str,
-    token: str,
-    api_id: str,
-    body: dict[str, object] | None = None,
-) -> dict[str, object]:
-    """Read every continuation page for a Kiwoom transaction request."""
-    merged: dict[str, object] = {}
-    rows: list[object] = []
-    continuation: tuple[str, str] | None = None
-
-    for _ in range(20):
-        payload, headers = kiwoom_post(
-            base_url,
-            KIWOOM_ACCOUNT_PATH,
-            body or {},
-            token=token,
-            api_id=api_id,
-            continuation=continuation,
-        )
-        merged.update({key: value for key, value in payload.items() if key != "result_list"})
-        page_rows = payload.get("result_list")
-        if isinstance(page_rows, list):
-            rows.extend(page_rows)
-
-        if headers.get("cont-yn", "").upper() != "Y" or not headers.get("next-key"):
-            break
-        continuation = ("Y", headers["next-key"])
-    else:
-        raise RuntimeError("Kiwoom continuation response exceeded the safety limit.")
-
-    if rows:
-        merged["result_list"] = rows
-    return merged
-
-
-def find_kiwoom_cash_details(payload: object) -> tuple[float | None, str | None]:
-    """Return verified USD cash together with the Kiwoom response field used."""
-    candidate_fields = (
-        # Official ust21110 fields. Use orderable USD first for executable guidance.
-        "fc_ord_alowa",
-        "fc_entra",
-        "ord_psbl_amt",
-        "frgn_ord_psbl_amt",
-        "frgn_stk_ord_psbl_amt",
-        "ovrs_ord_psbl_amt",
-        "usd_ord_psbl_amt",
-        "frgn_stk_dps",
-        "frgn_stk_dps_amt",
-        "dps",
-        "deposit",
-    )
-    dictionaries: list[dict[str, object]] = []
-
-    def collect(value: object) -> None:
-        if isinstance(value, dict):
-            dictionaries.append(value)
-            for child in value.values():
-                collect(child)
-        elif isinstance(value, list):
-            for child in value:
-                collect(child)
-
-    collect(payload)
-    for row in dictionaries:
-        lowered = {str(key).lower(): value for key, value in row.items()}
-        currency = str(
-            lowered.get("crnc_code")
-            or lowered.get("crnc_cd")
-            or lowered.get("currency")
-            or ""
-        ).strip().upper()
-
-        # A field whose name itself says USD is safe even when the row has no currency column.
-        usd_named_amount = parse_kiwoom_number(lowered.get("usd_ord_psbl_amt"))
-        if usd_named_amount is not None:
-            return max(usd_named_amount, 0.0), "usd_ord_psbl_amt"
-
-        if currency != "USD":
-            continue
-        for field in candidate_fields:
-            if field in lowered:
-                amount = parse_kiwoom_number(lowered[field])
-                if amount is not None:
-                    return max(amount, 0.0), field
-    return None, None
-
-
-def find_kiwoom_cash(payload: object) -> float | None:
-    """Compatibility wrapper returning only the verified USD amount."""
-    amount, _ = find_kiwoom_cash_details(payload)
-    return amount
-
-
-def load_kiwoom_account(config: dict[str, str]) -> dict[str, object]:
-    """Load QQQ/TQQQ holdings and USD cash. This function never submits an order."""
-    token = issue_kiwoom_token(
-        config["app_key"],
-        config["app_secret"],
-        config["base_url"],
-    )
-    holdings_payload = request_kiwoom_tr(config["base_url"], token, "ust21070")
-    rows = holdings_payload.get("result_list", [])
-    if not isinstance(rows, list):
-        rows = []
-
-    shares = {QQQ: 0.0, TQQQ: 0.0}
-    prices: dict[str, float] = {}
-    other_positions: list[str] = []
-    non_usd_positions_skipped = 0
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        symbol = str(row.get("stk_cd", "")).strip().upper()
-        quantity = parse_kiwoom_number(row.get("poss_qty"))
-        if quantity is None:
-            quantity = parse_kiwoom_number(row.get("qty"))
-        quantity = max(quantity or 0.0, 0.0)
-        currency = str(
-            row.get("crnc_code")
-            or row.get("crnc_cd")
-            or row.get("currency")
-            or ""
-        ).strip().upper()
-        if currency != "USD":
-            if quantity > 0:
-                non_usd_positions_skipped += 1
-            continue
-        if symbol in shares:
-            shares[symbol] += quantity
-            price = parse_kiwoom_number(row.get("now_pric"))
-            if price is not None:
-                prices[symbol] = abs(price)
-        elif quantity > 0:
-            other_positions.append(symbol or str(row.get("frgn_stk_nm", "Unknown")))
-
-    cash = None
-    cash_field = None
-    cash_warning = None
-    try:
-        cash_payload = request_kiwoom_tr(config["base_url"], token, "ust21110")
-        cash, cash_field = find_kiwoom_cash_details(cash_payload)
-        if cash is None:
-            cash_warning = "The USD cash field could not be recognized; enter cash manually."
-    except RuntimeError as exc:
-        cash_warning = f"Cash lookup failed; enter cash manually. ({exc})"
-
-    return {
-        "fetched_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-        "shares": shares,
-        "prices": prices,
-        "cash": cash,
-        "cash_field": cash_field,
-        "cash_warning": cash_warning,
-        "other_positions": sorted(set(other_positions)),
-        "non_usd_positions_skipped": non_usd_positions_skipped,
-    }
 
 
 def static_line_chart(
@@ -881,91 +623,14 @@ with st.sidebar:
     cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.25, step=0.01) / 100
 
     st.subheader("Execution")
-    execution_source = st.radio(
-        "Account source",
-        [KIWOOM_SOURCE, MANUAL_SOURCE],
-        horizontal=False,
-    )
-    kiwoom_snapshot = st.session_state.get("kiwoom_account_snapshot")
+    account_state = render_account_controls((QQQ, TQQQ), "qqq_tqqq")
+    execution_source = account_state["source"]
+    kiwoom_snapshot = account_state["snapshot"]
+    current_qqq_shares = float(account_state["shares"][QQQ])
+    current_tqqq_shares = float(account_state["shares"][TQQQ])
+    current_cash = float(account_state["cash"])
+    account_value = float(account_state["account_value"])
 
-    if execution_source == KIWOOM_SOURCE:
-        st.caption(
-            "Read-only: only USD cash and USD-denominated QQQ/TQQQ are used; "
-            "KRW assets are excluded and orders are never submitted."
-        )
-        if st.button("Load Kiwoom real account", use_container_width=True):
-            try:
-                kiwoom_config = read_kiwoom_config()
-                if kiwoom_config is None:
-                    raise RuntimeError(
-                        "Add app_key and app_secret under [kiwoom] in .streamlit/secrets.toml."
-                    )
-                with st.spinner("Loading Kiwoom holdings and cash..."):
-                    kiwoom_snapshot = load_kiwoom_account(kiwoom_config)
-                st.session_state["kiwoom_account_snapshot"] = kiwoom_snapshot
-                st.success("Account snapshot loaded.")
-            except RuntimeError as exc:
-                st.error(str(exc))
-
-        if kiwoom_snapshot:
-            snapshot_shares = kiwoom_snapshot.get("shares", {})
-            current_qqq_shares = float(snapshot_shares.get(QQQ, 0.0))
-            current_tqqq_shares = float(snapshot_shares.get(TQQQ, 0.0))
-            snapshot_cash = kiwoom_snapshot.get("cash")
-            snapshot_cash_field = str(kiwoom_snapshot.get("cash_field") or "")
-            cash_display_label = {
-                "fc_ord_alowa": "USD orderable cash",
-                "fc_entra": "USD cash deposit",
-                "usd_ord_psbl_amt": "USD orderable cash",
-            }.get(snapshot_cash_field, "USD cash")
-            if snapshot_cash is None:
-                st.warning(str(kiwoom_snapshot.get("cash_warning") or "Enter USD cash manually."))
-                current_cash = st.number_input(
-                    "Current USD cash (fallback)",
-                    min_value=0.0,
-                    value=0.0,
-                    step=1000.0,
-                )
-                cash_display_label = "USD cash (manual)"
-            else:
-                current_cash = float(snapshot_cash)
-            st.metric(cash_display_label, f"${current_cash:,.2f}")
-            if snapshot_cash_field:
-                st.caption(f"Kiwoom response field: {snapshot_cash_field}")
-            snapshot_prices = kiwoom_snapshot.get("prices", {})
-            account_value = current_cash + sum(
-                float(snapshot_shares.get(symbol, 0.0)) * float(snapshot_prices.get(symbol, 0.0))
-                for symbol in (QQQ, TQQQ)
-            )
-            st.caption(
-                f"Loaded {kiwoom_snapshot.get('fetched_at', '')} | "
-                f"QQQ {current_qqq_shares:g} | TQQQ {current_tqqq_shares:g} | "
-                f"USD cash {current_cash:,.2f}"
-            )
-            other_positions = kiwoom_snapshot.get("other_positions", [])
-            if other_positions:
-                st.warning(
-                    "Other USD holdings are excluded from this QQQ/TQQQ strategy value: "
-                    + ", ".join(map(str, other_positions))
-                )
-            skipped_count = int(kiwoom_snapshot.get("non_usd_positions_skipped", 0))
-            if skipped_count:
-                st.warning(
-                    f"{skipped_count} non-USD holding row(s) were excluded from all calculations."
-                )
-        else:
-            current_qqq_shares = 0.0
-            current_tqqq_shares = 0.0
-            current_cash = 0.0
-            cash_display_label = "USD cash"
-            account_value = 0.0
-            st.info("Click 'Load Kiwoom real account' before running the backtest.")
-    else:
-        cash_display_label = "Current cash (manual)"
-        account_value = st.number_input("Account value ($)", min_value=0.0, value=10000.0, step=1000.0)
-        current_qqq_shares = st.number_input("Current QQQ shares", min_value=0.0, value=0.0, step=1.0)
-        current_tqqq_shares = st.number_input("Current TQQQ shares", min_value=0.0, value=0.0, step=1.0)
-        current_cash = st.number_input("Current cash ($)", min_value=0.0, value=10000.0, step=1000.0)
 
 with st.expander("Default Strategy", expanded=False):
     st.markdown(
@@ -1278,18 +943,7 @@ with tab_perf:
     st.pyplot(static_area_chart(performance_weight_df, "Portfolio Weights", height=300), clear_figure=True)
 
 with tab_execute:
-    if execution_source == KIWOOM_SOURCE and kiwoom_snapshot:
-        st.subheader("Loaded Kiwoom Account")
-        account_col1, account_col2, account_col3, account_col4 = st.columns(4)
-        account_col1.metric("Current QQQ shares", f"{current_qqq_shares:,.0f}")
-        account_col2.metric("Current TQQQ shares", f"{current_tqqq_shares:,.0f}")
-        account_col3.metric(cash_display_label, f"${current_cash:,.2f}")
-        account_col4.metric("Estimated account value", f"${account_value:,.2f}")
-        cash_field_used = str(kiwoom_snapshot.get("cash_field") or "manual")
-        st.caption(
-            f"Loaded {kiwoom_snapshot.get('fetched_at', '')} | "
-            f"Cash source: {cash_field_used} | KRW assets excluded"
-        )
+    render_account_summary(account_state, account_value)
 
     st.subheader("Next Trade Plan")
     st.caption(

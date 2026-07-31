@@ -191,7 +191,7 @@ def request_kiwoom_tr(
 
 
 def find_kiwoom_cash(payload: object) -> float | None:
-    """Use only recognized cash/orderable-amount fields; never infer from unrelated totals."""
+    """Return only cash explicitly identified as USD; reject KRW and unknown currencies."""
     candidate_fields = (
         "ord_psbl_amt",
         "frgn_ord_psbl_amt",
@@ -215,8 +215,6 @@ def find_kiwoom_cash(payload: object) -> float | None:
                 collect(child)
 
     collect(payload)
-    usd_rows = []
-    other_rows = []
     for row in dictionaries:
         lowered = {str(key).lower(): value for key, value in row.items()}
         currency = str(
@@ -224,13 +222,18 @@ def find_kiwoom_cash(payload: object) -> float | None:
             or lowered.get("crnc_cd")
             or lowered.get("currency")
             or ""
-        ).upper()
-        (usd_rows if currency in ("USD", "US") else other_rows).append(lowered)
+        ).strip().upper()
 
-    for row in usd_rows + other_rows:
+        # A field whose name itself says USD is safe even when the row has no currency column.
+        usd_named_amount = parse_kiwoom_number(lowered.get("usd_ord_psbl_amt"))
+        if usd_named_amount is not None:
+            return max(usd_named_amount, 0.0)
+
+        if currency != "USD":
+            continue
         for field in candidate_fields:
-            if field in row:
-                amount = parse_kiwoom_number(row[field])
+            if field in lowered:
+                amount = parse_kiwoom_number(lowered[field])
                 if amount is not None:
                     return max(amount, 0.0)
     return None
@@ -251,6 +254,7 @@ def load_kiwoom_account(config: dict[str, str]) -> dict[str, object]:
     shares = {QQQ: 0.0, TQQQ: 0.0}
     prices: dict[str, float] = {}
     other_positions: list[str] = []
+    non_usd_positions_skipped = 0
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -259,6 +263,16 @@ def load_kiwoom_account(config: dict[str, str]) -> dict[str, object]:
         if quantity is None:
             quantity = parse_kiwoom_number(row.get("qty"))
         quantity = max(quantity or 0.0, 0.0)
+        currency = str(
+            row.get("crnc_code")
+            or row.get("crnc_cd")
+            or row.get("currency")
+            or ""
+        ).strip().upper()
+        if currency != "USD":
+            if quantity > 0:
+                non_usd_positions_skipped += 1
+            continue
         if symbol in shares:
             shares[symbol] += quantity
             price = parse_kiwoom_number(row.get("now_pric"))
@@ -284,6 +298,7 @@ def load_kiwoom_account(config: dict[str, str]) -> dict[str, object]:
         "cash": cash,
         "cash_warning": cash_warning,
         "other_positions": sorted(set(other_positions)),
+        "non_usd_positions_skipped": non_usd_positions_skipped,
     }
 
 
@@ -863,7 +878,10 @@ with st.sidebar:
     kiwoom_snapshot = st.session_state.get("kiwoom_account_snapshot")
 
     if execution_source == KIWOOM_SOURCE:
-        st.caption("Read-only: balances are loaded, but orders are never submitted.")
+        st.caption(
+            "Read-only: only USD cash and USD-denominated QQQ/TQQQ are used; "
+            "KRW assets are excluded and orders are never submitted."
+        )
         if st.button("Load Kiwoom real account", use_container_width=True):
             try:
                 kiwoom_config = read_kiwoom_config()
@@ -906,8 +924,13 @@ with st.sidebar:
             other_positions = kiwoom_snapshot.get("other_positions", [])
             if other_positions:
                 st.warning(
-                    "Other holdings are excluded from this strategy account value: "
+                    "Other USD holdings are excluded from this QQQ/TQQQ strategy value: "
                     + ", ".join(map(str, other_positions))
+                )
+            skipped_count = int(kiwoom_snapshot.get("non_usd_positions_skipped", 0))
+            if skipped_count:
+                st.warning(
+                    f"{skipped_count} non-USD holding row(s) were excluded from all calculations."
                 )
         else:
             current_qqq_shares = 0.0

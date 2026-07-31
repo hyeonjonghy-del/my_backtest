@@ -13,7 +13,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as clock_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -332,10 +332,15 @@ def calculate_message(now: datetime) -> str:
         ),
     }
     delta = {code: target[code] - current[code] for code in target}
-    after_close = {
-        code: math.trunc(delta[code] * DEFAULTS["after_close_fill_rate"])
-        for code in delta
-    }
+    after_close_available = clock_time(15, 30) <= now.time() < clock_time(16, 0)
+    after_close = (
+        {
+            code: math.trunc(delta[code] * DEFAULTS["after_close_fill_rate"])
+            for code in delta
+        }
+        if after_close_available
+        else {code: 0 for code in delta}
+    )
     next_open = {code: delta[code] - after_close[code] for code in delta}
     target_invested = sum(target[code] * prices[code] for code in target)
     target_cash = max(account_value - target_invested, 0.0)
@@ -365,11 +370,19 @@ def calculate_message(now: datetime) -> str:
             f"KODEX 200 {target[KODEX_200]}주, 목표현금 약 {target_cash:,.0f}원"
         ),
         "",
-        "EXECUTION 1 - 오늘 시간외 종가 (70%):",
+        (
+            "EXECUTION 1 - 오늘 시간외 종가 (70%):"
+            if after_close_available
+            else "EXECUTION 1 - 시간외 종가 마감 (지금 실행하지 않음):"
+        ),
         order_text("KODEX Leverage", after_close[KODEX_LEVERAGE]),
         order_text("KODEX 200", after_close[KODEX_200]),
         "",
-        "EXECUTION 2 - 다음 정규장 시가 (잔여 30%):",
+        (
+            "EXECUTION 2 - 다음 정규장 시가 (잔여 30%):"
+            if after_close_available
+            else "EXECUTION 2 - 다음 정규장 시가 (미체결분 전량):"
+        ),
         order_text("KODEX Leverage", next_open[KODEX_LEVERAGE]),
         order_text("KODEX 200", next_open[KODEX_200]),
         "",

@@ -11,6 +11,11 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+from kiwoom_account import (
+    KIWOOM_SOURCE,
+    render_account_controls,
+    render_account_summary,
+)
 
 
 TRADING_DAYS = 252
@@ -346,10 +351,13 @@ with st.sidebar:
     cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.10, step=0.01) / 100
 
     st.subheader("Execution")
-    account_value = st.number_input("Account value ($)", min_value=0.0, value=10000.0, step=1000.0)
-    current_soxx_shares = st.number_input("Current SOXX shares", min_value=0.0, value=0.0, step=1.0)
-    current_bil_shares = st.number_input("Current BIL shares", min_value=0.0, value=0.0, step=1.0)
-    current_cash = st.number_input("Current uninvested cash ($)", min_value=0.0, value=10000.0, step=1000.0)
+    account_state = render_account_controls((SOXX, BIL), "soxx_bil")
+    execution_source = account_state["source"]
+    kiwoom_snapshot = account_state["snapshot"]
+    current_soxx_shares = float(account_state["shares"][SOXX])
+    current_bil_shares = float(account_state["shares"][BIL])
+    current_cash = float(account_state["cash"])
+    account_value = float(account_state["account_value"])
 
 
 with st.expander("Default Strategy", expanded=False):
@@ -372,6 +380,9 @@ with st.expander("Default Strategy", expanded=False):
 
 if not run_btn:
     st.info("Check the settings in the sidebar, then run the backtest.")
+    st.stop()
+if execution_source == KIWOOM_SOURCE and not kiwoom_snapshot:
+    st.error("Load the selected Kiwoom account before running the backtest.")
     st.stop()
 if start_date >= end_date:
     st.error("Start date must be earlier than end date.")
@@ -498,7 +509,13 @@ with tab_performance:
     st.plotly_chart(area_chart(weights), use_container_width=True)
 
 with tab_execution:
-    effective_value = account_value
+    if execution_source == KIWOOM_SOURCE:
+        effective_value = current_soxx_shares * latest_price + current_bil_shares * latest_bil_price + current_cash
+        account_value = float(effective_value)
+    else:
+        effective_value = account_value
+    render_account_summary(account_state, effective_value)
+    st.subheader("Next Trade Plan")
     if effective_value <= 0:
         effective_value = current_soxx_shares * latest_price + current_bil_shares * latest_bil_price + current_cash
     execution_rows = []

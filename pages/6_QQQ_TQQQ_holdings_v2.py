@@ -19,6 +19,7 @@ from chart_utils import static_yearly_returns_chart
 TRADING_DAYS = 252
 KIWOOM_DEFAULT_BASE_URL = "https://api.kiwoom.com"
 KIWOOM_ACCOUNT_PATH = "/api/us/acnt"
+KIWOOM_CASH_QUERY_PATH = "/api/us/ordr"
 KIWOOM_SOURCE = "Kiwoom account (read only)"
 MANUAL_SOURCE = "Manual input"
 QQQ = "QQQ"
@@ -159,6 +160,8 @@ def request_kiwoom_tr(
     token: str,
     api_id: str,
     body: dict[str, object] | None = None,
+    *,
+    path: str = KIWOOM_ACCOUNT_PATH,
 ) -> dict[str, object]:
     """Read every continuation page for a Kiwoom transaction request."""
     merged: dict[str, object] = {}
@@ -168,7 +171,7 @@ def request_kiwoom_tr(
     for _ in range(20):
         payload, headers = kiwoom_post(
             base_url,
-            KIWOOM_ACCOUNT_PATH,
+            path,
             body or {},
             token=token,
             api_id=api_id,
@@ -287,7 +290,12 @@ def load_kiwoom_account(config: dict[str, str]) -> dict[str, object]:
     cash = None
     cash_warning = None
     try:
-        cash_payload = request_kiwoom_tr(config["base_url"], token, "ust21110")
+        cash_payload = request_kiwoom_tr(
+            config["base_url"],
+            token,
+            "ust21110",
+            path=KIWOOM_CASH_QUERY_PATH,
+        )
         cash = find_kiwoom_cash(cash_payload)
         if cash is None:
             cash_warning = "The USD cash field could not be recognized; enter cash manually."

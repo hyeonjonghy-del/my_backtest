@@ -6,11 +6,11 @@ instructions.
 
 ## Notifications
 
-- KODEX 200 / Leverage ON-OFF v1: weekdays at 15:35 KST. The message contains
-  current holdings, full target holdings, the 70% after-hours closing-price
-  order, and the remaining 30% next-open order.
-- SOXX/SOXL and QQQ/TQQQ Holdings V2: Tuesday-Saturday at 07:15 KST. One
-  combined message contains each account's USD cash, current shares, target
+- KODEX base and aggressive strategies: two separate messages on weekdays at
+  15:35 KST. Each contains current holdings, full target holdings, the 70%
+  after-hours closing-price order, and the remaining 30% next-open order.
+- SOXX/SOXL and QQQ/TQQQ Holdings V2: two separate messages Tuesday-Saturday
+  at 06:30 KST. Each contains its account's USD cash, current shares, target
   shares, and exact next-regular-open orders.
 
 The US schedule deliberately uses Korean calendar days Tuesday-Saturday

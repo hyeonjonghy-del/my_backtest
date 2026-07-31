@@ -817,12 +817,12 @@ execution_plan, execution_summary = build_holdings_trade_plan(
         "KODEX Leverage": float(kodex_lev["close"].reindex(common_idx).ffill().iloc[-1]),
         "KODEX 200": float(kodex_200["close"].reindex(common_idx).ffill().iloc[-1]),
     },
-    account_value,
     {
         "KODEX Leverage": current_lev_shares,
         "KODEX 200": current_kodex_shares,
     },
     current_cash,
+    account_value,
 )
 action_label = "Hold" if execution_summary["total_order_value"] <= 0 else "Rebalance"
 

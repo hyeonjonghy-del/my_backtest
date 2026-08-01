@@ -295,6 +295,7 @@ def render_account_controls(
     source = st.radio(
         "Account source",
         [KIWOOM_SOURCE, MANUAL_SOURCE],
+        index=1,
         horizontal=False,
         key=f"{widget_key}_account_source",
     )
@@ -568,6 +569,7 @@ def render_domestic_account_controls(
     source = st.radio(
         "Account source",
         [KIWOOM_DOMESTIC_SOURCE, MANUAL_SOURCE],
+        index=1,
         key=f"{widget_key}_domestic_account_source",
     )
     snapshot = None

@@ -294,10 +294,10 @@ def render_account_controls(
     symbols = tuple(symbol.upper() for symbol in symbols)
     source = st.radio(
         "Account source",
-        [KIWOOM_SOURCE, MANUAL_SOURCE],
-        index=1,
+        [MANUAL_SOURCE, KIWOOM_SOURCE],
+        index=0,
         horizontal=False,
-        key=f"{widget_key}_account_source",
+        key=f"{widget_key}_account_source_manual_v2",
     )
     snapshot = None
     profile_name = ""
@@ -568,9 +568,9 @@ def render_domestic_account_controls(
     codes = tuple(names_by_code)
     source = st.radio(
         "Account source",
-        [KIWOOM_DOMESTIC_SOURCE, MANUAL_SOURCE],
-        index=1,
-        key=f"{widget_key}_domestic_account_source",
+        [MANUAL_SOURCE, KIWOOM_DOMESTIC_SOURCE],
+        index=0,
+        key=f"{widget_key}_domestic_account_source_manual_v2",
     )
     snapshot = None
     profile_name = ""

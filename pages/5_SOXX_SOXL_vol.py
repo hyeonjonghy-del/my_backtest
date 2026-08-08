@@ -433,10 +433,37 @@ def calc_target_weight(
     return target
 
 
-def backtest(weights: pd.DataFrame, ret_soxx: pd.Series, ret_soxl: pd.Series, cost_rate: float) -> pd.Series:
-    turnover = weights.diff().abs().sum(axis=1).fillna(weights.abs().sum(axis=1))
-    daily_ret = weights["SOXX"] * ret_soxx + weights["SOXL"] * ret_soxl - turnover * cost_rate
-    return daily_ret.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+def backtest_open_execution_close_valuation(
+    target_weights: pd.DataFrame,
+    open_prices: pd.DataFrame,
+    close_prices: pd.DataFrame,
+    cost_rate: float,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Trade at each open, carry holdings/cash, and mark portfolio NAV at each close."""
+    units = pd.Series(0.0, index=target_weights.columns)
+    cash = 1.0
+    previous_close_nav = 1.0
+    daily_ret = pd.Series(0.0, index=target_weights.index, name="Strategy")
+    turnover = pd.Series(0.0, index=target_weights.index, name="Turnover")
+    close_nav = pd.Series(0.0, index=target_weights.index, name="Close NAV")
+
+    for number, date in enumerate(target_weights.index):
+        open_px = open_prices.loc[date]
+        nav_at_open = float(cash + (units * open_px).sum())
+        current_weights = units * open_px / nav_at_open if nav_at_open > 0 else units * 0
+        desired = target_weights.loc[date].clip(0, 1)
+        traded_fraction = float((desired - current_weights).abs().sum())
+        trading_cost = nav_at_open * traded_fraction * cost_rate
+        investable = max(nav_at_open - trading_cost, 0.0)
+        target_values = investable * desired
+        units = (target_values / open_px).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+        cash = max(investable - float(target_values.sum()), 0.0)
+        nav_at_close = float(cash + (units * close_prices.loc[date]).sum())
+        close_nav.loc[date] = nav_at_close
+        daily_ret.loc[date] = nav_at_close / previous_close_nav - 1 if number > 0 else nav_at_close - 1
+        turnover.loc[date] = traded_fraction
+        previous_close_nav = nav_at_close
+    return daily_ret, turnover, close_nav
 
 
 def build_execution_plan(
@@ -578,8 +605,8 @@ soxl_adj_factor = (soxl["adjclose"] / soxl["close"]).replace([np.inf, -np.inf], 
 soxx_adjopen = (soxx["open"] * soxx_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()
 soxl_adjopen = (soxl["open"] * soxl_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()
 close_ret_soxx_full = soxx["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-ret_soxx_full = (soxx_adjopen.shift(-1) / soxx_adjopen - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-ret_soxl_full = (soxl_adjopen.shift(-1) / soxl_adjopen - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+ret_soxx_full = soxx["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+ret_soxl_full = soxl["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 fast_ma = price.rolling(fast_window).mean()
 slow_ma = price.rolling(slow_window).mean()
@@ -667,7 +694,13 @@ close_target_weights = pd.DataFrame(
 )
 ret_soxx = ret_soxx_full.reindex(common_idx).fillna(0.0)
 ret_soxl = ret_soxl_full.reindex(common_idx).fillna(0.0)
-strategy_ret = backtest(weights, ret_soxx, ret_soxl, cost_rate)
+open_prices = pd.DataFrame({"SOXX": soxx_adjopen, "SOXL": soxl_adjopen}).reindex(common_idx).ffill()
+close_prices = pd.DataFrame(
+    {"SOXX": soxx["adjclose"], "SOXL": soxl["adjclose"]}
+).reindex(common_idx).ffill()
+strategy_ret, executed_turnover, close_nav = backtest_open_execution_close_valuation(
+    weights, open_prices, close_prices, cost_rate
+)
 
 bench_soxx = ret_soxx
 bench_soxl = ret_soxl
@@ -887,3 +920,4 @@ with tab_monthly:
     pivot.columns = [f"{month}M" for month in pivot.columns]
     pivot["Yearly"] = (1 + monthly).groupby(monthly.index.year).prod() - 1
     st.dataframe(pivot.applymap(lambda x: f"{x:.1%}" if pd.notna(x) else "-"), use_container_width=True)
+

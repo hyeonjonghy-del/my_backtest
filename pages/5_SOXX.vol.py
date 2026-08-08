@@ -153,29 +153,38 @@ def build_weights(
     return weights, close_bull, realized_vol, fast_ma, slow_ma
 
 
-def backtest_drift_aware(
+def backtest_open_execution_close_valuation(
     target_weights: pd.DataFrame,
-    soxx_ret: pd.Series,
-    bil_ret: pd.Series,
+    open_prices: pd.DataFrame,
+    close_prices: pd.DataFrame,
     cost_rate: float,
-) -> tuple[pd.Series, pd.Series]:
-    current = target_weights.iloc[0].to_numpy(dtype=float)
-    returns = []
-    turnovers = []
-    asset_returns = pd.concat([soxx_ret, bil_ret], axis=1).fillna(0.0)
-    for (_, target_row), (_, return_row) in zip(target_weights.iterrows(), asset_returns.iterrows()):
-        desired = target_row.to_numpy(dtype=float)
-        asset_ret = return_row.to_numpy(dtype=float)
-        turnover = np.abs(desired - current).sum() / 2
-        gross_growth = float(np.dot(desired, 1 + asset_ret))
-        net_growth = (1 - turnover * cost_rate) * gross_growth
-        returns.append(net_growth - 1)
-        turnovers.append(turnover)
-        current = desired * (1 + asset_ret) / gross_growth
-    return (
-        pd.Series(returns, index=target_weights.index, name="Strategy"),
-        pd.Series(turnovers, index=target_weights.index, name="Turnover"),
-    )
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Trade at each open, carry holdings, and mark portfolio NAV at each close."""
+    units = pd.Series(0.0, index=target_weights.columns)
+    cash = 1.0
+    previous_close_nav = 1.0
+    daily_ret = pd.Series(0.0, index=target_weights.index, name="Strategy")
+    turnover = pd.Series(0.0, index=target_weights.index, name="Turnover")
+    close_nav = pd.Series(0.0, index=target_weights.index, name="Close NAV")
+
+    for number, date in enumerate(target_weights.index):
+        open_px = open_prices.loc[date]
+        nav_at_open = float(cash + (units * open_px).sum())
+        current_values = units * open_px
+        current_weights = current_values / nav_at_open if nav_at_open > 0 else current_values * 0
+        desired = target_weights.loc[date].clip(0, 1)
+        traded_fraction = float(desired.sum()) if number == 0 else float((desired - current_weights).abs().sum() / 2)
+        trading_cost = nav_at_open * traded_fraction * cost_rate
+        investable = max(nav_at_open - trading_cost, 0.0)
+        target_values = investable * desired
+        units = (target_values / open_px).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+        cash = max(investable - float(target_values.sum()), 0.0)
+        nav_at_close = float(cash + (units * close_prices.loc[date]).sum())
+        close_nav.loc[date] = nav_at_close
+        daily_ret.loc[date] = nav_at_close / previous_close_nav - 1 if number > 0 else nav_at_close - 1
+        turnover.loc[date] = traded_fraction
+        previous_close_nav = nav_at_close
+    return daily_ret, turnover, close_nav
 
 
 def fixed_mix_return(soxx_ret: pd.Series, bil_ret: pd.Series, soxx_weight: float) -> pd.Series:
@@ -419,8 +428,8 @@ price = soxx["adjclose"].ffill()
 close_ret = price.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
 soxx_open = adjusted_open(soxx)
 bil_open = adjusted_open(bil)
-ret_soxx_full = (soxx_open.shift(-1) / soxx_open - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-ret_bil_full = (bil_open.shift(-1) / bil_open - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+ret_soxx_full = soxx["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+ret_bil_full = bil["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 weights_full, close_bull, realized_vol, fast_ma, slow_ma = build_weights(
     price, close_ret, fast_window, slow_window, vol_window, target_vol, bear_soxx
@@ -428,7 +437,11 @@ weights_full, close_bull, realized_vol, fast_ma, slow_ma = build_weights(
 weights = weights_full.reindex(common_idx).ffill().fillna({"SOXX": bear_soxx, "BIL": 1 - bear_soxx})
 ret_soxx = ret_soxx_full.reindex(common_idx).fillna(0.0)
 ret_bil = ret_bil_full.reindex(common_idx).fillna(0.0)
-strategy_ret, turnover = backtest_drift_aware(weights, ret_soxx, ret_bil, cost_rate)
+open_prices = pd.DataFrame({"SOXX": soxx_open, "BIL": bil_open}).reindex(common_idx).ffill()
+close_prices = pd.DataFrame({"SOXX": soxx["adjclose"], "BIL": bil["adjclose"]}).reindex(common_idx).ffill()
+strategy_ret, turnover, close_nav = backtest_open_execution_close_valuation(
+    weights, open_prices, close_prices, cost_rate
+)
 
 bench_soxx = ret_soxx
 fixed_80 = fixed_mix_return(ret_soxx, ret_bil, 0.8)
@@ -622,3 +635,4 @@ with tab_monthly:
                        file_name="soxx_vol_target_daily.csv", mime="text/csv", use_container_width=True)
     d2.download_button("Download summary CSV", summary.to_csv(index=False).encode("utf-8-sig"),
                        file_name="soxx_vol_target_summary.csv", mime="text/csv", use_container_width=True)
+

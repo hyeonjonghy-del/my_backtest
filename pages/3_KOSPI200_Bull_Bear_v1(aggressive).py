@@ -311,6 +311,8 @@ def plot_weights(weights: pd.DataFrame) -> None:
 def build_v5_high_vol_split_strategy(
     kodex_close: pd.Series,
     lev_close: pd.Series,
+    kodex_open: pd.Series,
+    lev_open: pd.Series,
     vol_price: pd.Series,
     long_ma_window: int,
     vol_window: int,
@@ -389,18 +391,24 @@ def build_v5_high_vol_split_strategy(
     regime.loc[bull_signal] = "Bull / KODEX Leverage"
     regime.loc[early_reentry] = "Early Reentry / Mixed Position"
 
-    returns = pd.DataFrame(
+    ret_co = pd.DataFrame(
         {
-            "KODEX Leverage": finite_return(lev_close.pct_change()),
-            "KODEX 200": finite_return(kodex_close.pct_change()),
+            "KODEX Leverage": safe_divide(lev_open - lev_close.shift(1), lev_close.shift(1)),
+            "KODEX 200": safe_divide(kodex_open - kodex_close.shift(1), kodex_close.shift(1)),
             "Cash": 0.0,
         },
         index=kodex_close.index,
-    )
-    executable = weights.shift(1).fillna(0.0)
-    turnover = weights.drop(columns=["Cash"]).diff().abs().sum(axis=1).fillna(0.0)
-    strategy_ret = (executable * returns).sum(axis=1) - turnover.shift(1).fillna(0.0) * fee_rate
-    nav = (1 + strategy_ret).cumprod().rename("Strategy")
+    ).fillna(0.0)
+    ret_oc = pd.DataFrame(
+        {
+            "KODEX Leverage": safe_divide(lev_close - lev_open, lev_open),
+            "KODEX 200": safe_divide(kodex_close - kodex_open, kodex_open),
+            "Cash": 0.0,
+        },
+        index=kodex_close.index,
+    ).fillna(0.0)
+    nav, executed_weights = backtest_next_open(kodex_close.index, weights, ret_co, ret_oc, fee_rate)
+    turnover = executed_weights.drop(columns=["Cash"]).diff().abs().sum(axis=1).fillna(0.0)
 
     return {
         "long_ma": long_ma,
@@ -472,7 +480,7 @@ with st.sidebar:
     execution_model = st.selectbox(
         "Execution model",
         ["Next open", "After-close fill + next-open residual"],
-        index=1,
+        index=0,
     )
     after_close_fill_pct = st.slider("After-close fixed-price fill rate (%)", 0, 100, 70, 10)
     fee_pct = st.number_input("Trading cost per turnover (%)", min_value=0.0, value=0.03, step=0.01)
@@ -528,6 +536,8 @@ vol_price = kodex_close_full if vol_source == "KODEX 200" else lev_close_full
 result = build_v5_high_vol_split_strategy(
     kodex_close_full,
     lev_close_full,
+    kodex_200["open"].reindex(full_idx).ffill(),
+    kodex_lev["open"].reindex(full_idx).ffill(),
     vol_price,
     long_ma_window,
     vol_window,
@@ -847,3 +857,4 @@ with tab_data:
         "kodex_onoff_v5_signal.csv",
         "text/csv",
     )
+

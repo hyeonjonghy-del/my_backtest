@@ -673,7 +673,7 @@ with st.sidebar:
     execution_model = st.selectbox(
         "Execution model",
         ["Next open", "After-close fill + next-open residual", "Ideal same-close"],
-        index=1,
+        index=0,
     )
     after_close_fill_pct = st.slider("After-close fixed-price fill rate (%)", 0, 100, 70, 10)
     fee = st.number_input("Trading cost per turnover (%)", value=0.03, step=0.01, min_value=0.0) / 100
@@ -1082,3 +1082,4 @@ with tab_monthly:
     st.dataframe(pivot.map(lambda x: f"{x:.1%}" if pd.notna(x) else "-"), use_container_width=True)
     render_static_line(monthly * 100, "Monthly Strategy vs KODEX", "%", 3.0, True)
     st.download_button("Monthly Returns CSV", monthly.reset_index().rename(columns={"index": "Date"}).to_csv(index=False).encode("utf-8-sig"), "kodex_onoff_v1_monthly.csv", "text/csv")
+

@@ -914,13 +914,13 @@ with tab_execution:
     st.dataframe(
         execution_plan.style.format(
             {
-                "Latest Price": "??:,.0f}",
+                "Latest Price": "KRW {:,.0f}",
                 "Target Weight": "{:.1%}",
-                "Target Value": "??:,.0f}",
+                "Target Value": "KRW {:,.0f}",
                 "Target Shares": "{:,.0f}",
                 "Current Shares": "{:,.0f}",
                 "Order Shares": "{:+,.0f}",
-                "Estimated Order Value": "??:,.0f}",
+                "Estimated Order Value": "KRW {:,.0f}",
             }
         ),
         use_container_width=True,
@@ -1082,7 +1082,6 @@ with tab_monthly:
     st.dataframe(pivot.map(lambda x: f"{x:.1%}" if pd.notna(x) else "-"), use_container_width=True)
     render_static_line(monthly * 100, "Monthly Strategy vs KODEX", "%", 3.0, True)
     st.download_button("Monthly Returns CSV", monthly.reset_index().rename(columns={"index": "Date"}).to_csv(index=False).encode("utf-8-sig"), "kodex_kosdaq150_onoff_v1_monthly.csv", "text/csv")
-
 
 
 

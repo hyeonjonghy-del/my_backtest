@@ -212,11 +212,13 @@ def build_strategy_weights(
 def holdings_backtest(
     target_weights: pd.DataFrame,
     open_prices: pd.Series,
+    close_prices: pd.Series,
     cost_rate: float,
     initial_capital: float,
 ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     shares = 0.0
     cash = float(initial_capital)
+    previous_close_nav = float(initial_capital)
     prior_target: float | None = None
     daily_ret = pd.Series(0.0, index=target_weights.index)
     actual_weight = pd.Series(0.0, index=target_weights.index)
@@ -246,17 +248,14 @@ def holdings_backtest(
             turnover.loc[date] = traded_value / nav_before
             prior_target = target
 
-        marked_nav = cash + shares * price
-        actual_weight.loc[date] = shares * price / marked_nav if marked_nav > 0 else 0.0
+        close_price = float(close_prices.loc[date])
+        marked_nav = cash + shares * close_price
+        actual_weight.loc[date] = shares * close_price / marked_nav if marked_nav > 0 else 0.0
         share_history.loc[date] = shares
         cash_history.loc[date] = cash
 
-        if number + 1 < len(target_weights.index):
-            next_price = float(open_prices.iloc[number + 1])
-            next_value = cash + shares * next_price
-            daily_ret.loc[date] = next_value / nav_before - 1 if nav_before > 0 else 0.0
-        else:
-            daily_ret.loc[date] = marked_nav / nav_before - 1 if nav_before > 0 else 0.0
+        daily_ret.loc[date] = marked_nav / previous_close_nav - 1 if previous_close_nav > 0 else 0.0
+        previous_close_nav = marked_nav
 
     return daily_ret, actual_weight, turnover, share_history, cash_history
 
@@ -428,9 +427,13 @@ weights_full = build_strategy_weights(
 )
 weights = weights_full.reindex(index).fillna(0.0)
 strategy_ret, actual_weight, turnover, shares, cash = holdings_backtest(
-    weights, adjusted_open.reindex(index).ffill(), cost_rate, initial_capital
+    weights,
+    adjusted_open.reindex(index).ffill(),
+    qqq["adjclose"].reindex(index).ffill(),
+    cost_rate,
+    initial_capital,
 )
-benchmark_ret = (adjusted_open.shift(-1) / adjusted_open - 1).reindex(index).fillna(0.0)
+benchmark_ret = qqq["adjclose"].pct_change().reindex(index).fillna(0.0)
 metrics = calc_metrics(strategy_ret)
 benchmark_metrics = calc_metrics(benchmark_ret)
 

@@ -480,7 +480,7 @@ with st.sidebar:
     execution_model = st.selectbox(
         "Execution model",
         ["Next open", "After-close fill + next-open residual"],
-        index=0,
+        index=1,
     )
     after_close_fill_pct = st.slider("After-close fixed-price fill rate (%)", 0, 100, 70, 10)
     fee_pct = st.number_input("Trading cost per turnover (%)", min_value=0.0, value=0.03, step=0.01)

@@ -461,12 +461,14 @@ def legacy_backtest(
 def holdings_backtest(
     target_weights: pd.DataFrame,
     open_prices: pd.DataFrame,
+    close_prices: pd.DataFrame,
     cost_rate: float,
     initial_capital: float,
 ) -> tuple[pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
     """Trade whole shares when targets change and retain all residual cash."""
     shares = pd.Series(0.0, index=["QQQ", "TQQQ"])
     cash = float(initial_capital)
+    previous_close_nav = float(initial_capital)
     prior_target: pd.Series | None = None
     daily_ret = pd.Series(0.0, index=target_weights.index)
     actual_weights = pd.DataFrame(0.0, index=target_weights.index, columns=["QQQ", "TQQQ"])
@@ -517,19 +519,15 @@ def holdings_backtest(
         else:
             nav_after_trade = nav_before
 
-        marked_values = shares * prices
+        marked_values = shares * close_prices.loc[date]
         marked_nav = float(cash + marked_values.sum())
         if marked_nav > 0:
             actual_weights.loc[date] = marked_values / marked_nav
         share_history.loc[date] = shares
         cash_history.loc[date] = cash
 
-        if index_number + 1 < len(target_weights.index):
-            next_date = target_weights.index[index_number + 1]
-            next_value = float(cash + (shares * open_prices.loc[next_date]).sum())
-            daily_ret.loc[date] = next_value / nav_before - 1 if nav_before > 0 else 0.0
-        else:
-            daily_ret.loc[date] = nav_after_trade / nav_before - 1 if nav_before > 0 else 0.0
+        daily_ret.loc[date] = marked_nav / previous_close_nav - 1 if previous_close_nav > 0 else 0.0
+        previous_close_nav = marked_nav
 
     return (
         daily_ret.replace([np.inf, -np.inf], np.nan).fillna(0.0),
@@ -692,8 +690,8 @@ tqqq_adj_factor = (tqqq["adjclose"] / tqqq["close"]).replace([np.inf, -np.inf], 
 qqq_adjopen = (qqq["open"] * qqq_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()
 tqqq_adjopen = (tqqq["open"] * tqqq_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()
 close_ret_qqq_full = qqq["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-ret_qqq_full = (qqq_adjopen.shift(-1) / qqq_adjopen - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-ret_tqqq_full = (tqqq_adjopen.shift(-1) / tqqq_adjopen - 1).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+ret_qqq_full = qqq["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+ret_tqqq_full = tqqq["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 fast_ma = price.rolling(fast_window).mean()
 slow_ma = price.rolling(slow_window).mean()
@@ -792,9 +790,13 @@ open_prices = pd.DataFrame(
         "TQQQ": tqqq_adjopen.reindex(common_idx).ffill(),
     }
 )
+close_prices = pd.DataFrame(
+    {"QQQ": qqq["adjclose"].reindex(common_idx).ffill(), "TQQQ": tqqq["adjclose"].reindex(common_idx).ffill()}
+)
 strategy_ret, actual_weights, executed_turnover, share_history, backtest_cash = holdings_backtest(
     weights,
     open_prices,
+    close_prices,
     cost_rate,
     initial_capital,
 )
@@ -1036,4 +1038,5 @@ with tab_monthly:
     pivot.columns = [f"{month}M" for month in pivot.columns]
     pivot["Yearly"] = (1 + monthly).groupby(monthly.index.year).prod() - 1
     st.dataframe(pivot.applymap(lambda x: f"{x:.1%}" if pd.notna(x) else "-"), use_container_width=True)
+
 

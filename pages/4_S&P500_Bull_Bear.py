@@ -275,10 +275,35 @@ def calc_target_weight(
     return pd.Series({"SPY": spy_weight, "UPRO": upro_weight})
 
 
-def backtest(weights: pd.DataFrame, ret_spy: pd.Series, ret_upro: pd.Series, cost_rate: float) -> pd.Series:
-    turnover = weights[["SPY", "UPRO"]].diff().abs().sum(axis=1).fillna(weights[["SPY", "UPRO"]].abs().sum(axis=1))
-    daily_ret = weights["SPY"] * ret_spy + weights["UPRO"] * ret_upro - turnover * cost_rate
-    return daily_ret.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+def backtest(
+    weights: pd.DataFrame,
+    open_prices: pd.DataFrame,
+    close_prices: pd.DataFrame,
+    cost_rate: float,
+) -> pd.Series:
+    """Execute close-based targets at the next open and mark the portfolio at each close."""
+    assets = ["SPY", "UPRO"]
+    units = pd.Series(0.0, index=assets)
+    cash = 1.0
+    previous_close_nav = 1.0
+    daily_returns: list[float] = []
+
+    for date in weights.index:
+        open_px = open_prices.loc[date, assets].astype(float)
+        close_px = close_prices.loc[date, assets].astype(float)
+        nav_at_open = cash + float((units * open_px).sum())
+        current_weights = units * open_px / nav_at_open if nav_at_open > 0 else units * 0.0
+        target_weights = weights.loc[date, assets].astype(float).clip(0.0, 1.0)
+        turnover = float((target_weights - current_weights).abs().sum())
+        investable_nav = nav_at_open * (1.0 - min(max(turnover * cost_rate, 0.0), 0.99))
+        target_values = investable_nav * target_weights
+        units = target_values / open_px
+        cash = investable_nav - float(target_values.sum())
+        close_nav = cash + float((units * close_px).sum())
+        daily_returns.append(close_nav / previous_close_nav - 1.0)
+        previous_close_nav = close_nav
+
+    return pd.Series(daily_returns, index=weights.index, name="Strategy").replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 
 def calc_metrics(daily_ret: pd.Series) -> dict[str, object]:
@@ -402,6 +427,7 @@ with st.expander("Strategy Rules", expanded=False):
 | Target volatility | {target_vol:.0%}, based on SPY {vol_window}D realized volatility |
 | UPRO cap | {upro_cap:.0%} |
 | Bear allocation | SPY {bear_spy:.0%}, Cash {1 - bear_spy:.0%} |
+| Execution / valuation | Prior-close signal, next-open execution, daily close valuation |
 """
     )
 
@@ -452,7 +478,23 @@ weights_full = build_strategy_weights(
 weights = weights_full.reindex(common_idx).ffill().fillna({"SPY": 0.0, "UPRO": 0.0, "Regime": "Bear"})
 ret_spy = spy["adjclose"].pct_change().reindex(common_idx).fillna(0.0)
 ret_upro = upro["adjclose"].pct_change().reindex(common_idx).fillna(0.0)
-strategy_ret = backtest(weights, ret_spy, ret_upro, cost_rate)
+spy_adjustment = (spy["adjclose"] / spy["close"]).replace([np.inf, -np.inf], np.nan)
+upro_adjustment = (upro["adjclose"] / upro["close"]).replace([np.inf, -np.inf], np.nan)
+open_prices = pd.DataFrame(
+    {
+        "SPY": (spy["open"] * spy_adjustment).reindex(common_idx),
+        "UPRO": (upro["open"] * upro_adjustment).reindex(common_idx),
+    },
+    index=common_idx,
+).ffill()
+close_prices = pd.DataFrame(
+    {
+        "SPY": spy["adjclose"].reindex(common_idx),
+        "UPRO": upro["adjclose"].reindex(common_idx),
+    },
+    index=common_idx,
+).ffill()
+strategy_ret = backtest(weights, open_prices, close_prices, cost_rate)
 bench_spy = ret_spy
 bench_upro = ret_upro
 fixed_80_20 = 0.8 * ret_spy + 0.2 * ret_upro - 0.0
@@ -658,3 +700,4 @@ with tab_table:
         "spy_upro_vol_target_weights.csv",
         "text/csv",
     )
+

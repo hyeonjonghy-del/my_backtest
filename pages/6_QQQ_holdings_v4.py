@@ -1,4 +1,4 @@
-"""QQQ-only holdings-based trend and volatility-target backtest v3.
+"""QQQ-only core and asymmetric-recovery holdings backtest v4.
 
 Derived from the repository's page 6 holdings strategy.
 This version trades QQQ only, holds residual capital as cash, uses whole shares,
@@ -21,17 +21,17 @@ from kiwoom_account import KIWOOM_SOURCE, render_account_controls, render_accoun
 TRADING_DAYS = 252
 SYMBOL = "QQQ"
 
-st.set_page_config(page_title="QQQ Holdings Backtest V3", page_icon="📈", layout="wide")
+st.set_page_config(page_title="QQQ Holdings Backtest V4", page_icon="📈", layout="wide")
 title_col, run_col = st.columns([4, 1])
 with title_col:
-    st.title("QQQ-Only Holdings Strategy V3")
+    st.title("QQQ Core + Asymmetric Recovery Strategy V4")
 with run_col:
     st.write("")
     run_btn = st.button("Run backtest", type="primary", use_container_width=True)
 
 st.caption(
-    "QQQ 한 종목과 현금만 사용합니다. 종가로 신호를 계산하고 다음 거래일 시가에 "
-    "정수 주식으로 리밸런싱하며, 거래 후 남는 금액은 현금으로 유지합니다."
+    "QQQ 핵심 보유분을 유지하고 하락 시 천천히 축소하되 반등 시 70%→90%→100%로 빠르게 복귀합니다. "
+    "종가 신호를 다음 거래일 시가에 정수 주식으로 실행하고 잔여 금액은 현금으로 유지합니다."
 )
 
 
@@ -152,61 +152,93 @@ def rebalance_weights(weights: pd.DataFrame, frequency: str) -> pd.DataFrame:
     return out
 
 
-def target_weight(
-    regime: str,
-    is_turnaround: bool,
-    current_vol: float,
-    target_vol: float,
-    weak_risk_multiplier: float,
-    strong_cash_sweep: float,
-    weak_cash_sweep: float,
-    turnaround_qqq: float,
-    bear_qqq: float,
-) -> float:
-    if is_turnaround:
-        return turnaround_qqq
-    if regime == "Bear" or pd.isna(current_vol) or current_vol <= 0:
-        return bear_qqq
-
-    risk_weight = min(target_vol / current_vol, 1.0)
-    if regime == "Weak Bull":
-        risk_weight = min(risk_weight * weak_risk_multiplier, 1.0)
-        cash_sweep = weak_cash_sweep
-    else:
-        cash_sweep = strong_cash_sweep
-    return float(np.clip(risk_weight + (1 - risk_weight) * cash_sweep, 0, 1))
-
-
-def build_strategy_weights(
+def build_asymmetric_weights(
     price: pd.Series,
-    regime: pd.Series,
-    turnaround: pd.Series,
+    ma20: pd.Series,
+    ma30: pd.Series,
+    ma50: pd.Series,
+    ma200: pd.Series,
     vol: pd.Series,
-    target_vol: float,
-    weak_risk_multiplier: float,
-    strong_cash_sweep: float,
-    weak_cash_sweep: float,
-    turnaround_qqq: float,
-    bear_qqq: float,
+    drawdown: pd.Series,
+    core_weight: float,
+    panic_weight: float,
+    weak_bull_weight: float,
+    panic_volatility: float,
+    strong_spread: float,
+    recovery_trigger: float,
     rebalance: str,
-) -> pd.DataFrame:
-    weights = pd.DataFrame(index=price.index, columns=[SYMBOL], dtype=float)
-    vol_lag = vol.shift(1)
-    weights[SYMBOL] = [
-        target_weight(
-            str(regime.loc[date]),
-            bool(turnaround.loc[date]),
-            float(vol_lag.loc[date]),
-            target_vol,
-            weak_risk_multiplier,
-            strong_cash_sweep,
-            weak_cash_sweep,
-            turnaround_qqq,
-            bear_qqq,
+    lag_for_execution: bool = True,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Build core/panic weights with fast staged recovery and no look-ahead."""
+    lag = 1 if lag_for_execution else 0
+    signal_price = price.shift(lag)
+    signal_ma20 = ma20.shift(lag)
+    signal_ma50 = ma50.shift(lag)
+    signal_ma200 = ma200.shift(lag)
+    signal_vol = vol.shift(lag)
+    signal_dd = drawdown.shift(lag)
+    ma20_up = (ma20 > ma20.shift(5)).shift(lag).eq(True)
+    above20_2d = ((price > ma20) & (price.shift(1) > ma20.shift(1))).shift(lag).eq(True)
+    long_bull = (ma30 > ma200).shift(lag).eq(True)
+    spread = (ma30 / ma200 - 1).shift(lag).replace([np.inf, -np.inf], np.nan)
+    strong_bull = long_bull & (spread >= strong_spread) & (signal_vol <= panic_volatility)
+
+    raw = pd.DataFrame(core_weight, index=price.index, columns=[SYMBOL])
+    state = pd.Series("Bear Core", index=price.index, dtype="object")
+    raw.loc[long_bull, SYMBOL] = weak_bull_weight
+    state.loc[long_bull] = "Weak Bull"
+    raw.loc[strong_bull, SYMBOL] = 1.0
+    state.loc[strong_bull] = "Strong Bull"
+
+    recovery_armed = False
+    recovery_stage = 0
+    for date in price.index:
+        if pd.notna(signal_dd.loc[date]) and signal_dd.loc[date] <= -recovery_trigger:
+            recovery_armed = True
+
+        is_panic = (
+            not bool(long_bull.loc[date])
+            and pd.notna(signal_vol.loc[date])
+            and signal_vol.loc[date] >= panic_volatility
+            and signal_price.loc[date] < signal_ma200.loc[date]
         )
-        for date in price.index
-    ]
-    return rebalance_weights(weights.clip(0, 1), rebalance)
+        if is_panic:
+            raw.loc[date, SYMBOL] = panic_weight
+            state.loc[date] = "Panic"
+
+        if recovery_armed:
+            if bool(above20_2d.loc[date]) and bool(ma20_up.loc[date]):
+                recovery_stage = max(recovery_stage, 1)
+            if recovery_stage >= 1 and signal_price.loc[date] > signal_ma50.loc[date]:
+                recovery_stage = max(recovery_stage, 2)
+            if recovery_stage >= 2 and (
+                signal_price.loc[date] > signal_ma200.loc[date]
+                or signal_ma20.loc[date] > signal_ma50.loc[date]
+            ):
+                recovery_stage = 3
+
+            if recovery_stage == 1:
+                raw.loc[date, SYMBOL] = max(float(raw.loc[date, SYMBOL]), 0.70)
+                state.loc[date] = "Recovery 70"
+            elif recovery_stage == 2:
+                raw.loc[date, SYMBOL] = max(float(raw.loc[date, SYMBOL]), 0.90)
+                state.loc[date] = "Recovery 90"
+            elif recovery_stage == 3:
+                raw.loc[date, SYMBOL] = 1.0
+                state.loc[date] = "Recovery 100"
+                recovery_armed = False
+                recovery_stage = 0
+
+            if (
+                recovery_stage > 0
+                and signal_price.loc[date] < signal_ma20.loc[date]
+                and not bool(ma20_up.loc[date])
+            ):
+                recovery_stage = 0
+
+    weights = rebalance_weights(raw.clip(0, 1), rebalance)
+    applied_state = state.where(weights[SYMBOL].eq(raw[SYMBOL]), "Rebalance Hold")
+    return weights, applied_state
 
 
 def holdings_backtest(
@@ -309,32 +341,24 @@ with st.sidebar:
     with right:
         end_date = st.date_input("End", datetime.today())
 
-    st.subheader("Trend Filter")
-    trend_rule = st.selectbox(
-        "Rule",
-        ["MA Fast > MA Slow", "Close > MA Slow", "Close > MA Slow + MA Fast > MA Slow"],
-    )
+    st.subheader("Long-Term Regime")
     fast_window = st.slider("Fast MA", 20, 100, 30, 5)
     slow_window = st.slider("Slow MA", 100, 250, 200, 5)
-
-    st.subheader("Volatility Target")
-    vol_window = st.slider("Volatility window", 10, 80, 20, 5)
-    target_vol = st.slider("Target volatility (%)", 5, 50, 20, 5) / 100
-    weak_risk_multiplier = st.slider("Weak Bull risk multiplier (%)", 20, 100, 75, 5) / 100
-
-    st.subheader("Regime")
     strong_spread = st.slider("Strong Bull MA spread (%)", 0, 20, 5, 1) / 100
-    weak_vol_cutoff = st.slider("Weak Bull if volatility above (%)", 10, 80, 35, 5) / 100
-    strong_cash_sweep = st.slider("Strong Bull cash sweep to QQQ (%)", 0, 100, 50, 5) / 100
-    weak_cash_sweep = st.slider("Weak Bull cash sweep to QQQ (%)", 0, 100, 20, 5) / 100
-    bear_qqq = st.slider("Bear-regime QQQ weight (%)", 0, 100, 30, 5) / 100
 
-    st.subheader("Turnaround")
-    turnaround_dd = st.slider("Drawdown trigger (%)", 10, 50, 10, 5) / 100
-    turnaround_qqq = st.slider("Turnaround QQQ weight (%)", 0, 100, 100, 5) / 100
-    turnaround_exit_fast = st.slider("Exit fast MA", 3, 20, 10, 1)
-    turnaround_exit_slow = st.slider("Exit slow MA", 10, 80, 60, 5)
-    turnaround_exit_confirm = st.slider("Exit confirmation days", 1, 5, 2, 1)
+    st.subheader("Core / Tactical Allocation")
+    core_weight = st.slider("Bear core QQQ (%)", 0, 100, 60, 5) / 100
+    panic_weight = st.slider("Panic QQQ (%)", 0, 100, 45, 5) / 100
+    weak_bull_weight = st.slider("Weak Bull QQQ (%)", 0, 100, 90, 5) / 100
+
+    st.subheader("Panic Filter")
+    vol_window = st.slider("Volatility window", 10, 80, 20, 5)
+    panic_volatility = st.slider("Panic volatility threshold (%)", 10, 80, 35, 5) / 100
+
+    st.subheader("Fast Recovery")
+    recovery_trigger = st.slider("Arm recovery after drawdown (%)", 5, 40, 10, 5) / 100
+    recovery_fast = st.slider("Recovery fast MA", 10, 40, 20, 5)
+    recovery_mid = st.slider("Recovery mid MA", 30, 100, 50, 5)
 
     st.subheader("Trading")
     rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], horizontal=True)
@@ -342,7 +366,7 @@ with st.sidebar:
     initial_capital = st.number_input("Initial capital ($)", min_value=1000.0, value=10000.0, step=1000.0)
 
     st.subheader("Execution")
-    account_state = render_account_controls((SYMBOL,), "qqq_only", preferred_profile="default")
+    account_state = render_account_controls((SYMBOL,), "qqq_v4", preferred_profile="default")
     execution_source = account_state["source"]
     snapshot = account_state["snapshot"]
     current_shares = float(account_state["shares"][SYMBOL])
@@ -353,30 +377,38 @@ with st.sidebar:
 with st.expander("Default Strategy", expanded=False):
     st.markdown(
         f"""
-| 구간 | QQQ 목표 비중 |
+| State | QQQ target |
 |---|---:|
-| Strong Bull | 변동성 목표 비중 + 남은 현금의 {strong_cash_sweep:.0%} |
-| Weak Bull | 변동성 목표 × {weak_risk_multiplier:.0%} + 남은 현금의 {weak_cash_sweep:.0%} |
-| Turnaround | {turnaround_qqq:.0%} |
-| Bear | {bear_qqq:.0%} |
+| Strong Bull | 100% |
+| Weak Bull | {weak_bull_weight:.0%} |
+| Bear core | {core_weight:.0%} |
+| High-volatility panic | {panic_weight:.0%} |
+| Recovery stage 1 | at least 70% |
+| Recovery stage 2 | at least 90% |
+| Recovery complete | 100% |
 
-나머지는 현금이며 QQQ 목표 비중은 항상 0~100%로 제한됩니다.
+Recovery is armed after a {recovery_trigger:.0%} QQQ drawdown. Stage 1 requires two closes above
+MA{recovery_fast} with a rising MA; stage 2 requires a close above MA{recovery_mid}; full recovery
+requires a close above MA{slow_window} or MA{recovery_fast} above MA{recovery_mid}.
 """
     )
 
+if panic_weight > core_weight or core_weight > weak_bull_weight:
+    st.error("Allocation must satisfy Panic <= Bear core <= Weak Bull.")
+    st.stop()
 if not run_btn:
-    st.info("사이드바 설정을 확인한 뒤 Run backtest를 누르세요.")
+    st.info("Check the sidebar settings, then click Run backtest.")
     st.stop()
 if execution_source == KIWOOM_SOURCE and not snapshot:
-    st.error("키움 실계좌 정보를 먼저 불러오세요.")
+    st.error("Load the Kiwoom account information first.")
     st.stop()
 if start_date >= end_date:
-    st.error("Start는 End보다 빨라야 합니다.")
+    st.error("Start must be earlier than End.")
     st.stop()
 
 progress = st.progress(0, text="Loading QQQ data...")
 try:
-    warmup_days = max(slow_window, vol_window, turnaround_exit_slow) * 3
+    warmup_days = max(slow_window, vol_window, recovery_mid) * 3
     warmup_start = datetime.combine(start_date, datetime.min.time()) - timedelta(days=warmup_days)
     qqq = load_yahoo_chart(SYMBOL, warmup_start, datetime.combine(end_date, datetime.min.time()))
 except Exception as exc:
@@ -389,43 +421,51 @@ adjusted_open = (qqq["open"] * adj_factor).replace([np.inf, -np.inf], np.nan).ff
 close_ret = full_price.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
 fast_ma = full_price.rolling(fast_window).mean()
 slow_ma = full_price.rolling(slow_window).mean()
+recovery_fast_ma = full_price.rolling(recovery_fast).mean()
+recovery_mid_ma = full_price.rolling(recovery_mid).mean()
 vol = close_ret.rolling(vol_window).std() * np.sqrt(TRADING_DAYS)
-trend = build_trend_signal(full_price, fast_ma, slow_ma, trend_rule)
-regime = build_regime_signal(trend, fast_ma, slow_ma, vol, strong_spread, weak_vol_cutoff)
-regime_close = build_regime_signal(trend, fast_ma, slow_ma, vol, strong_spread, weak_vol_cutoff, False)
-turnaround = build_turnaround_signal(
-    full_price, fast_ma, slow_ma, turnaround_dd, turnaround_exit_fast, turnaround_exit_slow, turnaround_exit_confirm
-)
-turnaround_close = build_turnaround_signal(
-    full_price,
-    fast_ma,
-    slow_ma,
-    turnaround_dd,
-    turnaround_exit_fast,
-    turnaround_exit_slow,
-    turnaround_exit_confirm,
-    False,
-)
+drawdown = full_price / full_price.cummax() - 1
 
 index = qqq.index[(qqq.index.date >= start_date) & (qqq.index.date <= end_date)]
 if len(index) < 200:
     st.error("선택한 기간에 유효한 데이터가 부족합니다.")
     st.stop()
 
-weights_full = build_strategy_weights(
+weights_full, state_full = build_asymmetric_weights(
     full_price,
-    regime,
-    turnaround,
+    recovery_fast_ma,
+    fast_ma,
+    recovery_mid_ma,
+    slow_ma,
     vol,
-    target_vol,
-    weak_risk_multiplier,
-    strong_cash_sweep,
-    weak_cash_sweep,
-    turnaround_qqq,
-    bear_qqq,
+    drawdown,
+    core_weight,
+    panic_weight,
+    weak_bull_weight,
+    panic_volatility,
+    strong_spread,
+    recovery_trigger,
     rebalance,
 )
+close_weights_full, close_state_full = build_asymmetric_weights(
+    full_price,
+    recovery_fast_ma,
+    fast_ma,
+    recovery_mid_ma,
+    slow_ma,
+    vol,
+    drawdown,
+    core_weight,
+    panic_weight,
+    weak_bull_weight,
+    panic_volatility,
+    strong_spread,
+    recovery_trigger,
+    rebalance,
+    lag_for_execution=False,
+)
 weights = weights_full.reindex(index).fillna(0.0)
+state = state_full.reindex(index).fillna("Warmup")
 strategy_ret, actual_weight, turnover, shares, cash = holdings_backtest(
     weights,
     adjusted_open.reindex(index).ffill(),
@@ -437,19 +477,33 @@ benchmark_ret = qqq["adjclose"].pct_change().reindex(index).fillna(0.0)
 metrics = calc_metrics(strategy_ret)
 benchmark_metrics = calc_metrics(benchmark_ret)
 
-latest_date = index[-1]
-latest_regime = "Turnaround" if bool(turnaround_close.loc[latest_date]) else str(regime_close.loc[latest_date])
-next_weight = target_weight(
-    str(regime_close.loc[latest_date]),
-    bool(turnaround_close.loc[latest_date]),
-    float(vol.loc[latest_date]),
-    target_vol,
-    weak_risk_multiplier,
-    strong_cash_sweep,
-    weak_cash_sweep,
-    turnaround_qqq,
-    bear_qqq,
+# Fixed V3 reference using the original page defaults for an apples-to-apples comparison.
+v3_trend = fast_ma > slow_ma
+v3_regime = build_regime_signal(v3_trend, fast_ma, slow_ma, vol, 0.05, 0.35)
+v3_turnaround = build_turnaround_signal(full_price, fast_ma, slow_ma, 0.10, 10, 60, 2)
+v3_risk = (0.20 / vol.shift(1)).clip(0, 1).fillna(0.0)
+v3_weak_risk = (v3_risk * 0.75).clip(0, 1)
+v3_weight = pd.Series(0.30, index=full_price.index)
+v3_weight.loc[v3_regime == "Weak Bull"] = (
+    v3_weak_risk + (1 - v3_weak_risk) * 0.20
+).loc[v3_regime == "Weak Bull"]
+v3_weight.loc[v3_regime == "Strong Bull"] = (
+    v3_risk + (1 - v3_risk) * 0.50
+).loc[v3_regime == "Strong Bull"]
+v3_weight.loc[v3_turnaround] = 1.0
+v3_weights = rebalance_weights(v3_weight.to_frame(SYMBOL), rebalance).reindex(index).fillna(0.0)
+v3_ret, _, _, _, _ = holdings_backtest(
+    v3_weights,
+    adjusted_open.reindex(index).ffill(),
+    qqq["adjclose"].reindex(index).ffill(),
+    cost_rate,
+    initial_capital,
 )
+v3_metrics = calc_metrics(v3_ret)
+
+latest_date = index[-1]
+latest_regime = str(close_state_full.loc[latest_date])
+next_weight = float(close_weights_full.loc[latest_date, SYMBOL])
 latest_price = float(full_price.loc[latest_date])
 if execution_source == KIWOOM_SOURCE:
     account_value = current_cash + current_shares * latest_price
@@ -477,9 +531,15 @@ performance_tab, execution_tab, signal_tab, table_tab = st.tabs(
 )
 
 with performance_tab:
-    nav = pd.DataFrame({"QQQ Holdings Strategy V3": metrics["nav"], "QQQ Buy & Hold": benchmark_metrics["nav"]})
+    nav = pd.DataFrame(
+        {
+            "QQQ Core Recovery V4": metrics["nav"],
+            "QQQ Holdings V3": v3_metrics["nav"],
+            "QQQ Buy & Hold": benchmark_metrics["nav"],
+        }
+    )
     st.plotly_chart(line_chart(nav, "Cumulative NAV"), use_container_width=True)
-    drawdown = pd.DataFrame({"Strategy": metrics["dd"], "QQQ": benchmark_metrics["dd"]})
+    drawdown = pd.DataFrame({"V4": metrics["dd"], "V3": v3_metrics["dd"], "QQQ": benchmark_metrics["dd"]})
     st.plotly_chart(line_chart(drawdown, "Drawdown", percent=True), use_container_width=True)
 
 with execution_tab:
@@ -503,12 +563,17 @@ with execution_tab:
 
 with signal_tab:
     signal_data = pd.DataFrame(
-        {"QQQ": full_price.reindex(index), f"MA{fast_window}": fast_ma.reindex(index), f"MA{slow_window}": slow_ma.reindex(index)}
+        {
+            "QQQ": full_price.reindex(index),
+            f"MA{recovery_fast}": recovery_fast_ma.reindex(index),
+            f"MA{recovery_mid}": recovery_mid_ma.reindex(index),
+            f"MA{slow_window}": slow_ma.reindex(index),
+        }
     )
     st.plotly_chart(line_chart(signal_data, "QQQ Trend"), use_container_width=True)
     recent = pd.DataFrame(
         {
-            "Regime": regime.reindex(index).where(~turnaround.reindex(index), "Turnaround"),
+            "State": state,
             "Target QQQ": weights[SYMBOL],
             "Actual QQQ": actual_weight,
             "Cash Weight": (1 - actual_weight).clip(0, 1),
@@ -522,7 +587,8 @@ with signal_tab:
 with table_tab:
     comparison = pd.DataFrame(
         [
-            {"Strategy": "QQQ Holdings Strategy V3", **{k: metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
+            {"Strategy": "QQQ Core Recovery V4", **{k: metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
+            {"Strategy": "QQQ Holdings V3", **{k: v3_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
             {"Strategy": "QQQ Buy & Hold", **{k: benchmark_metrics[k] for k in ["total", "cagr", "mdd", "sharpe", "calmar"]}},
         ]
     )

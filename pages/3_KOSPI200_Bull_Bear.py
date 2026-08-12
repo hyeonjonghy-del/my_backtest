@@ -136,6 +136,62 @@ def render_static_line(data: pd.DataFrame, title: str, ylabel: str = "", height:
     st.pyplot(fig, clear_figure=True)
 
 
+def render_volatility_chart(
+    realized_vol: pd.Series,
+    daily_vol: pd.Series,
+    vol_cap: pd.Series,
+    realized_label: str,
+    daily_label: str,
+) -> None:
+    chart = pd.concat(
+        {
+            "realized": realized_vol,
+            "daily": daily_vol,
+            "cap": vol_cap,
+        },
+        axis=1,
+    ).replace([np.inf, -np.inf], np.nan)
+
+    fig, ax = plt.subplots(figsize=(11, 3.0), dpi=120)
+    daily_ax = ax.twinx()
+    daily = chart["daily"].dropna()
+    daily_ax.bar(
+        daily.index,
+        daily.values,
+        width=1.0,
+        color="#64748B",
+        alpha=0.22,
+        linewidth=0,
+        label=daily_label,
+        zorder=1,
+    )
+
+    rv = chart["realized"].dropna()
+    cap = chart["cap"].dropna()
+    ax.plot(rv.index, rv.values, color=COLORS["strategy"], linewidth=2.0, label=realized_label, zorder=3)
+    ax.plot(cap.index, cap.values, color="#2563EB", linewidth=1.5, label="Vol Cap", zorder=3)
+
+    ax.set_title("Annualized Realized Volatility", loc="left", fontsize=13, fontweight="bold")
+    ax.set_ylabel("Annualized RV (%)")
+    daily_ax.set_ylabel("Daily |Return| (%)", color="#64748B")
+    ax.yaxis.set_major_formatter(lambda x, _: f"{x:.0f}%")
+    daily_ax.yaxis.set_major_formatter(lambda x, _: f"{x:.0f}%")
+    daily_ax.tick_params(axis="y", colors="#64748B")
+    ax.grid(True, axis="y", color="#E5E7EB", linewidth=0.8)
+    ax.grid(False, axis="x")
+    ax.spines["top"].set_visible(False)
+    daily_ax.spines["top"].set_visible(False)
+    daily_ax.spines["left"].set_visible(False)
+    ax.set_zorder(daily_ax.get_zorder() + 1)
+    ax.patch.set_visible(False)
+    lines, labels = ax.get_legend_handles_labels()
+    bars, bar_labels = daily_ax.get_legend_handles_labels()
+    ax.legend(lines + bars, labels + bar_labels, loc="upper left", ncols=3, frameon=False)
+    fig.autofmt_xdate(rotation=0)
+    fig.tight_layout()
+    st.pyplot(fig, clear_figure=True)
+
+
 def render_yearly_bars(strategy_nav: pd.Series, kodex_nav: pd.Series, lev_nav: pd.Series) -> None:
     yearly = pd.DataFrame(
         {
@@ -1010,10 +1066,17 @@ with tab_signal:
     vol_chart = pd.DataFrame(
         {
             f"{vol_source} RV{vol_window}": realized_vol.reindex(common_idx) * 100,
+            f"{vol_source} Daily |Return|": finite_return(vol_price.pct_change()).abs().reindex(common_idx) * 100,
             "Vol Cap": pd.Series(vol_threshold_pct, index=common_idx),
         }
     )
-    render_static_line(vol_chart, "Annualized Realized Volatility", "%", 3.0, True)
+    render_volatility_chart(
+        vol_chart[f"{vol_source} RV{vol_window}"],
+        vol_chart[f"{vol_source} Daily |Return|"],
+        vol_chart["Vol Cap"],
+        f"{vol_source} RV{vol_window}",
+        f"{vol_source} Daily |Return|",
+    )
 
     recent_signal = pd.DataFrame(
         {

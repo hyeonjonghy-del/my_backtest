@@ -185,6 +185,12 @@ if run:
     growth["전략 포트폴리오"] = result.Wealth / result.Wealth.iloc[0]
     st.line_chart(growth)
 
+    st.subheader("자산 가격 비교 (시작일 = 100)")
+    normalized_prices = prices.loc[result.index].div(prices.loc[result.index[0]]).mul(100)
+    normalized_prices.columns = list(display_names)
+    st.line_chart(normalized_prices)
+    st.caption("배당·분할 등이 반영된 조정주가를 시작일 기준 100으로 정규화했습니다.")
+
     st.subheader("MDD 추이")
     drawdown_chart = (result.Wealth / result.Wealth.cummax() - 1).rename("Drawdown")
     st.line_chart(drawdown_chart)

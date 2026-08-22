@@ -59,14 +59,16 @@ def backtest(prices, rebalance_months, momentum_months, cost_bps):
     target.loc[neither & ~first_less_bad, prices.columns[0]] = 0.20
     target.loc[neither & ~first_less_bad, prices.columns[1]] = 0.80
 
+    # Use the previous month's completed signal for the next period.
     target = target.ffill().shift(1)
-    periods = month_end.index.to_period("M")
-    target.loc[((periods.month - 1) % rebalance_months) != 0, :] = np.nan
-    target = target.ffill()
     target.index = target.index.to_period("M")
     daily_target = target.reindex(prices.index.to_period("M")).ffill()
     daily_target.index = prices.index
     daily_returns = prices.pct_change().fillna(0.0)
+    rebalance_periods = {
+        period for period in target.index
+        if (period.month - 1) % rebalance_months == 0
+    }
 
     wealth = 1.0
     actual = None
@@ -79,18 +81,25 @@ def backtest(prices, rebalance_months, momentum_months, cost_bps):
         period = day.to_period("M")
         if actual is None:
             actual = desired.copy()
-        turnover = float((desired - actual).abs().sum()) if period != previous_period else 0.0
-        if period != previous_period:
+        is_rebalance = period != previous_period and period in rebalance_periods
+        turnover = float((desired - actual).abs().sum()) if is_rebalance else 0.0
+        if is_rebalance:
             wealth *= 1 - turnover * cost_bps / 10000
             actual = desired.copy()
         wealth *= float((actual * (1 + daily_return)).sum())
         actual = actual * (1 + daily_return)
         actual = actual / actual.sum()
-        rows.append((day, wealth, desired.iloc[0], desired.iloc[1], turnover))
+        rows.append((
+            day, wealth, desired.iloc[0], desired.iloc[1],
+            actual.iloc[0], actual.iloc[1], is_rebalance, turnover
+        ))
         previous_period = period
 
     result = pd.DataFrame(
-        rows, columns=["Date", "Wealth", "First weight", "Second weight", "Turnover"]
+        rows, columns=[
+            "Date", "Wealth", "Target first weight", "Target second weight",
+            "Actual first weight", "Actual second weight", "Rebalance", "Turnover"
+        ]
     ).set_index("Date")
     returns = result.Wealth.pct_change().fillna(0.0)
     years = (result.index[-1] - result.index[0]).days / 365.2425
@@ -104,8 +113,8 @@ def backtest(prices, rebalance_months, momentum_months, cost_bps):
         "MDD": drawdown.min(),
         "연 변동성": volatility,
         "Sharpe": returns.mean() * 252 / volatility,
-        "평균 첫 번째 자산 비중": result["First weight"].mean(),
-        "리밸런싱 횟수": int((result.Turnover > 0).sum()),
+        "평균 첫 번째 자산 비중": result["Actual first weight"].mean(),
+        "리밸런싱 횟수": int(result.Rebalance.sum()),
     }
     return result, metrics
 
@@ -158,10 +167,25 @@ if run:
     st.line_chart(result[["Wealth"]])
 
     st.subheader("비중 변화")
-    weights = result[["First weight", "Second weight"]].rename(
-        columns={"First weight": tickers[0], "Second weight": tickers[1]}
+    weights = result[["Actual first weight", "Actual second weight"]].rename(
+        columns={"Actual first weight": tickers[0], "Actual second weight": tickers[1]}
     )
     st.area_chart(weights)
+
+    st.subheader("리밸런싱 날짜 및 자산 비중")
+    rebalance_table = result.loc[result.Rebalance, [
+        "Target first weight", "Target second weight",
+        "Actual first weight", "Actual second weight", "Turnover"
+    ]].copy()
+    rebalance_table.index = rebalance_table.index.strftime("%Y-%m-%d")
+    rebalance_table.columns = [
+        f"목표 {tickers[0]}", f"목표 {tickers[1]}",
+        f"실제 {tickers[0]}", f"실제 {tickers[1]}", "회전율"
+    ]
+    for column in rebalance_table.columns:
+        rebalance_table[column] = rebalance_table[column].map(lambda value: f"{value:.2%}")
+    st.dataframe(rebalance_table, use_container_width=True)
+    st.caption("전월 마지막 거래일에 신호를 계산하고, 해당 리밸런싱 월의 첫 거래일에 목표비중으로 조정합니다.")
 
     st.subheader("상세 지표")
     st.dataframe(pd.DataFrame([metrics]).T.rename(columns={0: "값"}), use_container_width=True)

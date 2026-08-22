@@ -179,69 +179,98 @@ if run:
     c3.metric("최종 배수", f"{metrics['최종 배수']:.2f}x")
     c4.metric("연 변동성", f"{metrics['연 변동성']:.2%}")
 
-    st.subheader("자산 및 포트폴리오 성장곡선")
-    growth = prices.loc[result.index].div(prices.loc[result.index[0]])
-    growth.columns = list(display_names)
-    growth["전략 포트폴리오"] = result.Wealth / result.Wealth.iloc[0]
-    st.line_chart(growth)
+    overview_tab, returns_tab = st.tabs(["전략 결과", "월별·연도별 수익률"])
 
-    st.subheader("자산 가격 비교 (시작일 = 100)")
-    normalized_prices = prices.loc[result.index].div(prices.loc[result.index[0]]).mul(100)
-    normalized_prices.columns = list(display_names)
-    st.line_chart(normalized_prices)
-    st.caption("배당·분할 등이 반영된 조정주가를 시작일 기준 100으로 정규화했습니다.")
+    with overview_tab:
+        st.subheader("자산 및 포트폴리오 성장곡선")
+        growth = prices.loc[result.index].div(prices.loc[result.index[0]])
+        growth.columns = list(display_names)
+        growth["전략 포트폴리오"] = result.Wealth / result.Wealth.iloc[0]
+        st.line_chart(growth)
 
-    st.subheader("MDD 추이")
-    drawdown_chart = (result.Wealth / result.Wealth.cummax() - 1).rename("Drawdown")
-    st.line_chart(drawdown_chart)
+        st.subheader("자산 가격 비교 (시작일 = 100)")
+        normalized_prices = prices.loc[result.index].div(prices.loc[result.index[0]]).mul(100)
+        normalized_prices.columns = list(display_names)
+        st.line_chart(normalized_prices)
+        st.caption("배당·분할 등이 반영된 조정주가를 시작일 기준 100으로 정규화했습니다.")
 
-    st.subheader("비중 변화")
-    weights = result[["Actual first weight", "Actual second weight"]].rename(
-        columns={"Actual first weight": display_names[0], "Actual second weight": display_names[1]}
-    )
-    weights_long = weights.reset_index().melt(
-        id_vars="Date", var_name="자산", value_name="비중"
-    )
-    st.vega_lite_chart(
-        weights_long,
-        {
-            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-            "mark": {"type": "area", "opacity": 0.9},
-            "encoding": {
-                "x": {"field": "Date", "type": "temporal", "title": "날짜"},
-                "y": {
-                    "field": "비중", "type": "quantitative", "stack": "zero",
-                    "scale": {"domain": [0, 1]}, "axis": {"format": ".0%", "title": "비중"}
+        st.subheader("MDD 추이")
+        drawdown_chart = (result.Wealth / result.Wealth.cummax() - 1).rename("Drawdown")
+        st.line_chart(drawdown_chart)
+
+        st.subheader("비중 변화")
+        weights = result[["Actual first weight", "Actual second weight"]].rename(
+            columns={"Actual first weight": display_names[0], "Actual second weight": display_names[1]}
+        )
+        weights_long = weights.reset_index().melt(
+            id_vars="Date", var_name="자산", value_name="비중"
+        )
+        st.vega_lite_chart(
+            weights_long,
+            {
+                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+                "mark": {"type": "area", "opacity": 0.9},
+                "encoding": {
+                    "x": {"field": "Date", "type": "temporal", "title": "날짜"},
+                    "y": {
+                        "field": "비중", "type": "quantitative", "stack": "zero",
+                        "scale": {"domain": [0, 1]}, "axis": {"format": ".0%", "title": "비중"}
+                    },
+                    "color": {"field": "자산", "type": "nominal", "title": "자산"},
+                    "tooltip": [
+                        {"field": "Date", "type": "temporal", "title": "날짜"},
+                        {"field": "자산", "type": "nominal", "title": "자산"},
+                        {"field": "비중", "type": "quantitative", "format": ".2%", "title": "비중"}
+                    ]
                 },
-                "color": {"field": "자산", "type": "nominal", "title": "자산"},
-                "tooltip": [
-                    {"field": "Date", "type": "temporal", "title": "날짜"},
-                    {"field": "자산", "type": "nominal", "title": "자산"},
-                    {"field": "비중", "type": "quantitative", "format": ".2%", "title": "비중"}
-                ]
+                "width": "container",
+                "height": 360,
             },
-            "width": "container",
-            "height": 360,
-        },
-        use_container_width=True,
-    )
+            use_container_width=True,
+        )
 
-    st.subheader("리밸런싱 날짜 및 자산 비중")
-    rebalance_table = result.loc[result.Rebalance, [
-        "Target first weight", "Target second weight",
-        "Actual first weight", "Actual second weight", "Turnover"
-    ]].copy()
-    rebalance_table.index = rebalance_table.index.strftime("%Y-%m-%d")
-    rebalance_table.columns = [
-        f"목표 {display_names[0]}", f"목표 {display_names[1]}",
-        f"실제 {display_names[0]}", f"실제 {display_names[1]}", "회전율"
-    ]
-    for column in rebalance_table.columns:
-        rebalance_table[column] = rebalance_table[column].map(lambda value: f"{value:.2%}")
-    st.dataframe(rebalance_table, use_container_width=True)
-    st.caption("전월 마지막 거래일에 신호를 계산하고, 해당 리밸런싱 월의 첫 거래일에 목표비중으로 조정합니다.")
+        st.subheader("리밸런싱 날짜 및 자산 비중")
+        rebalance_table = result.loc[result.Rebalance, [
+            "Target first weight", "Target second weight",
+            "Actual first weight", "Actual second weight", "Turnover"
+        ]].copy()
+        rebalance_table.index = rebalance_table.index.strftime("%Y-%m-%d")
+        rebalance_table.columns = [
+            f"목표 {display_names[0]}", f"목표 {display_names[1]}",
+            f"실제 {display_names[0]}", f"실제 {display_names[1]}", "회전율"
+        ]
+        for column in rebalance_table.columns:
+            rebalance_table[column] = rebalance_table[column].map(lambda value: f"{value:.2%}")
+        st.dataframe(rebalance_table, use_container_width=True)
+        st.caption("전월 마지막 거래일에 신호를 계산하고, 해당 리밸런싱 월의 첫 거래일에 목표비중으로 조정합니다.")
 
-    st.subheader("상세 지표")
-    st.dataframe(pd.DataFrame([metrics]).T.rename(columns={0: "값"}), use_container_width=True)
+        st.subheader("상세 지표")
+        st.dataframe(pd.DataFrame([metrics]).T.rename(columns={0: "값"}), use_container_width=True)
+
+    with returns_tab:
+        st.subheader("월별 수익률")
+        month_end_wealth = result["Wealth"].resample("ME").last()
+        monthly_returns = month_end_wealth.pct_change()
+        if len(monthly_returns) > 0:
+            monthly_returns.iloc[0] = month_end_wealth.iloc[0] / result["Wealth"].iloc[0] - 1
+
+        returns_frame = monthly_returns.rename("수익률").to_frame()
+        returns_frame["연도"] = returns_frame.index.year
+        returns_frame["월"] = returns_frame.index.month
+        monthly_table = returns_frame.pivot(index="연도", columns="월", values="수익률")
+        monthly_table = monthly_table.reindex(columns=range(1, 13))
+
+        year_end_wealth = result["Wealth"].resample("YE").last()
+        annual_returns = year_end_wealth.pct_change()
+        if len(annual_returns) > 0:
+            annual_returns.iloc[0] = year_end_wealth.iloc[0] / result["Wealth"].iloc[0] - 1
+        monthly_table["연간"] = annual_returns.groupby(annual_returns.index.year).first()
+        monthly_table.columns = [f"{column}월" for column in range(1, 13)] + ["연간"]
+        st.dataframe(
+            monthly_table.style.format("{:.2%}", na_rep="-"),
+            use_container_width=True,
+        )
+        st.caption("월별 수익률은 각 월말 기준이며, 시작월과 종료월은 입력한 기간에 따라 부분 기간 수익률일 수 있습니다.")
 else:
     st.info("왼쪽에서 시장·리밸런싱 주기·모멘텀 기간을 선택한 뒤 ‘백테스트 실행’을 누르세요.")
+

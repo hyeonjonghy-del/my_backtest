@@ -10,13 +10,19 @@ import streamlit as st
 
 
 MARKETS = {
-    "미국: QQQ + GLD": ("QQQ", "GLD"),
-    "한국: 133690 + 411060": ("133690.KS", "411060.KS"),
+    "미국: QQQ + GLD": {
+        "tickers": ("QQQ", "GLD"),
+        "names": ("QQQ", "GLD"),
+    },
+    "한국: TIGER 미국나스닥100 (133690) + ACE KRX금현물 (411060)": {
+        "tickers": ("133690.KS", "411060.KS"),
+        "names": ("TIGER 미국나스닥100 (133690)", "ACE KRX금현물 (411060)"),
+    },
 }
 PERIODS = [1, 3, 6, 12]
 MARKET_MIN_DATES = {
     "미국: QQQ + GLD": date(2004, 11, 19),
-    "한국: 133690 + 411060": date(2021, 12, 15),
+    "한국: TIGER 미국나스닥100 (133690) + ACE KRX금현물 (411060)": date(2021, 12, 15),
 }
 
 
@@ -141,7 +147,8 @@ with st.sidebar:
     run = st.button("백테스트 실행", type="primary", use_container_width=True)
 
 if run:
-    tickers = MARKETS[market_label]
+    tickers = MARKETS[market_label]["tickers"]
+    display_names = MARKETS[market_label]["names"]
     if start_date > end_date:
         st.error("데이터 시작일은 종료일보다 빠르거나 같아야 합니다.")
         st.stop()
@@ -161,10 +168,10 @@ if run:
     latest_date = result.index[-1].strftime("%Y-%m-%d")
     st.info(
         f"현재 전략 비중 (기준일 {latest_date}) | "
-        f"목표: {tickers[0]} {latest['Target first weight']:.0%} / "
-        f"{tickers[1]} {latest['Target second weight']:.0%} | "
-        f"실제: {tickers[0]} {latest['Actual first weight']:.2%} / "
-        f"{tickers[1]} {latest['Actual second weight']:.2%}"
+        f"목표: {display_names[0]} {latest['Target first weight']:.0%} / "
+        f"{display_names[1]} {latest['Target second weight']:.0%} | "
+        f"실제: {display_names[0]} {latest['Actual first weight']:.2%} / "
+        f"{display_names[1]} {latest['Actual second weight']:.2%}"
     )
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("CAGR", f"{metrics['CAGR']:.2%}")
@@ -174,6 +181,10 @@ if run:
 
     st.subheader("자산 성장곡선")
     st.line_chart(result[["Wealth"]])
+
+    st.subheader("MDD 추이")
+    drawdown_chart = (result.Wealth / result.Wealth.cummax() - 1).rename("Drawdown")
+    st.line_chart(drawdown_chart)
 
     st.subheader("비중 변화")
     weights = result[["Actual first weight", "Actual second weight"]].rename(
@@ -188,8 +199,8 @@ if run:
     ]].copy()
     rebalance_table.index = rebalance_table.index.strftime("%Y-%m-%d")
     rebalance_table.columns = [
-        f"목표 {tickers[0]}", f"목표 {tickers[1]}",
-        f"실제 {tickers[0]}", f"실제 {tickers[1]}", "회전율"
+        f"목표 {display_names[0]}", f"목표 {display_names[1]}",
+        f"실제 {display_names[0]}", f"실제 {display_names[1]}", "회전율"
     ]
     for column in rebalance_table.columns:
         rebalance_table[column] = rebalance_table[column].map(lambda value: f"{value:.2%}")

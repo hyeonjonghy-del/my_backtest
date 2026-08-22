@@ -179,8 +179,11 @@ if run:
     c3.metric("최종 배수", f"{metrics['최종 배수']:.2f}x")
     c4.metric("연 변동성", f"{metrics['연 변동성']:.2%}")
 
-    st.subheader("자산 성장곡선")
-    st.line_chart(result[["Wealth"]])
+    st.subheader("자산 및 포트폴리오 성장곡선")
+    growth = prices.loc[result.index].div(prices.loc[result.index[0]])
+    growth.columns = list(display_names)
+    growth["전략 포트폴리오"] = result.Wealth / result.Wealth.iloc[0]
+    st.line_chart(growth)
 
     st.subheader("MDD 추이")
     drawdown_chart = (result.Wealth / result.Wealth.cummax() - 1).rename("Drawdown")
@@ -188,9 +191,34 @@ if run:
 
     st.subheader("비중 변화")
     weights = result[["Actual first weight", "Actual second weight"]].rename(
-        columns={"Actual first weight": tickers[0], "Actual second weight": tickers[1]}
+        columns={"Actual first weight": display_names[0], "Actual second weight": display_names[1]}
     )
-    st.area_chart(weights)
+    weights_long = weights.reset_index().melt(
+        id_vars="Date", var_name="자산", value_name="비중"
+    )
+    st.vega_lite_chart(
+        weights_long,
+        {
+            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+            "mark": {"type": "area", "opacity": 0.9},
+            "encoding": {
+                "x": {"field": "Date", "type": "temporal", "title": "날짜"},
+                "y": {
+                    "field": "비중", "type": "quantitative", "stack": "zero",
+                    "scale": {"domain": [0, 1]}, "axis": {"format": ".0%", "title": "비중"}
+                },
+                "color": {"field": "자산", "type": "nominal", "title": "자산"},
+                "tooltip": [
+                    {"field": "Date", "type": "temporal", "title": "날짜"},
+                    {"field": "자산", "type": "nominal", "title": "자산"},
+                    {"field": "비중", "type": "quantitative", "format": ".2%", "title": "비중"}
+                ]
+            },
+            "width": "container",
+            "height": 360,
+        },
+        use_container_width=True,
+    )
 
     st.subheader("리밸런싱 날짜 및 자산 비중")
     rebalance_table = result.loc[result.Rebalance, [

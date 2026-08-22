@@ -14,6 +14,10 @@ MARKETS = {
     "한국: 133690 + 411060": ("133690.KS", "411060.KS"),
 }
 PERIODS = [1, 3, 6, 12]
+MARKET_MIN_DATES = {
+    "미국: QQQ + GLD": date(2004, 11, 19),
+    "한국: 133690 + 411060": date(2021, 12, 15),
+}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -116,12 +120,22 @@ with st.sidebar:
     rebalance_months = st.selectbox("리밸런싱 주기", PERIODS, index=0, format_func=lambda x: f"{x}개월")
     momentum_months = st.selectbox("모멘텀 기간", PERIODS, index=3, format_func=lambda x: f"{x}개월")
     cost_bps = st.number_input("거래비용 (편도, bp)", min_value=0.0, value=10.0, step=1.0)
-    start_date = st.date_input("데이터 시작일", value=date(2000, 1, 1))
-    end_date = st.date_input("데이터 종료일", value=date.today())
+    today = date.today()
+    min_date = MARKET_MIN_DATES[market_label]
+    default_start = max(date(2021, 1, 1), min_date)
+    start_date = st.date_input(
+        "데이터 시작일", value=default_start, min_value=min_date, max_value=today
+    )
+    end_date = st.date_input(
+        "데이터 종료일", value=today, min_value=min_date, max_value=today
+    )
     run = st.button("백테스트 실행", type="primary", use_container_width=True)
 
 if run:
     tickers = MARKETS[market_label]
+    if start_date > end_date:
+        st.error("데이터 시작일은 종료일보다 빠르거나 같아야 합니다.")
+        st.stop()
     with st.spinner("시장 데이터를 내려받아 계산 중입니다..."):
         try:
             prices = fetch_prices(tickers, start_date, end_date)
@@ -130,7 +144,10 @@ if run:
             st.error(f"데이터를 불러오거나 계산하는 중 오류가 발생했습니다: {exc}")
             st.stop()
 
-    st.success(f"{market_label} 백테스트 완료: {metrics['시작일']} ~ {metrics['종료일']}")
+    st.success(
+        f"{market_label} 백테스트 완료 | 입력 기간: {start_date} ~ {end_date} | "
+        f"실제 계산 기간: {metrics['시작일']} ~ {metrics['종료일']}"
+    )
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("CAGR", f"{metrics['CAGR']:.2%}")
     c2.metric("MDD", f"{metrics['MDD']:.2%}")

@@ -171,7 +171,7 @@ if run:
             st.stop()
 
     st.success(
-        f"{market_label} | 강한 자산 비중 {allocation_label} | 입력 기간: {start_date} ~ {end_date} | "
+        f"{market_label} | 강한/약한 자산 비중 {strong_asset_percent}:{weak_asset_percent} | 입력 기간: {start_date} ~ {end_date} | "
         f"실제 계산 기간: {metrics['시작일']} ~ {metrics['종료일']}"
     )
     latest = result.iloc[-1]

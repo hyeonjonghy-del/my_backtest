@@ -45,25 +45,26 @@ def fetch_prices(tickers, start_date, end_date):
     return pd.concat(series, axis=1).dropna()
 
 
-def backtest(prices, rebalance_months, momentum_months, cost_bps):
+def backtest(prices, rebalance_months, momentum_months, cost_bps, strong_asset_weight):
+    weak_asset_weight = 1.0 - strong_asset_weight;
     month_end = prices.resample("ME").last()
     momentum = month_end.pct_change(momentum_months)
     target = pd.DataFrame(index=month_end.index, columns=prices.columns, dtype=float)
     first_stronger = (momentum.iloc[:, 0] > momentum.iloc[:, 1]) & (momentum.iloc[:, 0] > 0)
     second_stronger = (momentum.iloc[:, 1] >= momentum.iloc[:, 0]) & (momentum.iloc[:, 1] > 0)
-    target.loc[first_stronger, prices.columns[0]] = 0.80
-    target.loc[first_stronger, prices.columns[1]] = 0.20
-    target.loc[second_stronger, prices.columns[0]] = 0.20
-    target.loc[second_stronger, prices.columns[1]] = 0.80
+    target.loc[first_stronger, prices.columns[0]] = strong_asset_weight
+    target.loc[first_stronger, prices.columns[1]] = weak_asset_weight
+    target.loc[second_stronger, prices.columns[0]] = weak_asset_weight
+    target.loc[second_stronger, prices.columns[1]] = strong_asset_weight
 
-    # If both momentum readings are non-positive, keep the less-bad asset at 80%.
+    # If both momentum readings are non-positive, keep the less-bad asset at the selected stronger-asset weight.
     valid = momentum.notna().all(axis=1)
     neither = valid & target.isna().all(axis=1)
     first_less_bad = (momentum.iloc[:, 0] >= momentum.iloc[:, 1]) & neither
-    target.loc[first_less_bad, prices.columns[0]] = 0.80
-    target.loc[first_less_bad, prices.columns[1]] = 0.20
-    target.loc[neither & ~first_less_bad, prices.columns[0]] = 0.20
-    target.loc[neither & ~first_less_bad, prices.columns[1]] = 0.80
+    target.loc[first_less_bad, prices.columns[0]] = strong_asset_weight
+    target.loc[first_less_bad, prices.columns[1]] = weak_asset_weight
+    target.loc[neither & ~first_less_bad, prices.columns[0]] = weak_asset_weight
+    target.loc[neither & ~first_less_bad, prices.columns[1]] = strong_asset_weight
 
     # Use the previous month's completed signal for the next period.
     target = target.ffill().shift(1)
@@ -127,13 +128,19 @@ def backtest(prices, rebalance_months, momentum_months, cost_bps):
 
 st.set_page_config(page_title="QQQ · Gold Momentum", layout="wide")
 st.title("9. QQQ · 금 상대 모멘텀 전략")
-st.caption("최근 모멘텀이 더 강한 자산 80%, 다른 자산 20% — 다음 리밸런싱 구간부터 적용")
+st.caption("최근 모멘텀이 더 강한 자산에 선택한 비중을 배분하고, 다른 자산에는 나머지를 배분합니다 — 다음 리밸런싱 구간부터 적용")
 
 with st.sidebar:
     st.header("전략 설정")
     market_label = st.selectbox("시장", list(MARKETS.keys()))
     rebalance_months = st.selectbox("리밸런싱 주기", PERIODS, index=0, format_func=lambda x: f"{x}개월")
     momentum_months = st.selectbox("모멘텀 기간", PERIODS, index=3, format_func=lambda x: f"{x}개월")
+    strong_asset_percent = st.slider(
+        "모멘텀이 강한 자산 비중 (%)", min_value=50, max_value=100, value=80, step=5,
+        help="나머지 비중은 모멘텀이 약한 자산에 배분됩니다. 예: 90% 선택 시 강한 자산 90% / 약한 자산 10%입니다.",
+    )
+    weak_asset_percent = 100 - strong_asset_percent
+    st.caption(f"선택 비중: 강한 자산 {strong_asset_percent}% / 약한 자산 {weak_asset_percent}%")
     cost_bps = st.number_input("거래비용 (편도, bp)", min_value=0.0, value=10.0, step=1.0)
     today = date.today()
     min_date = MARKET_MIN_DATES[market_label]
@@ -155,7 +162,10 @@ if run:
     with st.spinner("시장 데이터를 내려받아 계산 중입니다..."):
         try:
             prices = fetch_prices(tickers, start_date, end_date)
-            result, metrics = backtest(prices, rebalance_months, momentum_months, cost_bps)
+            result, metrics = backtest(
+                prices, rebalance_months, momentum_months, cost_bps,
+                strong_asset_percent / 100,
+            )
         except Exception as exc:
             st.error(f"데이터를 불러오거나 계산하는 중 오류가 발생했습니다: {exc}")
             st.stop()

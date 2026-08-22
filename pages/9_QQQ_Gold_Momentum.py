@@ -157,6 +157,15 @@ if run:
         f"{market_label} 백테스트 완료 | 입력 기간: {start_date} ~ {end_date} | "
         f"실제 계산 기간: {metrics['시작일']} ~ {metrics['종료일']}"
     )
+    latest = result.iloc[-1]
+    latest_date = result.index[-1].strftime("%Y-%m-%d")
+    st.info(
+        f"현재 전략 비중 (기준일 {latest_date}) | "
+        f"목표: {tickers[0]} {latest['Target first weight']:.0%} / "
+        f"{tickers[1]} {latest['Target second weight']:.0%} | "
+        f"실제: {tickers[0]} {latest['Actual first weight']:.2%} / "
+        f"{tickers[1]} {latest['Actual second weight']:.2%}"
+    )
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("CAGR", f"{metrics['CAGR']:.2%}")
     c2.metric("MDD", f"{metrics['MDD']:.2%}")

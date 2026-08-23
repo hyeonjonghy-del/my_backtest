@@ -67,7 +67,12 @@ if submitted:
     end_text = end.isoformat()
     with st.spinner("KRX 데이터와 KOSPI200 기준지수를 조회하고 백테스트 중입니다..."):
         prices = load_monthly_prices(config["sectors"], start_text, end_text)
-        kospi200 = load_kospi200_monthly_prices(start_text, end_text)
+        benchmark_error = None
+        try:
+            kospi200 = load_kospi200_monthly_prices(start_text, end_text)
+        except Exception as exc:
+            kospi200 = None
+            benchmark_error = str(exc)
         result = backtest(
             prices,
             config["sectors"],
@@ -81,7 +86,8 @@ if submitted:
         )
     st.session_state["monthly"] = result.monthly
     st.session_state["metrics"] = metrics(result.monthly)
-    st.session_state["kospi200"] = kospi200
+    st.session_state["kospi200"] = kospi200 if kospi200 is not None else pd.Series(dtype=float)
+    st.session_state["benchmark_error"] = benchmark_error
 
 if "metrics" in st.session_state:
     values = st.session_state["metrics"]
@@ -121,9 +127,14 @@ if "metrics" in st.session_state:
         st.caption("월별 수익률 표의 마지막 열 ‘연간’은 해당 연도 1월부터 12월까지의 복리 누적수익률입니다.")
 
         st.subheader("Annual performance: strategy vs KOSPI200")
-        comparison = annual_comparison(monthly, st.session_state["kospi200"])
-        st.bar_chart(comparison, use_container_width=True)
-        st.caption("KOSPI200은 KRX KOSPI200 지수(코드 1028)의 월말 종가 기준이며 배당은 반영하지 않습니다.")
+        if st.session_state["kospi200"].empty:
+            st.warning("KOSPI200 기준지수를 조회하지 못해 전략 결과만 표시합니다.")
+            if st.session_state.get("benchmark_error"):
+                st.caption(f"기준지수 조회 오류: {st.session_state['benchmark_error']}")
+        else:
+            comparison = annual_comparison(monthly, st.session_state["kospi200"])
+            st.bar_chart(comparison, use_container_width=True)
+            st.caption("KOSPI200 지수 조회가 가능한 환경에서는 지수, 그렇지 않으면 KODEX 200(069500) ETF를 대용 기준으로 사용합니다. 배당은 반영하지 않습니다.")
 
         st.subheader("Recent monthly details")
         st.dataframe(monthly.tail(24), use_container_width=True)

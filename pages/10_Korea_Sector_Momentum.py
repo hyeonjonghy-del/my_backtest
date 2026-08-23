@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -133,8 +134,36 @@ if "metrics" in st.session_state:
                 st.caption(f"기준지수 조회 오류: {st.session_state['benchmark_error']}")
         else:
             comparison = annual_comparison(monthly, st.session_state["kospi200"])
-            st.bar_chart(comparison, use_container_width=True)
-            st.caption("KOSPI200 지수 조회가 가능한 환경에서는 지수, 그렇지 않으면 KODEX 200(069500) ETF를 대용 기준으로 사용합니다. 배당은 반영하지 않습니다.")
+            comparison.index.name = "연도"
+            chart_data = comparison.reset_index()
+            chart_data["연도"] = chart_data["연도"].astype(str)
+            chart_data = chart_data.melt(
+                id_vars="연도",
+                var_name="구분",
+                value_name="수익률",
+            )
+            chart = (
+                alt.Chart(chart_data)
+                .mark_bar()
+                .encode(
+                    x=alt.X("연도:N", title="연도"),
+                    xOffset=alt.XOffset("구분:N", title=None),
+                    y=alt.Y(
+                        "수익률:Q",
+                        title="연간 수익률",
+                        axis=alt.Axis(format=".0%"),
+                    ),
+                    color=alt.Color("구분:N", title=None),
+                    tooltip=[
+                        alt.Tooltip("연도:N", title="연도"),
+                        alt.Tooltip("구분:N", title="구분"),
+                        alt.Tooltip("수익률:Q", title="수익률", format=".1%"),
+                    ],
+                )
+                .properties(height=420)
+            )
+            st.altair_chart(chart, use_container_width=True)
+            st.caption("전략과 KOSPI200을 연도별 좌우 막대로 비교합니다. KOSPI200 지수 조회가 불가능한 환경에서는 KODEX 200(069500)을 대용 기준으로 사용하며 배당은 반영하지 않습니다.")
 
         st.subheader("Recent monthly details")
         st.dataframe(monthly.tail(24), use_container_width=True)

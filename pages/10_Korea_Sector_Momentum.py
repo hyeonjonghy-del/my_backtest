@@ -5,14 +5,43 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
 STRATEGY_DIR = ROOT / "strategies" / "korea_sector_momentum"
 sys.path.insert(0, str(STRATEGY_DIR))
 
-from run import load_monthly_prices  # noqa: E402
+from run import load_kospi200_monthly_prices, load_monthly_prices  # noqa: E402
 from strategy import backtest, metrics  # noqa: E402
+
+
+def annual_monthly_table(monthly: pd.DataFrame) -> pd.DataFrame:
+    returns = monthly["return"].copy()
+    returns.index = pd.to_datetime(returns.index)
+    table = returns.groupby([returns.index.year, returns.index.month]).first().unstack()
+    table = table.reindex(columns=range(1, 13))
+    table.columns = [f"{month}월" for month in table.columns]
+    annual = returns.groupby(returns.index.year).apply(lambda values: (1.0 + values).prod() - 1.0)
+    table["연간"] = annual
+    table.index.name = "연도"
+    return table
+
+
+def annual_comparison(monthly: pd.DataFrame, kospi200: pd.Series) -> pd.DataFrame:
+    strategy_returns = monthly["return"].copy()
+    strategy_returns.index = pd.to_datetime(strategy_returns.index)
+    benchmark_returns = kospi200.pct_change()
+    benchmark_returns = benchmark_returns.reindex(strategy_returns.index)
+    comparison = pd.DataFrame({
+        "전략": strategy_returns,
+        "KOSPI200": benchmark_returns,
+    }).dropna(how="any")
+    return comparison.groupby(comparison.index.year).agg(
+        전략=("전략", lambda values: (1.0 + values).prod() - 1.0),
+        KOSPI200=("KOSPI200", lambda values: (1.0 + values).prod() - 1.0),
+    )
+
 
 st.set_page_config(page_title="Korea Sector Momentum", layout="wide")
 st.title("Korea Sector Momentum")
@@ -36,8 +65,9 @@ if submitted:
 
     start_text = start.isoformat()
     end_text = end.isoformat()
-    with st.spinner("KRX 데이터를 조회하고 백테스트 중입니다..."):
+    with st.spinner("KRX 데이터와 KOSPI200 기준지수를 조회하고 백테스트 중입니다..."):
         prices = load_monthly_prices(config["sectors"], start_text, end_text)
+        kospi200 = load_kospi200_monthly_prices(start_text, end_text)
         result = backtest(
             prices,
             config["sectors"],
@@ -51,6 +81,7 @@ if submitted:
         )
     st.session_state["monthly"] = result.monthly
     st.session_state["metrics"] = metrics(result.monthly)
+    st.session_state["kospi200"] = kospi200
 
 if "metrics" in st.session_state:
     values = st.session_state["metrics"]
@@ -58,35 +89,50 @@ if "metrics" in st.session_state:
     monthly["cumulative_return"] = monthly["wealth"] - 1.0
     monthly["drawdown"] = monthly["wealth"] / monthly["wealth"].cummax() - 1.0
 
-    st.subheader("Backtest result")
-    cols = st.columns(5)
-    cols[0].metric("Cumulative return", f"{values['cumulative_return']:.1%}")
-    cols[1].metric("CAGR", f"{values['cagr']:.1%}")
-    cols[2].metric("Max drawdown", f"{values['max_drawdown']:.1%}")
-    cols[3].metric("Annualized volatility", f"{values['annualized_volatility']:.1%}")
-    cols[4].metric("Win rate", f"{values['win_rate']:.1%}")
+    summary_tab, monthly_tab = st.tabs(["성과 요약", "월별·연간 실적"])
 
-    st.subheader("Cumulative performance")
-    performance = monthly[["wealth", "cumulative_return"]].rename(
-        columns={"wealth": "Portfolio value", "cumulative_return": "Cumulative return"}
-    )
-    st.line_chart(performance, use_container_width=True)
+    with summary_tab:
+        st.subheader("Backtest result")
+        cols = st.columns(5)
+        cols[0].metric("Cumulative return", f"{values['cumulative_return']:.1%}")
+        cols[1].metric("CAGR", f"{values['cagr']:.1%}")
+        cols[2].metric("Max drawdown", f"{values['max_drawdown']:.1%}")
+        cols[3].metric("Annualized volatility", f"{values['annualized_volatility']:.1%}")
+        cols[4].metric("Win rate", f"{values['win_rate']:.1%}")
 
-    st.subheader("Drawdown / MDD")
-    st.area_chart(
-        monthly[["drawdown"]].rename(columns={"drawdown": "Drawdown"}),
-        use_container_width=True,
-    )
-    st.caption(f"최대 낙폭(MDD): {values['max_drawdown']:.1%}. 누적수익률은 초기 투자금 1.0 대비 계산됩니다.")
+        st.subheader("Cumulative performance")
+        performance = monthly[["wealth"]].rename(columns={"wealth": "Portfolio value"})
+        st.line_chart(performance, use_container_width=True)
 
-    st.subheader("Recent monthly results")
-    st.dataframe(monthly.tail(24), use_container_width=True)
-    st.download_button(
-        "Download monthly results CSV",
-        monthly.to_csv().encode("utf-8-sig"),
-        file_name="korea_sector_momentum_monthly.csv",
-        mime="text/csv",
-    )
+        st.subheader("Drawdown / MDD")
+        st.area_chart(
+            monthly[["drawdown"]].rename(columns={"drawdown": "Drawdown"}),
+            use_container_width=True,
+        )
+        st.caption(f"최대 낙폭(MDD): {values['max_drawdown']:.1%}. 누적자산은 초기 투자금 1.0 대비 계산됩니다.")
+
+    with monthly_tab:
+        st.subheader("Monthly returns")
+        monthly_table = annual_monthly_table(monthly)
+        st.dataframe(
+            monthly_table.style.format("{:.1%}", na_rep="-"),
+            use_container_width=True,
+        )
+        st.caption("월별 수익률 표의 마지막 열 ‘연간’은 해당 연도 1월부터 12월까지의 복리 누적수익률입니다.")
+
+        st.subheader("Annual performance: strategy vs KOSPI200")
+        comparison = annual_comparison(monthly, st.session_state["kospi200"])
+        st.bar_chart(comparison, use_container_width=True)
+        st.caption("KOSPI200은 KRX KOSPI200 지수(코드 1028)의 월말 종가 기준이며 배당은 반영하지 않습니다.")
+
+        st.subheader("Recent monthly details")
+        st.dataframe(monthly.tail(24), use_container_width=True)
+        st.download_button(
+            "Download monthly results CSV",
+            monthly.to_csv().encode("utf-8-sig"),
+            file_name="korea_sector_momentum_monthly.csv",
+            mime="text/csv",
+        )
 else:
     st.warning("왼쪽에서 기간을 확인한 뒤 Run KRX backtest를 눌러주세요.")
 

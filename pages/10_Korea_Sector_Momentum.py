@@ -14,7 +14,7 @@ STRATEGY_DIR = ROOT / "strategies" / "korea_sector_momentum"
 sys.path.insert(0, str(STRATEGY_DIR))
 
 from run import load_kospi200_monthly_prices, load_monthly_prices  # noqa: E402
-from strategy import backtest, metrics  # noqa: E402
+from strategy import backtest, metrics, simulate_cash_rules  # noqa: E402
 
 
 def annual_monthly_table(monthly: pd.DataFrame) -> pd.DataFrame:
@@ -87,6 +87,16 @@ if submitted:
         )
     st.session_state["monthly"] = result.monthly
     st.session_state["metrics"] = metrics(result.monthly)
+    st.session_state["cash_simulations"] = simulate_cash_rules(
+        prices,
+        config["sectors"],
+        start_text,
+        end_text,
+        weights=config["weights"],
+        selection_lookback=config["selection_lookback_months"],
+        ranking_lookback=config["ranking_lookback_months"],
+        transaction_cost=config["transaction_cost"],
+    )
     st.session_state["kospi200"] = kospi200 if kospi200 is not None else pd.Series(dtype=float)
     st.session_state["benchmark_error"] = benchmark_error
 
@@ -164,6 +174,26 @@ if "metrics" in st.session_state:
             )
             st.altair_chart(chart, use_container_width=True)
             st.caption("전략과 KOSPI200을 연도별 좌우 막대로 비교합니다. KOSPI200 지수 조회가 불가능한 환경에서는 KODEX 200(069500)을 대용 기준으로 사용하며 배당은 반영하지 않습니다.")
+
+        st.subheader("Cash rule simulation comparison")
+        simulation_rows = [
+            {"구분": "현재 전략", **metrics(st.session_state["monthly"])}
+        ]
+        for name, simulation in st.session_state["cash_simulations"].items():
+            simulation_rows.append({"구분": name, **metrics(simulation)})
+        simulation_table = pd.DataFrame(simulation_rows).set_index("구분")
+        simulation_table = simulation_table.rename(columns={
+            "cumulative_return": "누적수익률",
+            "cagr": "CAGR",
+            "max_drawdown": "MDD",
+            "annualized_volatility": "연환산 변동성",
+            "win_rate": "승률",
+        })
+        st.dataframe(
+            simulation_table.style.format("{:.1%}", na_rep="-"),
+            use_container_width=True,
+        )
+        st.caption("시뮬레이션은 본 전략의 기본 룰을 변경하지 않고, 6개월 하락 필터 대신 12개월 절대 모멘텀 현금 규칙을 적용한 별도 비교입니다.")
 
         st.subheader("Recent monthly details")
         st.dataframe(monthly.tail(24), use_container_width=True)

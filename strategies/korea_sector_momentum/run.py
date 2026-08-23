@@ -23,6 +23,18 @@ def load_monthly_prices(sectors, start: str, end: str) -> pd.DataFrame:
     return prices.resample("ME").last().ffill()
 
 
+def load_kospi200_monthly_prices(start: str, end: str) -> pd.Series:
+    """Load monthly closing levels for the KOSPI 200 index (KRX code 1028)."""
+    daily = stock.get_index_ohlcv_by_date(
+        start.replace("-", ""),
+        end.replace("-", ""),
+        "1028",
+    )
+    if daily.empty:
+        raise RuntimeError("No KOSPI200 index data returned")
+    return daily["종가"].resample("ME").last().ffill().rename("KOSPI200")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", default="2017-01-01")
@@ -54,4 +66,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

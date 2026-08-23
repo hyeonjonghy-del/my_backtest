@@ -54,6 +54,10 @@ if submitted:
 
 if "metrics" in st.session_state:
     values = st.session_state["metrics"]
+    monthly = st.session_state["monthly"].copy()
+    monthly["cumulative_return"] = monthly["wealth"] - 1.0
+    monthly["drawdown"] = monthly["wealth"] / monthly["wealth"].cummax() - 1.0
+
     st.subheader("Backtest result")
     cols = st.columns(5)
     cols[0].metric("Cumulative return", f"{values['cumulative_return']:.1%}")
@@ -62,7 +66,19 @@ if "metrics" in st.session_state:
     cols[3].metric("Annualized volatility", f"{values['annualized_volatility']:.1%}")
     cols[4].metric("Win rate", f"{values['win_rate']:.1%}")
 
-    monthly = st.session_state["monthly"]
+    st.subheader("Cumulative performance")
+    performance = monthly[["wealth", "cumulative_return"]].rename(
+        columns={"wealth": "Portfolio value", "cumulative_return": "Cumulative return"}
+    )
+    st.line_chart(performance, use_container_width=True)
+
+    st.subheader("Drawdown / MDD")
+    st.area_chart(
+        monthly[["drawdown"]].rename(columns={"drawdown": "Drawdown"}),
+        use_container_width=True,
+    )
+    st.caption(f"최대 낙폭(MDD): {values['max_drawdown']:.1%}. 누적수익률은 초기 투자금 1.0 대비 계산됩니다.")
+
     st.subheader("Recent monthly results")
     st.dataframe(monthly.tail(24), use_container_width=True)
     st.download_button(

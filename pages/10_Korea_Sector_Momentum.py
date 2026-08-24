@@ -157,7 +157,7 @@ if "metrics" in st.session_state:
             .properties(height=360)
         )
         st.altair_chart(allocation_chart, use_container_width=True)
-        st.caption("매월 리밸런싱 시점의 목표 비중입니다. 회색 영역은 현금이며, 현금도 12개월 모멘텀 0%의 하나의 자산으로 순위에 포함됩니다.")
+        st.caption("매월 리밸런싱 시점의 목표 비중입니다. 범례의 ‘현금’도 12개월 모멘텀 0%의 하나의 자산으로 순위에 포함됩니다.")
 
         st.subheader("Latest target allocation")
         latest_allocation = allocation.iloc[-1].rename("비중").reset_index(names="자산")
@@ -170,11 +170,7 @@ if "metrics" in st.session_state:
             .encode(
                 x=alt.X("비중:Q", title="목표 비중", axis=alt.Axis(format=".0%"), scale=alt.Scale(domain=[0, 1])),
                 y=alt.Y("자산:N", sort="-x", title=None),
-                color=alt.condition(
-                    alt.datum.자산 == "현금",
-                    alt.value("#9ca3af"),
-                    alt.value("#2563eb"),
-                ),
+                color=alt.value("#2563eb"),
                 tooltip=[
                     alt.Tooltip("자산:N", title="자산"),
                     alt.Tooltip("비중:Q", title="목표 비중", format=".1%"),

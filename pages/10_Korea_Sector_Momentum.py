@@ -147,15 +147,7 @@ if "metrics" in st.session_state:
                     axis=alt.Axis(format=".0%"),
                     scale=alt.Scale(domain=[0, 1]),
                 ),
-                color=alt.Color(
-                    "자산:N",
-                    title="자산",
-                    scale=alt.Scale(
-                        domain=["현금", *sector_columns],
-                        range=["#9ca3af", "#2563eb", "#0ea5e9", "#ef4444", "#f59e0b", "#10b981", "#8b5cf6", "#ec4899", "#14b8a6", "#64748b", "#f97316"],
-                    ),
-                ),
-                order=alt.Order("자산:N", sort=["현금", *sector_columns]),
+                color=alt.Color("자산:N", title="자산"),
                 tooltip=[
                     alt.Tooltip("date:T", title="월", format="%Y-%m"),
                     alt.Tooltip("자산:N", title="자산"),

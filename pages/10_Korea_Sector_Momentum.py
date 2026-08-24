@@ -94,6 +94,9 @@ if "metrics" in st.session_state:
     monthly = st.session_state["monthly"].copy()
     monthly["cumulative_return"] = monthly["wealth"] - 1.0
     monthly["drawdown"] = monthly["wealth"] / monthly["wealth"].cummax() - 1.0
+    allocation = monthly.filter(regex=r"^weight_").copy()
+    allocation.columns = [column.removeprefix("weight_") for column in allocation.columns]
+    allocation = allocation.loc[:, (allocation != 0.0).any(axis=0)]
 
     summary_tab, monthly_tab = st.tabs(["성과 요약", "월별·연간 실적"])
 
@@ -116,6 +119,15 @@ if "metrics" in st.session_state:
             use_container_width=True,
         )
         st.caption(f"최대 낙폭(MDD): {values['max_drawdown']:.1%}. 누적자산은 초기 투자금 1.0 대비 계산됩니다.")
+
+        st.subheader("Monthly target allocation")
+        st.area_chart(allocation, use_container_width=True)
+        st.caption("매월 리밸런싱 시점의 목표 비중입니다. 현금은 12개월 모멘텀 0% 자산으로 순위에 포함됩니다.")
+
+        st.subheader("Latest target allocation")
+        latest_allocation = allocation.iloc[-1][allocation.iloc[-1] > 0.0].sort_values(ascending=False)
+        st.bar_chart(latest_allocation, use_container_width=True)
+        st.caption(f"기준일: {allocation.index[-1]:%Y-%m}. 현금 비중을 포함한 최종 목표 비중입니다.")
 
     with monthly_tab:
         st.subheader("Monthly returns")

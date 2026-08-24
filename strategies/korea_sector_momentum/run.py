@@ -17,18 +17,14 @@ def load_monthly_prices(sectors, start: str, end: str) -> pd.DataFrame:
         daily = stock.get_market_ohlcv_by_date(start.replace("-", ""), end.replace("-", ""), ticker)
         if daily.empty:
             raise RuntimeError(f"No KRX data returned for {ticker}")
-        series = daily["종가"].rename(ticker)
-        frames.append(series)
-    prices = pd.concat(frames, axis=1).sort_index()
-    return prices.resample("ME").last().ffill()
+        frames.append(daily["종가"].rename(ticker))
+    return pd.concat(frames, axis=1).sort_index().resample("ME").last().ffill()
 
 
 def load_kospi200_monthly_prices(start: str, end: str) -> pd.Series:
     """Load KOSPI200 monthly levels, with KODEX 200 as a compatibility proxy."""
     start_text = start.replace("-", "")
     end_text = end.replace("-", "")
-
-    # Some deployed pykrx versions do not expose the index endpoint.
     index_loader = getattr(stock, "get_index_ohlcv_by_date", None)
     if index_loader is not None:
         try:
@@ -38,8 +34,6 @@ def load_kospi200_monthly_prices(start: str, end: str) -> pd.Series:
         except Exception:
             pass
 
-    # KODEX 200 (069500) tracks the KOSPI200 and is available through the
-    # stock OHLCV endpoint in older and newer pykrx versions alike.
     daily = stock.get_market_ohlcv_by_date(start_text, end_text, "069500")
     if daily.empty:
         raise RuntimeError("No KOSPI200/KODEX 200 benchmark data returned")
@@ -64,7 +58,6 @@ def main() -> None:
         weights=config["weights"],
         selection_lookback=config["selection_lookback_months"],
         ranking_lookback=config["ranking_lookback_months"],
-        downside_lookback=config["downside_lookback_months"],
         transaction_cost=config["transaction_cost"],
     )
 

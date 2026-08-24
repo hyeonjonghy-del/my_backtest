@@ -178,10 +178,10 @@ if "metrics" in st.session_state:
             .encode(
                 x=alt.X("비중:Q", title="목표 비중", axis=alt.Axis(format=".0%"), scale=alt.Scale(domain=[0, 1])),
                 y=alt.Y("자산:N", sort="-x", title=None),
-                color=alt.Color(
-                    "자산:N",
-                    legend=None,
-                    scale=alt.Scale(domain=["현금"], range=["#9ca3af"]),
+                color=alt.condition(
+                    alt.datum.자산 == "현금",
+                    alt.value("#9ca3af"),
+                    alt.value("#2563eb"),
                 ),
                 tooltip=[
                     alt.Tooltip("자산:N", title="자산"),

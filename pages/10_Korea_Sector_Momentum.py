@@ -45,17 +45,22 @@ def annual_comparison(monthly: pd.DataFrame, kospi200: pd.Series) -> pd.DataFram
 
 
 st.set_page_config(page_title="Korea Sector Momentum", layout="wide")
-st.title("Korea Sector Momentum")
-st.caption("10개 섹터 중 연 1회 상위 5개를 선정하고, 월별 12개월 모멘텀에서 현금과 섹터를 함께 순위화합니다.")
 
 config = json.loads((STRATEGY_DIR / "config.json").read_text(encoding="utf-8"))
 
+title_column, action_column = st.columns([6, 1])
+with title_column:
+    st.title("Korea Sector Momentum")
+with action_column:
+    st.write("")
+    submitted = st.button("Run KRX backtest", type="primary", use_container_width=True)
+
+st.caption("10개 섹터 중 연 1회 상위 5개를 선정하고, 월별 12개월 모멘텀에서 현금과 섹터를 함께 순위화합니다.")
+
 with st.sidebar:
     st.subheader("Backtest settings")
-    with st.form("backtest_form"):
-        start = st.date_input("Start", value=dt.date(2017, 1, 1))
-        end = st.date_input("End", value=dt.date(2026, 8, 31))
-        submitted = st.form_submit_button("Run KRX backtest", type="primary")
+    start = st.date_input("Start", value=dt.date(2017, 1, 1))
+    end = st.date_input("End", value=dt.date(2026, 8, 31))
 
 st.info("최종 룰: 연 1회 12개월 모멘텀으로 5개 섹터 선정, 월별 12개월 모멘텀에 현금(0%)을 포함해 순위화하고 45/30/15/5/5로 배분합니다.")
 
@@ -96,7 +101,11 @@ if "metrics" in st.session_state:
     monthly["drawdown"] = monthly["wealth"] / monthly["wealth"].cummax() - 1.0
     allocation = monthly.filter(regex=r"^weight_").copy()
     allocation.columns = [column.removeprefix("weight_") for column in allocation.columns]
-    allocation = allocation.loc[:, (allocation != 0.0).any(axis=0)]
+    if "현금" not in allocation.columns:
+        allocation["현금"] = 1.0 - allocation.sum(axis=1)
+    allocation["현금"] = allocation["현금"].clip(lower=0.0)
+    sector_columns = sorted(column for column in allocation.columns if column != "현금")
+    allocation = allocation[["현금", *sector_columns]]
 
     summary_tab, monthly_tab = st.tabs(["성과 요약", "월별·연간 실적"])
 
@@ -121,13 +130,68 @@ if "metrics" in st.session_state:
         st.caption(f"최대 낙폭(MDD): {values['max_drawdown']:.1%}. 누적자산은 초기 투자금 1.0 대비 계산됩니다.")
 
         st.subheader("Monthly target allocation")
-        st.area_chart(allocation, use_container_width=True)
-        st.caption("매월 리밸런싱 시점의 목표 비중입니다. 현금은 12개월 모멘텀 0% 자산으로 순위에 포함됩니다.")
+        allocation_long = (
+            allocation.rename_axis("date")
+            .reset_index()
+            .melt(id_vars="date", var_name="자산", value_name="비중")
+        )
+        allocation_chart = (
+            alt.Chart(allocation_long)
+            .mark_area()
+            .encode(
+                x=alt.X("date:T", title="리밸런싱 월"),
+                y=alt.Y(
+                    "비중:Q",
+                    stack="zero",
+                    title="목표 비중",
+                    axis=alt.Axis(format=".0%"),
+                    scale=alt.Scale(domain=[0, 1]),
+                ),
+                color=alt.Color(
+                    "자산:N",
+                    title="자산",
+                    scale=alt.Scale(
+                        domain=["현금", *sector_columns],
+                        range=["#9ca3af", "#2563eb", "#0ea5e9", "#ef4444", "#f59e0b", "#10b981", "#8b5cf6", "#ec4899", "#14b8a6", "#64748b", "#f97316"],
+                    ),
+                ),
+                order=alt.Order("자산:N", sort=["현금", *sector_columns]),
+                tooltip=[
+                    alt.Tooltip("date:T", title="월", format="%Y-%m"),
+                    alt.Tooltip("자산:N", title="자산"),
+                    alt.Tooltip("비중:Q", title="목표 비중", format=".1%"),
+                ],
+            )
+            .properties(height=360)
+        )
+        st.altair_chart(allocation_chart, use_container_width=True)
+        st.caption("매월 리밸런싱 시점의 목표 비중입니다. 회색 영역은 현금이며, 현금도 12개월 모멘텀 0%의 하나의 자산으로 순위에 포함됩니다.")
 
         st.subheader("Latest target allocation")
-        latest_allocation = allocation.iloc[-1][allocation.iloc[-1] > 0.0].sort_values(ascending=False)
-        st.bar_chart(latest_allocation, use_container_width=True)
-        st.caption(f"기준일: {allocation.index[-1]:%Y-%m}. 현금 비중을 포함한 최종 목표 비중입니다.")
+        latest_allocation = allocation.iloc[-1].rename("비중").reset_index(names="자산")
+        latest_allocation = latest_allocation[
+            (latest_allocation["비중"] > 0.0) | (latest_allocation["자산"] == "현금")
+        ].sort_values("비중", ascending=False)
+        latest_chart = (
+            alt.Chart(latest_allocation)
+            .mark_bar()
+            .encode(
+                x=alt.X("비중:Q", title="목표 비중", axis=alt.Axis(format=".0%"), scale=alt.Scale(domain=[0, 1])),
+                y=alt.Y("자산:N", sort="-x", title=None),
+                color=alt.Color(
+                    "자산:N",
+                    legend=None,
+                    scale=alt.Scale(domain=["현금"], range=["#9ca3af"]),
+                ),
+                tooltip=[
+                    alt.Tooltip("자산:N", title="자산"),
+                    alt.Tooltip("비중:Q", title="목표 비중", format=".1%"),
+                ],
+            )
+            .properties(height=max(180, 42 * len(latest_allocation)))
+        )
+        st.altair_chart(latest_chart, use_container_width=True)
+        st.caption(f"기준일: {allocation.index[-1]:%Y-%m}. 현금을 포함한 최종 목표 비중입니다.")
 
     with monthly_tab:
         st.subheader("Monthly returns")

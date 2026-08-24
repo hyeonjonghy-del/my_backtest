@@ -160,7 +160,8 @@ if "metrics" in st.session_state:
         st.caption("매월 리밸런싱 시점의 목표 비중입니다. 범례의 ‘현금’도 12개월 모멘텀 0%의 하나의 자산으로 순위에 포함됩니다.")
 
         st.subheader("Latest target allocation")
-        latest_allocation = allocation.iloc[-1].rename("비중").reset_index(names="자산")
+        latest_allocation = allocation.iloc[-1].rename("비중").reset_index()
+        latest_allocation.columns = ["자산", "비중"]
         latest_allocation = latest_allocation[
             (latest_allocation["비중"] > 0.0) | (latest_allocation["자산"] == "현금")
         ].sort_values("비중", ascending=False)

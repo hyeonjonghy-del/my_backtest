@@ -27,6 +27,13 @@ start = col1.date_input("Start date", value=date(2010, 1, 1))
 end = col2.date_input("End date", value=date.today())
 cost_bps = col3.number_input("One-way cost (bps)", min_value=0.0, value=10.0, step=1.0)
 
+sgov_rank2 = st.slider("SGOV weight when ranked 2nd (%)", 0, 80, 30, 5) / 100
+sgov_rank1 = st.slider("SGOV weight when ranked 1st (%)", 0, 80, 50, 5) / 100
+if sgov_rank1 < sgov_rank2:
+    st.error("SGOV rank-1 weight must be at least the rank-2 weight.")
+    st.stop()
+st.caption(f"Growth sleeve becomes {80 - sgov_rank2 * 100:.0f}% when SGOV is 2nd and {80 - sgov_rank1 * 100:.0f}% when SGOV is 1st.")
+
 if start >= end:
     st.error("Start date must be before end date.")
     st.stop()
@@ -35,7 +42,9 @@ if st.button("Run integrated backtest", type="primary"):
     with st.spinner("Downloading QQQ, GLD, SOXX, SOXL, TQQQ, and SGOV data..."):
         try:
             prices = download(str(start), str(end))
-            nav, summary = run(prices, cost_bps=cost_bps)
+            nav, summary = run(prices, cost_bps=cost_bps,
+                               sgov_rank2_weight=sgov_rank2,
+                               sgov_rank1_weight=sgov_rank1)
         except Exception as exc:
             st.error(f"Data download or backtest failed: {exc}")
             st.info("If the server cannot reach Yahoo Finance, retry from a network that allows the connection.")
@@ -48,3 +57,4 @@ if st.button("Run integrated backtest", type="primary"):
     st.line_chart(nav)
     st.download_button("Download NAV CSV", nav.to_csv().encode("utf-8-sig"), "us_integrated_strategy_v2_nav.csv", "text/csv")
     st.download_button("Download summary CSV", summary.to_csv().encode("utf-8-sig"), "us_integrated_strategy_v2_summary.csv", "text/csv")
+

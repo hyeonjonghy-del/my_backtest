@@ -1,0 +1,172 @@
+"""Integrated US strategy backtest.
+
+Outer allocator: strategy 9 (QQQ/GLD 12-month relative momentum).
+Growth sleeve: 40% QQQ-only, 30% SOXX/SOXL, 30% QQQ/TQQQ.
+The inner sleeves are monthly, lagged, volatility-targeted approximations of
+pages 5 and 6.  The script deliberately keeps the outer 80%/20% allocation
+and scales every growth sleeve proportionally when the outer risk weight is
+20%.
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import yfinance as yf
+
+TICKERS = ["QQQ", "GLD", "SOXX", "SOXL", "TQQQ", "SGOV"]
+GROWTH_SOXX_SOXL = 0.50
+GROWTH_QQQ_TQQQ = 0.50
+
+
+def download(start: str, end: str) -> pd.DataFrame:
+    cache_dir = Path("outputs") / "yfinance_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        yf.set_tz_cache_location(str(cache_dir))
+    except Exception:
+        pass
+    raw = yf.download(TICKERS, start=start, end=end, auto_adjust=True,
+                      progress=False, group_by="column", threads=True)
+    if isinstance(raw.columns, pd.MultiIndex):
+        px = raw["Close"].copy()
+    else:
+        px = raw[["Close"]].rename(columns={"Close": TICKERS[0]})
+    px = px.reindex(columns=TICKERS).dropna(how="all").ffill().dropna()
+    if px.empty or len(px) < 300:
+        raise RuntimeError("시장 데이터가 충분히 내려오지 않았습니다.")
+    return px
+
+
+def month_end(px: pd.DataFrame) -> pd.DataFrame:
+    return px.resample("ME").last().dropna(how="all").ffill()
+
+
+def pair_weights(underlying: pd.Series, levered: pd.Series, target_vol: float,
+                 levered_cap: float, max_risk: float, weak_multiplier: float,
+                 bear_underlying: float, strong_risk_share: float,
+                 weak_risk_share: float) -> pd.DataFrame:
+    """Monthly targets from lagged daily MA/vol signals, like pages 5 and 6."""
+    d = pd.concat({"u": underlying, "l": levered}, axis=1).dropna()
+    fast = d.u.rolling(30).mean()
+    slow = d.u.rolling(200).mean()
+    vol = d.u.pct_change().rolling(20).std() * np.sqrt(252)
+    signal_fast, signal_slow, signal_vol = fast.shift(1), slow.shift(1), vol.shift(1)
+    bull = signal_fast > signal_slow
+    strong = bull & ((signal_fast / signal_slow - 1) >= 0.05) & (signal_vol <= 0.55)
+    weak = bull & ~strong
+    desired = (target_vol / signal_vol.replace(0, np.nan)).clip(0, max_risk).fillna(0)
+    desired = desired.where(strong, desired * weak_multiplier).where(bull, 0)
+    u_share = pd.Series(strong_risk_share, index=d.index).where(strong, weak_risk_share)
+    # 3x leverage is treated as approximately 3x risk, matching page 5/6.
+    u_w = (desired * u_share).clip(0, 1)
+    l_w = ((desired - u_w) / 3).clip(0, levered_cap)
+    used = u_w + 3 * l_w
+    u_w = (u_w + (desired - used).clip(lower=0)).clip(0, 1 - l_w)
+    u_w = u_w.where(bull, bear_underlying)
+    l_w = l_w.where(bull, 0.0)
+    return pd.DataFrame({underlying.name: u_w, levered.name: l_w}, index=d.index).resample("ME").last()
+
+
+def metrics(nav: pd.Series) -> dict[str, float]:
+    r = nav.pct_change().dropna()
+    years = max((nav.index[-1] - nav.index[0]).days / 365.25, 1 / 365.25)
+    dd = nav / nav.cummax() - 1
+    vol = r.std(ddof=1) * np.sqrt(252)
+    return {
+        "CAGR": (nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1,
+        "MDD": dd.min(),
+        "Volatility": vol,
+        "Sharpe": r.mean() * 252 / vol if vol > 0 else np.nan,
+        "Final NAV": nav.iloc[-1],
+    }
+
+
+def run(px: pd.DataFrame, cost_bps: float = 10.0) -> tuple[pd.DataFrame, pd.DataFrame]:
+    m = month_end(px)
+    soxx_soxl = pair_weights(px.SOXX.rename("SOXX"), px.SOXL.rename("SOXL"),
+                              target_vol=.45, levered_cap=.50, max_risk=1.5,
+                              weak_multiplier=.75, bear_underlying=.20,
+                              strong_risk_share=.20, weak_risk_share=.80)
+    qqq_tqqq = pair_weights(px.QQQ.rename("QQQ"), px.TQQQ.rename("TQQQ"),
+                            target_vol=.35, levered_cap=.45, max_risk=1.8,
+                            weak_multiplier=.75, bear_underlying=.30,
+                            strong_risk_share=.60, weak_risk_share=.60)
+    # Strategy 9 v2 ranks the composite growth sleeve, GLD, and SGOV.
+    inner_soxx = soxx_soxl.reindex(px.index, method="ffill").shift(1).fillna(0)
+    inner_qqq = qqq_tqqq.reindex(px.index, method="ffill").shift(1).fillna(0)
+    soxx_ret = (inner_soxx * px[["SOXX", "SOXL"]].pct_change().fillna(0)).sum(axis=1)
+    qqq_ret = (inner_qqq * px[["QQQ", "TQQQ"]].pct_change().fillna(0)).sum(axis=1)
+    growth_nav = (1 + (0.5 * soxx_ret + 0.5 * qqq_ret)).cumprod()
+    rank_prices = pd.concat({"Growth": growth_nav.resample("ME").last(), "GLD": m.GLD, "SGOV": m.SGOV}, axis=1)
+    mom = rank_prices.pct_change(12).shift(1)
+    growth_selected = (mom.Growth > mom.GLD) & (mom.Growth > 0)
+    cash_rank = mom.rank(axis=1, ascending=False, method="min").SGOV
+    targets = pd.DataFrame(0.0, index=m.index, columns=TICKERS + ["CASH"])
+    targets["GLD"] = np.where(growth_selected, 0.20, 0.80)
+    growth_weight = pd.Series(np.where(growth_selected, 0.80, 0.20), index=m.index)
+    growth_weight.loc[growth_selected & (cash_rank == 2)] = 0.50
+    growth_weight.loc[growth_selected & (cash_rank == 1)] = 0.30
+    targets["SGOV"] = np.where(growth_selected & (cash_rank == 2), 0.30,
+                                np.where(growth_selected & (cash_rank == 1), 0.50, 0.0))
+    for col in soxx_soxl:
+        targets[col] += growth_weight * GROWTH_SOXX_SOXL * soxx_soxl[col]
+    for col in qqq_tqqq:
+        targets[col] += growth_weight * GROWTH_QQQ_TQQQ * qqq_tqqq[col]
+    targets["CASH"] = (1 - targets[TICKERS].sum(axis=1)).clip(lower=0)
+    # Execute monthly target from the next trading day and mark daily NAV.
+    daily_target = targets.reindex(px.index, method="ffill").fillna(0)
+    daily_target = daily_target.shift(1).fillna(0)
+    daily_ret = px.pct_change().fillna(0)
+    nav = pd.Series(1.0, index=px.index)
+    turnover = pd.Series(0.0, index=px.index)
+    current = pd.Series(0.0, index=targets.columns)
+    for i, dt in enumerate(px.index):
+        desired = daily_target.loc[dt]
+        turnover.iloc[i] = (desired - current).abs().sum() / 2
+        growth = (desired[TICKERS] * daily_ret.loc[dt]).sum()
+        fee = turnover.iloc[i] * cost_bps / 10000
+        nav.iloc[i] = (nav.iloc[i - 1] if i else 1.0) * (1 + growth - fee)
+        current = desired
+    out = pd.DataFrame({"Integrated": nav})
+    # Benchmarks use the same daily valuation convention.
+    # Original strategy 9 benchmark NAV.
+    bench_w = pd.DataFrame(0.0, index=px.index, columns=["QQQ", "GLD"])
+    q = growth_selected.reindex(px.index, method="ffill").fillna(False)
+    g = ~q
+    bench_w.loc[q, "QQQ"], bench_w.loc[q, "GLD"] = .8, .2
+    bench_w.loc[g, "QQQ"], bench_w.loc[g, "GLD"] = .2, .8
+    br = (bench_w * daily_ret[["QQQ", "GLD"]]).sum(axis=1)
+    out["Original_9_QQQ_GLD"] = (1 + br).cumprod()
+    out["QQQ_buy_hold"] = (1 + daily_ret.QQQ).cumprod()
+    out["GLD_buy_hold"] = (1 + daily_ret.GLD).cumprod()
+    summary = pd.DataFrame({name: metrics(out[name]) for name in out.columns}).T
+    summary["Average growth weight"] = growth_weight.reindex(px.index, method="ffill").mean()
+    summary["Average SOXL weight"] = daily_target.SOXL.mean()
+    summary["Average TQQQ weight"] = daily_target.TQQQ.mean()
+    summary["Average SGOV weight"] = daily_target.SGOV.mean()
+    summary.loc[summary.index != "Integrated", ["Average growth weight", "Average SOXL weight", "Average TQQQ weight", "Average SGOV weight"]] = np.nan
+    return out, summary
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--start", default="2010-01-01")
+    ap.add_argument("--end", default=None)
+    ap.add_argument("--out", default="outputs/integrated_us_backtest")
+    args = ap.parse_args()
+    end = args.end or pd.Timestamp.today().strftime("%Y-%m-%d")
+    px = download(args.start, end)
+    nav, summary = run(px)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    nav.to_csv(out / "nav.csv")
+    summary.to_csv(out / "summary.csv")
+    print(summary.round(4).to_string())
+    print(f"\nSaved: {out / 'nav.csv'}")
+    print(f"Saved: {out / 'summary.csv'}")
+
+
+if __name__ == "__main__":
+    main()

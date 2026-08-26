@@ -83,7 +83,13 @@ def metrics(nav: pd.Series) -> dict[str, float]:
     }
 
 
-def run(px: pd.DataFrame, cost_bps: float = 10.0) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run(px: pd.DataFrame, cost_bps: float = 10.0,
+        sgov_rank2_weight: float = 0.30,
+        sgov_rank1_weight: float = 0.50) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not 0.0 <= sgov_rank2_weight <= 0.80 or not 0.0 <= sgov_rank1_weight <= 0.80:
+        raise ValueError("SGOV weights must be between 0% and 80%.")
+    if sgov_rank1_weight < sgov_rank2_weight:
+        raise ValueError("SGOV rank-1 weight must be at least the rank-2 weight.")
     m = month_end(px)
     soxx_soxl = pair_weights(px.SOXX.rename("SOXX"), px.SOXL.rename("SOXL"),
                               target_vol=.45, levered_cap=.50, max_risk=1.5,
@@ -106,10 +112,10 @@ def run(px: pd.DataFrame, cost_bps: float = 10.0) -> tuple[pd.DataFrame, pd.Data
     targets = pd.DataFrame(0.0, index=m.index, columns=TICKERS + ["CASH"])
     targets["GLD"] = np.where(growth_selected, 0.20, 0.80)
     growth_weight = pd.Series(np.where(growth_selected, 0.80, 0.20), index=m.index)
-    growth_weight.loc[growth_selected & (cash_rank == 2)] = 0.50
-    growth_weight.loc[growth_selected & (cash_rank == 1)] = 0.30
-    targets["SGOV"] = np.where(growth_selected & (cash_rank == 2), 0.30,
-                                np.where(growth_selected & (cash_rank == 1), 0.50, 0.0))
+    growth_weight.loc[growth_selected & (cash_rank == 2)] = 0.80 - sgov_rank2_weight
+    growth_weight.loc[growth_selected & (cash_rank == 1)] = 0.80 - sgov_rank1_weight
+    targets["SGOV"] = np.where(growth_selected & (cash_rank == 2), sgov_rank2_weight,
+                                np.where(growth_selected & (cash_rank == 1), sgov_rank1_weight, 0.0))
     for col in soxx_soxl:
         targets[col] += growth_weight * GROWTH_SOXX_SOXL * soxx_soxl[col]
     for col in qqq_tqqq:
@@ -170,3 +176,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -52,7 +52,7 @@ def load_kospi200_monthly_prices(start: str, end: str) -> pd.Series:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--start", default="2023-01-01")
+    parser.add_argument("--start", default="2017-01-01")
     parser.add_argument("--end", default=pd.Timestamp.today().strftime("%Y-%m-%d"))
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--output", default="results")
@@ -65,6 +65,7 @@ def main() -> None:
         weights=config["weights"],
         selection_lookback=config["selection_lookback_months"],
         ranking_lookback=config["ranking_lookback_months"],
+        etf_transition_start=config["etf_transition_start"],
         transaction_cost=config["transaction_cost"],
     )
 

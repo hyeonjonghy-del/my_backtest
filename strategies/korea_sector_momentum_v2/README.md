@@ -1,23 +1,28 @@
 # Korea Sector Momentum V2 — ETF Transition
 
-V2 retains the final momentum, cash, and allocation rules, but constructs each of
-the 10 sector return series as a **representative-stock-to-ETF transition**.
+V2 retains the final momentum, cash, and allocation rules while constructing each
+of the 10 sector return series as a **representative-stock-to-ETF transition**.
 
 ## Rules
 
-1. Before a sector ETF is available, the monthly sector return is the equal-weight
-   return of its two representative stocks.
-2. From the first full calendar month after the ETF's listing, the sector return
-   changes to the ETF's monthly closing-price return.
+1. From the backtest start through **2022-12**, every sector uses the equal-weight
+   monthly return of its two representative stocks. This makes the historical
+   stock-proxy period directly comparable with V1.
+2. From **2023-01**, each sector changes to its ETF only when that ETF has also
+   completed its first full calendar month of trading; otherwise it remains on
+   the representative-stock proxy.
 3. Returns—not raw price levels—are linked at the transition, preventing a false
    jump caused by different ETF and stock price units.
-4. Each January, select the top five sectors by trailing 12-month momentum.
+4. Each January, select the five sectors with the best trailing 12-month momentum.
 5. Each month, rank those five sectors plus cash (fixed 0% momentum).
 6. Allocate rank slots at **45% / 30% / 15% / 5% / 5%**. Cash receives its
    rank's allocation whenever it ranks in the top five.
 7. Apply 0.10% times total absolute weight change as transaction cost.
 
 ## ETF transition universe
+
+The actual transition month is the later of the ETF's first return month below
+and 2023-01.
 
 | Sector | ETF | First ETF-return month |
 | --- | --- | --- |
@@ -36,14 +41,14 @@ the 10 sector return series as a **representative-stock-to-ETF transition**.
 
 - The ETF leg uses closing-price returns. ETF distributions, tax, bid-ask spreads,
   and tracking difference are not fully reflected.
-- The proxy leg is still subject to survivorship and representative-stock bias.
-- The V2 default start is 2023-01-01, but the loader fetches earlier data only to
+- The proxy leg remains subject to survivorship and representative-stock bias.
+- The default start is **2017-01-01**; the loader fetches earlier data only to
   form the required 12-month momentum signal.
 
 ## Run
 
 ```bash
-python run.py --start 2023-01-01 --end 2026-08-31
+python run.py --start 2017-01-01 --end 2026-08-31
 ```
 
 This repository is for research and education, not investment advice.

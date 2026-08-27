@@ -72,7 +72,7 @@ def backtest(
             continue
         signal_month = months[index - 1]
 
-        if month.month == 1:
+        if not selected or month.month == 1:
             annual_scores = _momentum_scores(prices, signal_month, selection_lookback)
             selected = list(annual_scores.sort_values(ascending=False).index[:5])
 

@@ -13,12 +13,16 @@ except ImportError:  # Direct CLI execution from this directory.
     from strategy import backtest, metrics
 
 
-def _query_start(start: str) -> str:
+def _benchmark_query_start(start: str) -> str:
     return (pd.Timestamp(start) - pd.DateOffset(months=14)).strftime("%Y%m%d")
 
 
 def load_hybrid_monthly_prices(sector_specs, start: str, end: str) -> pd.DataFrame:
-    """Load proxy stocks and all ETF prices with enough history for 12m signals."""
+    """Load proxy stocks and all ETF prices on the same window as V1.
+    
+    The 12-month warm-up is intentionally handled by the strategy, matching
+    V1's first executable signal date for a fair proxy-period comparison.
+    """
     tickers = set()
     for spec in sector_specs.values():
         tickers.update(spec["proxy_tickers"])
@@ -26,7 +30,7 @@ def load_hybrid_monthly_prices(sector_specs, start: str, end: str) -> pd.DataFra
 
     frames = []
     for ticker in sorted(tickers):
-        daily = stock.get_market_ohlcv_by_date(_query_start(start), end.replace("-", ""), ticker)
+        daily = stock.get_market_ohlcv_by_date(start.replace("-", ""), end.replace("-", ""), ticker)
         if daily.empty:
             raise RuntimeError(f"No KRX data returned for {ticker}")
         frames.append(daily["종가"].rename(ticker))
@@ -36,7 +40,7 @@ def load_hybrid_monthly_prices(sector_specs, start: str, end: str) -> pd.DataFra
 
 
 def load_kospi200_monthly_prices(start: str, end: str) -> pd.Series:
-    start_text = _query_start(start)
+    start_text = _benchmark_query_start(start)
     end_text = end.replace("-", "")
     try:
         daily = stock.get_index_ohlcv_by_date(start_text, end_text, "1028")

@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -25,12 +26,12 @@ with action:
     st.write("")
     submitted = st.button("Run hybrid backtest", type="primary", use_container_width=True)
 
-st.caption("ETF 상장 전에는 대표종목 프록시, 상장 후에는 ETF 수익률로 전환하는 10개 섹터 모멘텀 전략입니다.")
+st.caption("2017~2022년은 대표종목 프록시로 검증하고, 2023년부터는 ETF가 준비된 섹터부터 ETF 수익률로 전환하는 10개 섹터 모멘텀 전략입니다.")
 st.info("최종 룰: 연 1회 상위 5개 섹터 선정 후, 매월 선정 섹터 5개와 현금(0%)을 순위화하여 45/30/15/5/5로 배분합니다.")
 
 with st.sidebar:
     st.subheader("V2 backtest settings")
-    start = st.date_input("Start", value=dt.date(2023, 1, 1), key="v2_start")
+    start = st.date_input("Start", value=dt.date(2017, 1, 1), key="v2_start")
     end = st.date_input("End", value=dt.date(2026, 8, 31), key="v2_end")
 
 if submitted:
@@ -44,6 +45,7 @@ if submitted:
             weights=config["weights"],
             selection_lookback=config["selection_lookback_months"],
             ranking_lookback=config["ranking_lookback_months"],
+            etf_transition_start=config["etf_transition_start"],
             transaction_cost=config["transaction_cost"],
         )
         try:
@@ -75,11 +77,44 @@ st.line_chart(monthly[["wealth"]].rename(columns={"wealth": "Portfolio value"}),
 st.subheader("Drawdown / MDD")
 st.area_chart(monthly[["drawdown"]], use_container_width=True)
 
+st.subheader("Monthly target allocation")
+allocation_history = monthly.filter(regex=r"^weight_").copy()
+allocation_history.columns = [
+    column.removeprefix("weight_") for column in allocation_history.columns
+]
+allocation_long = (
+    allocation_history.rename_axis("date")
+    .reset_index()
+    .melt(id_vars="date", var_name="자산", value_name="비중")
+)
+allocation_chart = (
+    alt.Chart(allocation_long)
+    .mark_area()
+    .encode(
+        x=alt.X("date:T", title="리밸런싱 월"),
+        y=alt.Y(
+            "비중:Q",
+            stack="zero",
+            title="목표 비중",
+            axis=alt.Axis(format=".0%"),
+            scale=alt.Scale(domain=[0, 1]),
+        ),
+        color=alt.Color("자산:N", title="자산"),
+        tooltip=[
+            alt.Tooltip("date:T", title="월", format="%Y-%m"),
+            alt.Tooltip("자산:N", title="자산"),
+            alt.Tooltip("비중:Q", title="목표 비중", format=".1%"),
+        ],
+    )
+    .properties(height=360)
+)
+st.altair_chart(allocation_chart, use_container_width=True)
+st.caption("매월 리밸런싱 시점의 목표 비중입니다. 범례의 ‘현금’도 12개월 모멘텀 0%의 하나의 자산으로 순위에 포함됩니다.")
+
 st.subheader("Latest target allocation")
-allocation = monthly.filter(regex=r"^weight_").iloc[-1].rename("weight").reset_index()
+allocation = allocation_history.iloc[-1].rename("weight").reset_index()
 allocation.columns = ["asset", "weight"]
-allocation = allocation[(allocation["weight"] > 0) | (allocation["asset"] == "weight_현금")]
-allocation["asset"] = allocation["asset"].str.removeprefix("weight_")
+allocation = allocation[(allocation["weight"] > 0) | (allocation["asset"] == "현금")]
 st.bar_chart(allocation.set_index("asset")[["weight"]], use_container_width=True)
 
 st.subheader("Sector return source at latest month")

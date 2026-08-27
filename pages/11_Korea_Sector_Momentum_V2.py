@@ -53,7 +53,7 @@ with action:
     st.write("")
     submitted = st.button("Run hybrid backtest", type="primary", use_container_width=True)
 
-st.caption("배포 버전: v2-2026-08-27.2")
+st.caption("배포 버전: v2-2026-08-27.3")
 st.caption("2017~2022년은 대표종목 프록시로 검증하고, 2023년부터는 ETF가 준비된 섹터부터 ETF 수익률로 전환하는 10개 섹터 모멘텀 전략입니다.")
 st.info("최종 룰: 연 1회 상위 5개 섹터 선정 후, 매월 선정 섹터 5개와 현금(0%)을 순위화하여 45/30/15/5/5로 배분합니다.")
 

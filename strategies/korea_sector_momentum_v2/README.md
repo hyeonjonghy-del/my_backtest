@@ -42,8 +42,9 @@ and 2023-01.
 - The ETF leg uses closing-price returns. ETF distributions, tax, bid-ask spreads,
   and tracking difference are not fully reflected.
 - The proxy leg remains subject to survivorship and representative-stock bias.
-- The default start is **2017-01-01**; the loader fetches earlier data only to
-  form the required 12-month momentum signal.
+- The default start is **2017-01-01**. V2 uses the same data window and
+  12-month warm-up behavior as V1, so their representative-stock period is
+  directly comparable.
 
 ## Run
 

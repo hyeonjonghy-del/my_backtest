@@ -17,21 +17,27 @@ class BacktestResult:
 def make_hybrid_sector_prices(
     monthly_prices: pd.DataFrame,
     sector_specs: Mapping[str, Mapping[str, object]],
+    etf_transition_start: str = "2023-01-01",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Create continuous sector indices from stock proxies then live ETF returns.
 
     A sector uses the equal-weight return of its two representative stocks until
-    the first full calendar month after its ETF listing. From that month onward
-    it uses the ETF closing-price return. Indices are linked by returns, never
-    by raw price levels, so an ETF's different price unit cannot create a jump.
+    the later of (a) the first full calendar month after its ETF listing and
+    (b) the configured ETF-transition month. From then onward it uses ETF
+    closing-price returns. Indices are linked by returns, never by raw price
+    levels, so different price units cannot create a false jump.
     """
     sector_returns: Dict[str, pd.Series] = {}
     sector_sources: Dict[str, pd.Series] = {}
+    transition_month = pd.Timestamp(etf_transition_start) + pd.offsets.MonthEnd(0)
 
     for sector, spec in sector_specs.items():
         proxy_tickers = list(spec["proxy_tickers"])
         etf_ticker = str(spec["etf_ticker"])
-        first_etf_month = pd.Timestamp(str(spec["first_etf_return_month"]))
+        first_etf_month = max(
+            pd.Timestamp(str(spec["first_etf_return_month"])),
+            transition_month,
+        )
 
         missing = [ticker for ticker in [*proxy_tickers, etf_ticker] if ticker not in monthly_prices]
         if missing:
@@ -68,13 +74,16 @@ def backtest(
     weights: Iterable[float] = (0.45, 0.30, 0.15, 0.05, 0.05),
     selection_lookback: int = 12,
     ranking_lookback: int = 12,
+    etf_transition_start: str = "2023-01-01",
     transaction_cost: float = 0.001,
 ) -> BacktestResult:
     weights = np.asarray(list(weights), dtype=float)
     if len(weights) != 5 or not np.isclose(weights.sum(), 1.0):
         raise ValueError("weights must contain five values summing to 1")
 
-    prices, sources = make_hybrid_sector_prices(monthly_prices, sector_specs)
+    prices, sources = make_hybrid_sector_prices(
+        monthly_prices, sector_specs, etf_transition_start
+    )
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
     previous_weights = pd.Series(0.0, index=prices.columns)
     selected: list[str] = []

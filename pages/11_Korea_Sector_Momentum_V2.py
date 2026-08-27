@@ -53,7 +53,7 @@ with action:
     st.write("")
     submitted = st.button("Run hybrid backtest", type="primary", use_container_width=True)
 
-st.caption("배포 버전: v2-2026-08-27.3")
+st.caption("배포 버전: v2-2026-08-27.4")
 st.caption("2017~2022년은 대표종목 프록시로 검증하고, 2023년부터는 ETF가 준비된 섹터부터 ETF 수익률로 전환하는 10개 섹터 모멘텀 전략입니다.")
 st.info("최종 룰: 연 1회 상위 5개 섹터 선정 후, 매월 선정 섹터 5개와 현금(0%)을 순위화하여 45/30/15/5/5로 배분합니다.")
 
@@ -76,6 +76,14 @@ if submitted:
             etf_transition_start=config["etf_transition_start"],
             transaction_cost=config["transaction_cost"],
         )
+        proxy_result = backtest(
+            prices, config["sector_specs"], start.isoformat(), end.isoformat(),
+            weights=config["weights"],
+            selection_lookback=config["selection_lookback_months"],
+            ranking_lookback=config["ranking_lookback_months"],
+            etf_transition_start="2100-01-01",
+            transaction_cost=config["transaction_cost"],
+        )
         benchmark_error = None
         try:
             benchmark = load_kospi200_monthly_prices(start.isoformat(), end.isoformat())
@@ -84,6 +92,8 @@ if submitted:
             benchmark_error = str(exc)
     st.session_state["v2_result"] = result
     st.session_state["v2_metrics"] = metrics(result.monthly)
+    st.session_state["v2_proxy_result"] = proxy_result
+    st.session_state["v2_proxy_metrics"] = metrics(proxy_result.monthly)
     st.session_state["v2_benchmark"] = benchmark
     st.session_state["v2_benchmark_error"] = benchmark_error
 
@@ -105,7 +115,7 @@ allocation["현금"] = allocation["현금"].clip(lower=0.0)
 sector_columns = sorted(column for column in allocation.columns if column != "현금")
 allocation = allocation[["현금", *sector_columns]]
 
-summary_tab, monthly_tab = st.tabs(["성과 요약", "월별·연간 실적"])
+summary_tab, monthly_tab, validation_tab = st.tabs(["성과 요약", "월별·연간 실적", "ETF 전환 검증"])
 
 with summary_tab:
     st.subheader("Backtest result")
@@ -225,6 +235,55 @@ with monthly_tab:
         file_name="korea_sector_momentum_v2_monthly.csv",
         mime="text/csv",
     )
+
+with validation_tab:
+    st.subheader("ETF transition validation")
+    st.caption("동일한 데이터·비중·리밸런싱 규칙으로, ETF 전환만 하지 않고 대표종목 프록시를 계속 보유한 대조군입니다. 이 대조군은 V1과 같은 프록시 기준 결과여야 합니다.")
+
+    proxy_monthly = st.session_state["v2_proxy_result"].monthly.copy()
+    proxy_values = st.session_state["v2_proxy_metrics"]
+    metric_columns = st.columns(3)
+    metric_columns[0].metric(
+        "누적수익률: ETF 전환 / 프록시",
+        f"{values['cumulative_return']:.1%} / {proxy_values['cumulative_return']:.1%}",
+        f"{values['cumulative_return'] - proxy_values['cumulative_return']:+.1%}p",
+    )
+    metric_columns[1].metric(
+        "CAGR: ETF 전환 / 프록시",
+        f"{values['cagr']:.1%} / {proxy_values['cagr']:.1%}",
+        f"{values['cagr'] - proxy_values['cagr']:+.1%}p",
+    )
+    metric_columns[2].metric(
+        "MDD: ETF 전환 / 프록시",
+        f"{values['max_drawdown']:.1%} / {proxy_values['max_drawdown']:.1%}",
+        f"{values['max_drawdown'] - proxy_values['max_drawdown']:+.1%}p",
+    )
+
+    hybrid_returns = monthly["return"].rename("ETF 전환")
+    proxy_returns = proxy_monthly["return"].rename("대표종목 프록시")
+    return_comparison = pd.concat([hybrid_returns, proxy_returns], axis=1).dropna()
+    annual = return_comparison.groupby(return_comparison.index.year).agg(
+        **{
+            "ETF 전환": ("ETF 전환", lambda values: (1.0 + values).prod() - 1.0),
+            "대표종목 프록시": ("대표종목 프록시", lambda values: (1.0 + values).prod() - 1.0),
+        }
+    )
+    annual["차이"] = annual["ETF 전환"] - annual["대표종목 프록시"]
+    annual.index.name = "연도"
+
+    st.subheader("Annual return difference: ETF transition vs proxy")
+    st.dataframe(annual.style.format("{:.1%}"), use_container_width=True)
+
+    monthly_difference = return_comparison.copy()
+    monthly_difference["차이"] = monthly_difference["ETF 전환"] - monthly_difference["대표종목 프록시"]
+    st.subheader("Largest monthly differences")
+    st.dataframe(
+        monthly_difference.reindex(monthly_difference["차이"].abs().sort_values(ascending=False).index)
+        .head(24)
+        .style.format("{:.2%}"),
+        use_container_width=True,
+    )
+    st.caption("2022년까지 두 열이 다르면 구현 오류이며, 2023년 이후 차이는 ETF 편입종목·분배금·추적오차·거래비용 미반영 등 실제 ETF와 대표종목 프록시의 차이입니다.")
 
 with st.expander("ETF transition universe", expanded=False):
     st.json(config["sector_specs"])

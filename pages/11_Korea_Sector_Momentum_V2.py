@@ -10,10 +10,10 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
 STRATEGY_DIR = ROOT / "strategies" / "korea_sector_momentum_v2"
-sys.path.insert(0, str(STRATEGY_DIR))
+sys.path.insert(0, str(ROOT / "strategies"))
 
-from run import load_hybrid_monthly_prices, load_kospi200_monthly_prices  # noqa: E402
-from strategy import backtest, metrics  # noqa: E402
+from korea_sector_momentum_v2.run import load_hybrid_monthly_prices, load_kospi200_monthly_prices  # noqa: E402
+from korea_sector_momentum_v2.strategy import backtest, metrics  # noqa: E402
 
 st.set_page_config(page_title="Korea Sector Momentum V2", layout="wide")
 config = json.loads((STRATEGY_DIR / "config.json").read_text(encoding="utf-8"))

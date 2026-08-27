@@ -1,78 +1,115 @@
 {
   "sector_specs": {
     "반도체": {
-      "proxy_tickers": ["005930", "000660"],
+      "proxy_tickers": [
+        "005930",
+        "000660"
+      ],
       "etf_ticker": "396500",
       "etf_name": "TIGER Fn반도체TOP10",
       "etf_listing_date": "2021-08-09",
       "first_etf_return_month": "2021-09-30"
     },
     "전력인프라": {
-      "proxy_tickers": ["010120", "034020"],
+      "proxy_tickers": [
+        "010120",
+        "034020"
+      ],
       "etf_ticker": "487240",
       "etf_name": "KODEX AI전력핵심설비",
       "etf_listing_date": "2024-07-09",
       "first_etf_return_month": "2024-08-31"
     },
     "방산": {
-      "proxy_tickers": ["012450", "079550"],
+      "proxy_tickers": [
+        "012450",
+        "079550"
+      ],
       "etf_ticker": "449450",
       "etf_name": "PLUS K방산",
       "etf_listing_date": "2023-01-05",
       "first_etf_return_month": "2023-02-28"
     },
     "조선": {
-      "proxy_tickers": ["009540", "010140"],
+      "proxy_tickers": [
+        "009540",
+        "010140"
+      ],
       "etf_ticker": "466920",
       "etf_name": "SOL 조선TOP3플러스",
       "etf_listing_date": "2023-10-05",
       "first_etf_return_month": "2023-11-30"
     },
     "바이오": {
-      "proxy_tickers": ["068270", "128940"],
+      "proxy_tickers": [
+        "068270",
+        "128940"
+      ],
       "etf_ticker": "244580",
       "etf_name": "KODEX 바이오",
       "etf_listing_date": "2016-05-13",
       "first_etf_return_month": "2016-06-30"
     },
     "자동차": {
-      "proxy_tickers": ["005380", "000270"],
+      "proxy_tickers": [
+        "005380",
+        "000270"
+      ],
       "etf_ticker": "091180",
       "etf_name": "KODEX 자동차",
       "etf_listing_date": "2006-06-27",
       "first_etf_return_month": "2006-07-31"
     },
     "이차전지": {
-      "proxy_tickers": ["051910", "006400"],
+      "proxy_tickers": [
+        "051910",
+        "006400"
+      ],
       "etf_ticker": "305720",
       "etf_name": "KODEX 2차전지산업",
       "etf_listing_date": "2018-09-12",
       "first_etf_return_month": "2018-10-31"
     },
     "인터넷플랫폼": {
-      "proxy_tickers": ["035420", "035720"],
+      "proxy_tickers": [
+        "035420",
+        "035720"
+      ],
       "etf_ticker": "365000",
       "etf_name": "TIGER 인터넷TOP10",
       "etf_listing_date": "2020-10-07",
       "first_etf_return_month": "2020-11-30"
     },
     "금융": {
-      "proxy_tickers": ["105560", "055550"],
+      "proxy_tickers": [
+        "105560",
+        "055550"
+      ],
       "etf_ticker": "091170",
       "etf_name": "KODEX 은행",
       "etf_listing_date": "2006-06-27",
       "first_etf_return_month": "2006-07-31"
     },
     "K뷰티 ODM": {
-      "proxy_tickers": ["192820", "161890"],
+      "proxy_tickers": [
+        "192820",
+        "161890"
+      ],
       "etf_ticker": "0008T0",
       "etf_name": "SOL 화장품TOP3플러스",
       "etf_listing_date": "2025-01-21",
       "first_etf_return_month": "2025-02-28"
     }
   },
-  "weights": [0.45, 0.30, 0.15, 0.05, 0.05],
+  "weights": [
+    0.45,
+    0.3,
+    0.15,
+    0.05,
+    0.05
+  ],
   "selection_lookback_months": 12,
   "ranking_lookback_months": 12,
-  "transaction_cost": 0.001
+  "transaction_cost": 0.001,
+  "etf_transition_start": "2023-01-01"
 }

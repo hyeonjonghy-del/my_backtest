@@ -7,7 +7,10 @@ from pathlib import Path
 import pandas as pd
 from pykrx import stock
 
-from strategy import backtest, metrics
+try:
+    from .strategy import backtest, metrics
+except ImportError:  # Direct CLI execution from this directory.
+    from strategy import backtest, metrics
 
 
 def _query_start(start: str) -> str:

@@ -35,7 +35,7 @@ from chart_utils import static_area_chart, static_yearly_returns_chart
 # Keep inputs independent of the reporting start year.  This makes overlapping
 # backtest periods reproducible when only the displayed start year changes.
 HISTORICAL_UNIVERSE_START_YEAR = 2000
-CANONICAL_PRICE_START = "1997-01-01"  # supports the 24-month maximum lookback
+CANONICAL_PRICE_START = "2013-01-01"  # fixed shared history for reproducible 2015+ comparisons
 
 # ─────────────────────────────────────────────────────────
 # 0. 한글 폰트 설정
@@ -367,8 +367,8 @@ if run_btn:
     st.info(f"📦 전체 유니버스: {len(all_tickers)}개 종목 (중복 제거 후)")
 
     # ── 5-3. 주가 다운로드 ──────────────────────────────
-    # Use a canonical download window so changing the reporting start year
-    # cannot alter prices or the candidate universe in overlapping periods.
+    # Use a shared download window so 2015 and 2020 runs use identical
+    # prices and candidates in their overlapping period.
     fetch_start = CANONICAL_PRICE_START
     fetch_end = (requested_end_dt + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     st.info(f"📥 주가 데이터 다운로드 기간: {fetch_start} ~ {requested_end_dt.date()}")

@@ -223,7 +223,7 @@ def get_universe_at(date: pd.Timestamp, universe_dict: dict) -> list:
 # 3. 주가 데이터 다운로드 (yfinance)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600 * 6, show_spinner=False)
-def download_price_data(tickers_tuple: tuple, end_str: str) -> pd.DataFrame:
+def download_price_data(tickers_tuple: tuple, start_str: str, end_str: str) -> pd.DataFrame:
     """yfinance로 종목 주가 일괄 다운로드"""
     try:
         import yfinance as yf
@@ -251,7 +251,7 @@ def download_price_data(tickers_tuple: tuple, end_str: str) -> pd.DataFrame:
         try:
             raw = yf.download(
                 batch,
-                start=CANONICAL_PRICE_START,
+                start=start_str,
                 end=end_str,
                 auto_adjust=True,
                 progress=False,
@@ -374,7 +374,7 @@ if run_btn:
     st.info(f"📥 주가 데이터 다운로드 기간: {fetch_start} ~ {requested_end_dt.date()}")
 
     with st.spinner("주가 데이터 다운로드 중... (첫 실행 시 시간이 걸립니다)"):
-        df_price = download_price_data(all_tickers, fetch_end)
+        df_price = download_price_data(all_tickers, fetch_start, fetch_end)
 
     if df_price.empty:
         st.error("❌ 주가 데이터를 가져오지 못했습니다.")

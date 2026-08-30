@@ -367,7 +367,9 @@ if run_btn:
     st.info(f"📦 전체 유니버스: {len(all_tickers)}개 종목 (중복 제거 후)")
 
     # ── 5-3. 주가 다운로드 ──────────────────────────────
-    # Use a canonical download window so changing the reporting start year\n    # cannot alter prices or the candidate universe in overlapping periods.\n    fetch_start = CANONICAL_PRICE_START
+    # Use a canonical download window so changing the reporting start year
+    # cannot alter prices or the candidate universe in overlapping periods.
+    fetch_start = CANONICAL_PRICE_START
     fetch_end = (requested_end_dt + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     st.info(f"📥 주가 데이터 다운로드 기간: {fetch_start} ~ {requested_end_dt.date()}")
 

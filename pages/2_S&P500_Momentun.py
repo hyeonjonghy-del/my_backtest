@@ -32,6 +32,11 @@ from math import ceil
 from datetime import datetime
 from chart_utils import static_area_chart, static_yearly_returns_chart
 
+# Keep inputs independent of the reporting start year.  This makes overlapping
+# backtest periods reproducible when only the displayed start year changes.
+HISTORICAL_UNIVERSE_START_YEAR = 2000
+CANONICAL_PRICE_START = "1997-01-01"  # supports the 24-month maximum lookback
+
 # ─────────────────────────────────────────────────────────
 # 0. 한글 폰트 설정
 # ─────────────────────────────────────────────────────────
@@ -69,7 +74,7 @@ v3는 과거 유니버스 역추적 시 편출입 변경을 한 번씩만 순차
 # 2. Wikipedia에서 S&P500 구성종목 + 편출입 이력 수집
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600 * 24, show_spinner=False)
-def build_sp500_universe(start_year: int) -> tuple:
+def build_sp500_universe() -> tuple:
     """
     Wikipedia에서 S&P500 현재 구성종목과 편출입 이력을 수집하여
     시점별 실제 구성종목 딕셔너리를 반환합니다.
@@ -163,7 +168,7 @@ def build_sp500_universe(start_year: int) -> tuple:
     # 리밸런싱 기준 날짜 목록 생성 (분기말 기준)
     today     = pd.Timestamp.today()
     quarters  = pd.date_range(
-        start=f"{start_year}-01-01",
+        start=f"{HISTORICAL_UNIVERSE_START_YEAR}-01-01",
         end=today,
         freq='QE'   # 분기말
     )
@@ -189,9 +194,8 @@ def build_sp500_universe(start_year: int) -> tuple:
 
     # 딕셔너리 정렬
     universe_dict = {
-        k: list(v)
+        k: sorted(v)
         for k, v in sorted(universe_at_date.items())
-        if k >= pd.Timestamp(f"{start_year}-01-01")
     }
 
     status.empty()
@@ -219,7 +223,7 @@ def get_universe_at(date: pd.Timestamp, universe_dict: dict) -> list:
 # 3. 주가 데이터 다운로드 (yfinance)
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600 * 6, show_spinner=False)
-def download_price_data(tickers_tuple: tuple, start_str: str, end_str: str) -> pd.DataFrame:
+def download_price_data(tickers_tuple: tuple, end_str: str) -> pd.DataFrame:
     """yfinance로 종목 주가 일괄 다운로드"""
     try:
         import yfinance as yf
@@ -247,7 +251,7 @@ def download_price_data(tickers_tuple: tuple, start_str: str, end_str: str) -> p
         try:
             raw = yf.download(
                 batch,
-                start=start_str,
+                start=CANONICAL_PRICE_START,
                 end=end_str,
                 auto_adjust=True,
                 progress=False,
@@ -279,7 +283,7 @@ def download_price_data(tickers_tuple: tuple, start_str: str, end_str: str) -> p
 
     price_df = pd.concat(all_prices, axis=1)
     price_df = price_df.loc[:, ~price_df.columns.duplicated()]
-    price_df = price_df.ffill().bfill()
+    # Never back-fill: it would create prices before a ticker actually traded.\n    price_df = price_df.sort_index().ffill()
     return price_df
 
 
@@ -348,7 +352,7 @@ if run_btn:
 
     # ── 5-1. S&P500 유니버스 수집 ───────────────────────
     with st.spinner("Wikipedia에서 S&P500 구성종목 수집 중..."):
-        universe_dict, sector_map = build_sp500_universe(start_year)
+        universe_dict, sector_map = build_sp500_universe()
 
     if not universe_dict:
         st.error("❌ 유니버스 수집 실패")
@@ -363,12 +367,12 @@ if run_btn:
     st.info(f"📦 전체 유니버스: {len(all_tickers)}개 종목 (중복 제거 후)")
 
     # ── 5-3. 주가 다운로드 ──────────────────────────────
-    fetch_start = f"{start_year - ceil(momentum_window/12) - 1}-01-01"
+    # Use a canonical download window so changing the reporting start year\n    # cannot alter prices or the candidate universe in overlapping periods.\n    fetch_start = CANONICAL_PRICE_START
     fetch_end = (requested_end_dt + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     st.info(f"📥 주가 데이터 다운로드 기간: {fetch_start} ~ {requested_end_dt.date()}")
 
     with st.spinner("주가 데이터 다운로드 중... (첫 실행 시 시간이 걸립니다)"):
-        df_price = download_price_data(all_tickers, fetch_start, fetch_end)
+        df_price = download_price_data(all_tickers, fetch_end)
 
     if df_price.empty:
         st.error("❌ 주가 데이터를 가져오지 못했습니다.")
@@ -518,7 +522,7 @@ if run_btn:
             if actual_n == 0:
                 continue
 
-            top_series = mom_score.nlargest(actual_n)
+            # Stable secondary order makes exact momentum ties reproducible.\n            top_series = mom_score.sort_index().nlargest(actual_n)
             top_stocks = top_series.index.tolist()
 
             for stock in top_stocks:

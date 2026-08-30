@@ -439,6 +439,16 @@ if run_btn:
     history_records        = []
     cash_periods           = 0
     previous_position      = "cash"
+    skip_reasons = {
+        "insufficient_universe": 0,
+        "invalid_lookback": 0,
+        "empty_momentum": 0,
+        "invalid_entry": 0,
+        "short_price_period": 0,
+        "empty_daily_returns": 0,
+        "all_stocks_rejected": 0,
+    }
+    backtest_errors: list[str] = []
 
     prog2   = st.progress(0)
     status2 = st.empty()
@@ -497,6 +507,7 @@ if run_btn:
             valid_cols  = [t for t in universe_at if t in df_price.columns]
 
             if len(valid_cols) < top_n:
+                skip_reasons["insufficient_universe"] += 1
                 continue
 
             # ── 모멘텀 점수 계산 (11-1) ───────────────────
@@ -505,6 +516,7 @@ if run_btn:
             past_date   = df_price.index[past_loc]
 
             if abs((curr_date - past_date).days - momentum_window * 30) > 45:
+                skip_reasons["invalid_lookback"] += 1
                 continue
 
             # 11-1: 최근 1개월 제외
@@ -522,6 +534,7 @@ if run_btn:
 
             actual_n   = min(top_n, len(mom_score))
             if actual_n == 0:
+                skip_reasons["empty_momentum"] += 1
                 continue
 
             # Stable secondary order makes exact momentum ties reproducible.\n            top_series = mom_score.sort_index().nlargest(actual_n)
@@ -539,17 +552,21 @@ if run_btn:
             # ── Look-ahead Bias 제거 ──────────────────────
             curr_loc = all_days.get_loc(curr_date)
             if curr_loc + 1 >= len(all_days):
+                skip_reasons["invalid_entry"] += 1
                 continue
             entry_date = all_days[curr_loc + 1]
             if entry_date >= next_date:
+                skip_reasons["invalid_entry"] += 1
                 continue
 
             price_period = df_price[top_stocks].loc[entry_date:next_date]
             if price_period.shape[0] < 2:
+                skip_reasons["short_price_period"] += 1
                 continue
 
             daily_ret = price_period.pct_change().dropna(how='all')
             if daily_ret.empty:
+                skip_reasons["empty_daily_returns"] += 1
                 continue
 
             # ── 데이터 정합성 검증 ────────────────────────
@@ -559,6 +576,7 @@ if run_btn:
             valid_stocks  = daily_ret.columns[~bad_data_mask].tolist()
 
             if not valid_stocks:
+                skip_reasons["all_stocks_rejected"] += 1
                 continue
             daily_ret = daily_ret[valid_stocks]
 
@@ -573,7 +591,12 @@ if run_btn:
             portfolio_returns_list.append(port_ret)
             portfolio_weight_list.append(pd.Series(1.0, index=port_ret.index))
 
-        except Exception:
+        except Exception as exc:
+            if len(backtest_errors) < 5:
+                backtest_errors.append(
+                    f"{curr_date:%Y-%m-%d} → {next_date:%Y-%m-%d}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
             continue
 
     prog2.empty()
@@ -581,6 +604,9 @@ if run_btn:
 
     if not portfolio_returns_list:
         st.error("❌ 유효한 수익률 데이터가 없습니다.")
+        st.write({"제외 사유": skip_reasons, "처리 구간": total})
+        if backtest_errors:
+            st.code("\n".join(backtest_errors), language="text")
         st.stop()
 
     # ── 5-8. 성과 지표 계산 ─────────────────────────────

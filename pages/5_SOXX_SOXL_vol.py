@@ -649,6 +649,16 @@ close_regime_signal = build_regime_signal(
     lag_for_execution=False,
 )
 
+# Comparison-only defensive variant: if yesterday closed below MA30, a
+# Strong Bull is demoted to Weak Bull for today's open.  It also suppresses
+# the turnaround SOXL override on that defensive day.
+early_defense_signal = (price < fast_ma).shift(1).fillna(False)
+early_defense_regime_signal = regime_signal.mask(
+    early_defense_signal & regime_signal.eq("Strong Bull"),
+    "Weak Bull",
+)
+early_defense_turnaround_signal = turnaround_signal & ~early_defense_signal
+
 weights_full = build_strategy_weights(
     price,
     trend_signal,
@@ -668,6 +678,24 @@ weights_full = build_strategy_weights(
 )
 
 weights = weights_full.reindex(common_idx).fillna(0.0)
+early_defense_weights_full = build_strategy_weights(
+    price,
+    trend_signal,
+    early_defense_regime_signal,
+    early_defense_turnaround_signal,
+    vol,
+    target_vol,
+    soxl_cap,
+    max_risk_exposure,
+    strong_soxx_risk_share,
+    weak_risk_multiplier,
+    weak_soxx_risk_share,
+    weak_soxl_cap,
+    turnaround_soxl_weight,
+    bear_soxx,
+    rebalance,
+)
+early_defense_weights = early_defense_weights_full.reindex(common_idx).fillna(0.0)
 turnaround = turnaround_signal.reindex(common_idx).fillna(False)
 display_regime_signal = regime_signal.reindex(common_idx).where(~turnaround, "Turnaround Bull")
 close_turnaround = close_turnaround_signal.reindex(common_idx).fillna(False)
@@ -701,6 +729,9 @@ close_prices = pd.DataFrame(
 strategy_ret, executed_turnover, close_nav = backtest_open_execution_close_valuation(
     weights, open_prices, close_prices, cost_rate
 )
+early_defense_ret, _, early_defense_close_nav = backtest_open_execution_close_valuation(
+    early_defense_weights, open_prices, close_prices, cost_rate
+)
 
 bench_soxx = ret_soxx
 bench_soxl = ret_soxl
@@ -710,7 +741,13 @@ fixed_30 = 0.7 * ret_soxx + 0.3 * ret_soxl
 strategy_metrics = calc_metrics(strategy_ret)
 summary = pd.DataFrame(
     [
-        metric_row("Strategy", strategy_ret, weights["SOXX"], weights["SOXL"]),
+        metric_row("Original Strategy", strategy_ret, weights["SOXX"], weights["SOXL"]),
+        metric_row(
+            "Early Defense: Close < MA30 → Weak Bull",
+            early_defense_ret,
+            early_defense_weights["SOXX"],
+            early_defense_weights["SOXL"],
+        ),
         metric_row("SOXX 100%", bench_soxx),
         metric_row("SOXL 100%", bench_soxl),
         metric_row("SOXX 80% + SOXL 20%", fixed_20),
@@ -779,7 +816,8 @@ tab_perf, tab_execute, tab_signal, tab_table, tab_monthly = st.tabs(
 with tab_perf:
     nav_df = pd.DataFrame(
         {
-            "Strategy": strategy_metrics["nav"],
+            "Original Strategy": strategy_metrics["nav"],
+            "Early Defense": calc_metrics(early_defense_ret)["nav"],
             "SOXX": calc_metrics(bench_soxx)["nav"],
             "SOXL": calc_metrics(bench_soxl)["nav"],
             "80/20": calc_metrics(fixed_20)["nav"],
@@ -896,6 +934,9 @@ with tab_signal:
             "Target Turnaround": close_turnaround,
             "Applied SOXX": weights["SOXX"],
             "Applied SOXL": weights["SOXL"],
+            "Early Defense": early_defense_signal.reindex(common_idx).fillna(False),
+            "Defense SOXX": early_defense_weights["SOXX"],
+            "Defense SOXL": early_defense_weights["SOXL"],
             "Target SOXX": close_target_weights["SOXX"],
             "Target SOXL": close_target_weights["SOXL"],
             "Target Cash": (1 - close_target_weights.sum(axis=1)).clip(0, 1),
@@ -904,6 +945,11 @@ with tab_signal:
     st.dataframe(recent, use_container_width=True)
 
 with tab_table:
+    st.caption(
+        "Early Defense comparison: if the previous close is below MA30, Strong Bull is "
+        "demoted to Weak Bull for the next open and the turnaround SOXL override is disabled that day. "
+        "The live execution plan above remains the original strategy."
+    )
     shown = summary.copy()
     for col in ["Total", "CAGR", "MDD", "Monthly Win", "Avg SOXX", "Avg SOXL", "Max SOXL"]:
         shown[col] = shown[col].map(lambda x: "-" if pd.isna(x) else f"{x:.1%}")

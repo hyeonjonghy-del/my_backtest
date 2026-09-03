@@ -219,22 +219,6 @@ def get_universe_at(date: pd.Timestamp, universe_dict: dict) -> list:
     return universe_dict[key]
 
 
-def qqq_cash_signal(qqq_close: pd.Series, decision_date: pd.Timestamp) -> dict:
-    """Use only prices available at the rebalance close; execute afterwards."""
-    history = qqq_close.loc[:decision_date].dropna().sort_index()
-    if history.empty or history.index[-1] != decision_date:
-        raise ValueError(f"{decision_date.date()}: QQQ 종가가 없습니다.")
-    monthly = history.resample('ME').last()
-    if len(monthly) < 10 or monthly.iloc[-10:].isna().any():
-        raise ValueError("QQQ 필터에는 연속된 10개월의 월말 가격이 필요합니다.")
-    price = float(monthly.iloc[-1])
-    average = float(monthly.iloc[-10:].mean())
-    momentum = price / float(monthly.iloc[-7]) - 1.0
-    cash_weight = 0.0 if price >= average else (0.5 if momentum < 0 else 0.3)
-    return {'QQQ 종가': price, 'QQQ 10개월 평균': average,
-            'QQQ 6개월 수익률': momentum, '현금 목표비중': cash_weight}
-
-
 def cash_etf_for_date(cash_prices: pd.DataFrame, decision_date: pd.Timestamp) -> str:
     """Choose an actually listed ETF at the decision date, without backfilling."""
     for ticker in ('SGOV', 'BIL'):
@@ -271,15 +255,15 @@ def mix_stock_and_cash(stock_returns: pd.Series, cash_returns: pd.Series,
 
 
 @st.cache_data(ttl=3600 * 6, show_spinner=False)
-def download_qqq_cash_prices(start_str: str, end_str: str) -> pd.DataFrame:
+def download_cash_prices(start_str: str, end_str: str) -> pd.DataFrame:
     import yfinance as yf
     # auto_adjust includes cash ETF distributions in close-to-close returns.
-    raw = yf.download(['QQQ', 'SGOV', 'BIL'], start=start_str, end=end_str,
+    raw = yf.download(['SGOV', 'BIL'], start=start_str, end=end_str,
                       auto_adjust=True, progress=False)['Close']
     raw.index = pd.to_datetime(raw.index).tz_localize(None)
     raw = raw.loc[~raw.index.duplicated()].sort_index()
-    if any(t not in raw or raw[t].dropna().empty for t in ('QQQ', 'SGOV', 'BIL')):
-        raise ValueError("QQQ/SGOV/BIL 중 다운로드되지 않은 종목이 있습니다.")
+    if any(t not in raw or raw[t].dropna().empty for t in ('SGOV', 'BIL')):
+        raise ValueError("SGOV/BIL 중 다운로드되지 않은 종목이 있습니다.")
     return raw
 
 
@@ -395,20 +379,17 @@ with st.sidebar:
         value=False,
         help="S&P500 지수가 12개월 전보다 낮으면 전액 현금 보유"
     )
-    use_qqq_cash_filter = st.checkbox(
-        "QQQ 기준 현금 비중 필터 (SGOV)", value=False,
-        help="선택한 리밸런싱 주기에 QQQ 10개월 월말 이동평균과 6개월 수익률로 판단합니다."
+    sgov_target_pct = st.slider(
+        "SGOV 목표 비중 (%)", min_value=0, max_value=100,
+        value=30, step=5,
+        help="종목 리밸런싱일에 SGOV 목표 비중도 함께 맞춥니다. SGOV 상장 전에는 BIL을 사용합니다."
     )
-    if use_qqq_cash_filter:
+    sgov_target_weight = sgov_target_pct / 100.0
+    if sgov_target_pct > 0:
         st.caption(
-            "QQQ ≥ 10개월 평균: 주식 100% / SGOV 0%\n\n"
-            "QQQ < 평균: 주식 70% / SGOV 30%\n\n"
-            "QQQ < 평균이고 6개월 수익률 < 0: 주식 50% / SGOV 50%\n\n"
-            "월말 신호 확인 후 다음 거래일 종가에 적용합니다. "
-            "SGOV 상장 전에는 BIL을 사용합니다."
+            f"리밸런싱일 목표: 주식 {100-sgov_target_pct}% / SGOV {sgov_target_pct}% · "
+            "다음 리밸런싱까지 실제 비중은 가격에 따라 변합니다. SGOV 상장 전에는 BIL을 사용합니다."
         )
-        if use_dual_momentum:
-            st.caption("듀얼 모멘텀을 함께 켜면 전액 현금 신호가 우선하며 SGOV/BIL 100%를 보유합니다.")
     transaction_cost = st.slider(
         "거래비용 (1회, %)",
         min_value=0.0, max_value=1.0, value=0.25, step=0.05,
@@ -489,16 +470,17 @@ if run_btn:
     end_dt   = min(df_price.index[-1], requested_end_dt)
     all_days = df_price.index
 
-    qqq_cash_prices = None
-    if use_qqq_cash_filter:
+    use_sgov_allocation = sgov_target_weight > 0
+    cash_prices = None
+    if use_sgov_allocation:
         try:
-            qqq_cash_prices = download_qqq_cash_prices(fetch_start, fetch_end)
-            qqq_cash_prices = qqq_cash_prices.loc[:end_dt]
-            if use_dual_momentum and sp500_index is None:
-                raise ValueError("듀얼 모멘텀용 S&P500 지수가 없어 두 필터를 함께 적용할 수 없습니다.")
-            st.info("QQQ 필터 ON · SGOV 상장 전 BIL 대체 · 필터 OFF 결과도 동일 기간에 비교합니다.")
+            cash_prices = download_cash_prices(fetch_start, fetch_end).loc[:end_dt]
+            st.info(
+                f"고정 배분 ON · 주식 {100-sgov_target_pct}% / SGOV {sgov_target_pct}% · "
+                "SGOV 상장 전 BIL 대체 · SGOV 0% 결과도 동일 기간에 비교합니다."
+            )
         except Exception as exc:
-            st.error(f"QQQ 현금 필터 데이터 오류: {exc}")
+            st.error(f"SGOV/BIL 데이터 오류: {exc}")
             st.stop()
 
     # ── 5-6. 리밸런싱 날짜 생성 ─────────────────────────
@@ -550,10 +532,8 @@ if run_btn:
         )
 
         try:
-            signal = None
-            if use_qqq_cash_filter:
-                signal = qqq_cash_signal(qqq_cash_prices['QQQ'], curr_date)
-                cash_ticker = cash_etf_for_date(qqq_cash_prices, curr_date)
+            if use_sgov_allocation:
+                cash_ticker = cash_etf_for_date(cash_prices, curr_date)
             # ── 듀얼 모멘텀: 절대 모멘텀 필터 ────────────
             in_market = True
             if use_dual_momentum and sp500_index is not None:
@@ -586,9 +566,9 @@ if run_btn:
                     cash_ret = pd.Series(0.0, index=df_price.loc[entry_date:next_date].index)
                     if previous_position == "market" and transaction_cost > 0 and not cash_ret.empty:
                         cash_ret.iloc[0] -= transaction_cost
-                    if use_qqq_cash_filter and not cash_ret.empty:
+                    if use_sgov_allocation and not cash_ret.empty:
                         unfiltered_returns_list.append(cash_ret.copy())
-                        cash_period_returns = qqq_cash_prices[cash_ticker].pct_change(
+                        cash_period_returns = cash_prices[cash_ticker].pct_change(
                             fill_method=None).reindex(cash_ret.index)
                         # entry_date is the execution close, so that day's prior-close
                         # return was not held. Returns begin on the following close.
@@ -603,7 +583,7 @@ if run_btn:
                         previous_cash_ticker = cash_ticker
                         allocation_records.append({
                             '판단일': curr_date, '적용 시작일': entry_date,
-                            '적용 종료일': next_date, **signal,
+                            '적용 종료일': next_date,
                             '주식 목표비중': 0.0, '현금 목표비중': 1.0,
                             '현금 ETF': cash_ticker, '사유': '듀얼 모멘텀 우선',
                         })
@@ -693,10 +673,10 @@ if run_btn:
             if transaction_cost > 0 and not port_ret.empty:
                 transaction_events = 1 if previous_position == "cash" else 2
                 port_ret.iloc[0] -= transaction_cost * transaction_events
-            if use_qqq_cash_filter:
+            if use_sgov_allocation:
                 unfiltered_returns_list.append(port_ret.copy())
-                target_stock = 1.0 - signal['현금 목표비중']
-                cash_period_returns = qqq_cash_prices[cash_ticker].pct_change(
+                target_stock = 1.0 - sgov_target_weight
+                cash_period_returns = cash_prices[cash_ticker].pct_change(
                     fill_method=None).reindex(daily_ret.index)
                 port_ret, stock_weights = mix_stock_and_cash(
                     daily_ret.mean(axis=1), cash_period_returns, target_stock,
@@ -708,9 +688,10 @@ if run_btn:
                 previous_cash_ticker = cash_ticker
                 allocation_records.append({
                     '판단일': curr_date, '적용 시작일': entry_date,
-                    '적용 종료일': next_date, **signal,
-                    '주식 목표비중': target_stock, '현금 ETF': cash_ticker,
-                    '사유': 'QQQ 현금 필터',
+                    '적용 종료일': next_date,
+                    '주식 목표비중': target_stock,
+                    '현금 목표비중': sgov_target_weight,
+                    '현금 ETF': cash_ticker, '사유': '고정 SGOV 배분',
                 })
                 # Show only the stocks that actually contributed to this period.
                 history_records = [r for r in history_records
@@ -731,11 +712,11 @@ if run_btn:
             previous_position = "market"
 
             portfolio_returns_list.append(port_ret)
-            portfolio_weight_list.append(stock_weights if use_qqq_cash_filter
+            portfolio_weight_list.append(stock_weights if use_sgov_allocation
                                          else pd.Series(1.0, index=port_ret.index))
 
         except Exception as exc:
-            if use_qqq_cash_filter:
+            if use_sgov_allocation:
                 st.error(f"{curr_date.date()} 리밸런싱 계산 오류: {exc}")
                 st.stop()
             continue
@@ -743,7 +724,7 @@ if run_btn:
     prog2.empty()
     status2.empty()
 
-    if use_qqq_cash_filter and len(allocation_records) != total:
+    if use_sgov_allocation and len(allocation_records) != total:
         covered = {r['판단일'] for r in allocation_records}
         missing = [str(d.date()) for d in period_dates[:-1] if d not in covered]
         st.error("계산에서 누락된 리밸런싱 기간이 있어 결과를 표시하지 않습니다: " + ', '.join(missing))
@@ -770,11 +751,11 @@ if run_btn:
     )
 
     cum_returns = (1 + full_returns).cumprod()
-    filter_off_nav = None
-    if use_qqq_cash_filter:
-        filter_off_returns = pd.concat(unfiltered_returns_list).sort_index()
-        filter_off_returns = filter_off_returns.loc[~filter_off_returns.index.duplicated()]
-        filter_off_nav = (1.0 + filter_off_returns.reindex(full_returns.index)).cumprod()
+    sgov_zero_nav = None
+    if use_sgov_allocation:
+        sgov_zero_returns = pd.concat(unfiltered_returns_list).sort_index()
+        sgov_zero_returns = sgov_zero_returns.loc[~sgov_zero_returns.index.duplicated()]
+        sgov_zero_nav = (1.0 + sgov_zero_returns.reindex(full_returns.index)).cumprod()
     running_max = cum_returns.cummax()
     drawdown    = (cum_returns / running_max) - 1
     mdd         = drawdown.min()
@@ -810,10 +791,16 @@ if run_btn:
         f"{cost_label} | Top {top_n} stocks | {dual_label} | "
         f"Cash periods: {cash_periods}"
     )
-    if use_qqq_cash_filter:
-        st.caption("QQQ 현금 필터 ON · 주식 목표 100% / 70% / 50% · SGOV (상장 전 BIL)")
+    if use_sgov_allocation:
+        st.caption(
+            f"고정 배분 · 주식 {100-sgov_target_pct}% / SGOV {sgov_target_pct}% · "
+            "종목 리밸런싱일에 목표비중 복원 · SGOV 상장 전 BIL"
+        )
         comparison = []
-        for label, nav in [('필터 ON', cum_returns), ('필터 OFF (동일 기간)', filter_off_nav)]:
+        for label, nav in [
+            (f'SGOV {sgov_target_pct}%', cum_returns),
+            ('SGOV 0% (동일 기간)', sgov_zero_nav),
+        ]:
             years = (nav.index[-1] - nav.index[0]).days / 365.0
             comparison.append({'전략': label, '누적수익률': nav.iloc[-1] - 1,
                                'CAGR': nav.iloc[-1] ** (1 / years) - 1 if years > 0 else 0,
@@ -869,9 +856,9 @@ if run_btn:
             cum_returns.index, cum_returns.values,
             label='Momentum Strategy', color='crimson', linewidth=1.5, zorder=3
         )
-        if filter_off_nav is not None:
-            axes[0].plot(filter_off_nav.index, filter_off_nav.values,
-                         label='QQQ filter OFF', color='grey', linestyle='--', alpha=0.8)
+        if sgov_zero_nav is not None:
+            axes[0].plot(sgov_zero_nav.index, sgov_zero_nav.values,
+                         label='SGOV 0%', color='grey', linestyle='--', alpha=0.8)
         if bm_cum is not None:
             bm_vals = bm_cum.iloc[:, 0] if isinstance(bm_cum, pd.DataFrame) else bm_cum
             axes[0].plot(
@@ -930,7 +917,7 @@ if run_btn:
 
         weight_df = pd.DataFrame({
             "Equity": equity_weight,
-            "SGOV / BIL" if use_qqq_cash_filter else "Cash": 1 - equity_weight,
+            "SGOV / BIL" if use_sgov_allocation else "Cash": 1 - equity_weight,
         })
         st.pyplot(static_area_chart(weight_df, "Portfolio Weights", height=300), clear_figure=True)
 
@@ -942,7 +929,7 @@ if run_btn:
 
     # ── Tab 2: 현재 추천 종목 ───────────────────────────
     with tab2:
-        if use_qqq_cash_filter:
+        if use_sgov_allocation:
             last_allocation = allocation_records[-1]
             st.subheader("최근 리밸런싱 실행 종목·목표비중")
             last_date = last_allocation['판단일'].strftime('%Y-%m-%d')
@@ -1010,8 +997,8 @@ if run_btn:
         history_df = pd.DataFrame(history_records)
         st.dataframe(history_df, use_container_width=True, height=420)
         st.caption(f"Total {len(history_df)} records | Cash periods: {cash_periods}")
-        if use_qqq_cash_filter:
-            st.subheader("QQQ 판단 신호와 배분 이력")
+        if use_sgov_allocation:
+            st.subheader("SGOV 목표비중 배분 이력")
             st.dataframe(pd.DataFrame(allocation_records), use_container_width=True)
 
     # ── 엑셀 다운로드 ───────────────────────────────────
@@ -1022,10 +1009,10 @@ if run_btn:
         full_returns.to_frame('일간수익률').to_excel(writer, sheet_name='일간수익률')
         m_pivot.to_excel(writer, sheet_name='월별수익률')
         history_df.to_excel(writer, sheet_name='매매기록', index=False)
-        if use_qqq_cash_filter:
-            pd.DataFrame(allocation_records).to_excel(writer, sheet_name='QQQ필터_배분이력', index=False)
+        if use_sgov_allocation:
+            pd.DataFrame(allocation_records).to_excel(writer, sheet_name='SGOV_배분이력', index=False)
             weight_df.to_excel(writer, sheet_name='주식_현금비중')
-            filter_off_nav.to_frame('필터OFF').to_excel(writer, sheet_name='필터OFF_비교')
+            sgov_zero_nav.to_frame('SGOV_0pct').to_excel(writer, sheet_name='SGOV0_비교')
         if bm_cum is not None:
             if isinstance(bm_cum, pd.Series):
                 bm_cum.to_frame('SP500').to_excel(writer, sheet_name='벤치마크')

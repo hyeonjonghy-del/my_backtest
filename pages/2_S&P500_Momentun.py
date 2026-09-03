@@ -368,7 +368,7 @@ with st.sidebar:
         max_value=today_date,
     )
     top_n = st.number_input(
-        "보유 종목 수 (Top N)", value=20, min_value=1, max_value=100
+        "보유 종목 수 (Top N)", value=10, min_value=1, max_value=100
     )
 
     rebalance_map = {
@@ -379,7 +379,7 @@ with st.sidebar:
     rebalance_step = rebalance_map[rebal_label]
 
     momentum_window = st.number_input(
-        "모멘텀 기간 (개월)", value=12, min_value=2, max_value=24
+        "모멘텀 기간 (개월)", value=6, min_value=2, max_value=24
     )
 
     st.markdown("---")
@@ -387,12 +387,12 @@ with st.sidebar:
 
     skip_recent = st.checkbox(
         "최근 1개월 제외 (11-1 모멘텀)",
-        value=True,
+        value=False,
         help="단기 반전 현상 방지"
     )
     use_dual_momentum = st.checkbox(
         "듀얼 모멘텀 (하락장 현금 보유)",
-        value=True,
+        value=False,
         help="S&P500 지수가 12개월 전보다 낮으면 전액 현금 보유"
     )
     use_qqq_cash_filter = st.checkbox(

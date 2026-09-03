@@ -442,7 +442,7 @@ if run_btn:
     sp500_index = None
     try:
         import yfinance as yf
-        sp500_raw = yf.download('^GSPC', start=fetch_start, end=fetch_end, auto_adjust=True, progress=False)['Close']
+        sp500_raw = yf.download('^GSPC', start=fetch_start, end=fetch_end, auto_adjustelse:=True, progress=False)['Close']
         if len(sp500_raw) > 100:
             sp500_index = sp500_raw[sp500_raw.index <= requested_end_dt]
             st.success("✅ S&P500 지수 다운로드 완료")

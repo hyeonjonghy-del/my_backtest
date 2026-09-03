@@ -439,10 +439,11 @@ def backtest_open_execution_close_valuation(
     close_prices: pd.DataFrame,
     cost_rate: float,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """Trade at each open, carry holdings/cash, and mark portfolio NAV at each close."""
+    """Trade only when target weights change, then hold shares and cash unchanged."""
     units = pd.Series(0.0, index=target_weights.columns)
     cash = 1.0
     previous_close_nav = 1.0
+    previous_target = None
     daily_ret = pd.Series(0.0, index=target_weights.index, name="Strategy")
     turnover = pd.Series(0.0, index=target_weights.index, name="Turnover")
     close_nav = pd.Series(0.0, index=target_weights.index, name="Close NAV")
@@ -450,14 +451,23 @@ def backtest_open_execution_close_valuation(
     for number, date in enumerate(target_weights.index):
         open_px = open_prices.loc[date]
         nav_at_open = float(cash + (units * open_px).sum())
-        current_weights = units * open_px / nav_at_open if nav_at_open > 0 else units * 0
-        desired = target_weights.loc[date].clip(0, 1)
-        traded_fraction = float((desired - current_weights).abs().sum())
-        trading_cost = nav_at_open * traded_fraction * cost_rate
-        investable = max(nav_at_open - trading_cost, 0.0)
-        target_values = investable * desired
-        units = (target_values / open_px).replace([np.inf, -np.inf], 0.0).fillna(0.0)
-        cash = max(investable - float(target_values.sum()), 0.0)
+        desired = target_weights.loc[date].clip(0, 1).fillna(0.0)
+        target_changed = previous_target is None or not np.allclose(
+            desired.to_numpy(dtype=float),
+            previous_target.to_numpy(dtype=float),
+            rtol=0.0,
+            atol=1e-12,
+        )
+        traded_fraction = 0.0
+        if target_changed:
+            current_weights = units * open_px / nav_at_open if nav_at_open > 0 else units * 0
+            traded_fraction = float((desired - current_weights).abs().sum())
+            trading_cost = nav_at_open * traded_fraction * cost_rate
+            investable = max(nav_at_open - trading_cost, 0.0)
+            target_values = investable * desired
+            units = (target_values / open_px).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+            cash = max(investable - float(target_values.sum()), 0.0)
+            previous_target = desired.copy()
         nav_at_close = float(cash + (units * close_prices.loc[date]).sum())
         close_nav.loc[date] = nav_at_close
         daily_ret.loc[date] = nav_at_close / previous_close_nav - 1 if number > 0 else nav_at_close - 1

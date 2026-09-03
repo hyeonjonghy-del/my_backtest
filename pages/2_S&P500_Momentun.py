@@ -233,7 +233,7 @@ def mix_stock_and_cash(stock_returns: pd.Series, cash_returns: pd.Series,
                        cash_ticker_changed: bool = False) -> tuple:
     """Hold the two sleeves between rebalances; weights drift with performance.
 
-    Stock sleeve retains the original strategy's daily equal-weight returns.
+    Stock sleeve holds the shares bought at the rebalance until the next rebalance.
     Fees retain its full stock-sleeve sell/buy convention and additionally
     charge cash ETF trades (including a BIL-to-SGOV switch).
     """
@@ -252,6 +252,22 @@ def mix_stock_and_cash(stock_returns: pd.Series, cash_returns: pd.Series,
                   else abs(previous_cash - cash_weight))
     returns.iloc[0] -= transaction_cost * (previous_stock + stock_weight + cash_trade)
     return returns, stock_value / total
+
+
+def buy_and_hold_equal_weight_returns(prices: pd.DataFrame) -> pd.Series:
+    """Buy equal-dollar positions once and hold their shares until rebalance."""
+    if prices.shape[0] < 2 or prices.shape[1] == 0:
+        return pd.Series(dtype=float, name="Momentum")
+    entry_prices = prices.iloc[0]
+    if entry_prices.isna().any() or (entry_prices <= 0).any():
+        raise ValueError("리밸런싱 진입일의 종가가 없거나 0 이하인 종목이 있습니다.")
+    # Split the stock sleeve equally at the entry close and keep share counts
+    # fixed. Each position's weight then drifts with its price until rebalance.
+    relative_values = prices.div(entry_prices, axis=1)
+    nav = relative_values.mean(axis=1)
+    returns = nav.pct_change(fill_method=None).iloc[1:]
+    returns.name = "Momentum"
+    return returns
 
 
 @st.cache_data(ttl=3600 * 6, show_spinner=False)
@@ -653,7 +669,7 @@ if run_btn:
             if price_period.shape[0] < 2:
                 continue
 
-            daily_ret = price_period.pct_change().dropna(how='all')
+            daily_ret = price_period.pct_change(fill_method=None).dropna(how='all')
             if daily_ret.empty:
                 continue
 
@@ -665,21 +681,24 @@ if run_btn:
 
             if not valid_stocks:
                 continue
+            price_period = price_period[valid_stocks]
             daily_ret = daily_ret[valid_stocks]
-
-            port_ret = daily_ret.mean(axis=1)
+            port_ret = buy_and_hold_equal_weight_returns(price_period)
+            if port_ret.empty:
+                continue
 
             # 거래비용 반영
-            if transaction_cost > 0 and not port_ret.empty:
+            unfiltered_port_ret = port_ret.copy()
+            if transaction_cost > 0:
                 transaction_events = 1 if previous_position == "cash" else 2
-                port_ret.iloc[0] -= transaction_cost * transaction_events
+                unfiltered_port_ret.iloc[0] -= transaction_cost * transaction_events
             if use_sgov_allocation:
-                unfiltered_returns_list.append(port_ret.copy())
+                unfiltered_returns_list.append(unfiltered_port_ret)
                 target_stock = 1.0 - sgov_target_weight
                 cash_period_returns = cash_prices[cash_ticker].pct_change(
-                    fill_method=None).reindex(daily_ret.index)
+                    fill_method=None).reindex(port_ret.index)
                 port_ret, stock_weights = mix_stock_and_cash(
-                    daily_ret.mean(axis=1), cash_period_returns, target_stock,
+                    port_ret, cash_period_returns, target_stock,
                     previous_stock_weight, previous_cash_weight, transaction_cost,
                     previous_cash_ticker is not None and previous_cash_ticker != cash_ticker,
                 )
@@ -709,6 +728,8 @@ if run_btn:
                         '종목명': '현금 ETF', '섹터': '미국 초단기 국채',
                         '모멘텀': '-', '목표비중': 1.0 - target_stock,
                     })
+            else:
+                port_ret = unfiltered_port_ret
             previous_position = "market"
 
             portfolio_returns_list.append(port_ret)
@@ -1027,3 +1048,4 @@ if run_btn:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
+

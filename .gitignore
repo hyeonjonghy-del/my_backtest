@@ -8,3 +8,6 @@ venv/
 *.csv
 *.log
 data/
+strategies/upbit_btc_daily/results/
+strategies/upbit_btc_daily/adaptive_120_results/
+strategies/upbit_btc_daily/research_results/

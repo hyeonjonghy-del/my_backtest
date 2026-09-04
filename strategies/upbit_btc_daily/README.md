@@ -74,7 +74,7 @@ GitHub에 푸시한 후 Streamlit Community Cloud에서 다음 값을 선택합�
 
 - Repository: 이 프로젝트를 올린 GitHub 저장소
 - Branch: `master` 또는 실제 배포 브랜치
-- Main file path: `my_backtest_workspace/strategies/upbit_btc_daily/streamlit_app.py`
+- Main file path: `strategies/upbit_btc_daily/streamlit_app.py`
 
 배포용 `requirements.txt`는 앱 파일과 같은 폴더에 있습니다. 앱은 업비트 공개 API를
 메모리에서 조회하고 결과를 다운로드 버튼으로 제공하므로 API 키와 영구 파일 저장소가

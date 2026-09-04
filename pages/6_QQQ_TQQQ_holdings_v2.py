@@ -452,9 +452,36 @@ def legacy_backtest(
     ret_tqqq: pd.Series,
     cost_rate: float,
 ) -> pd.Series:
-    """Original calculation: target weights are treated as maintained every day."""
-    turnover = weights.diff().abs().sum(axis=1).fillna(weights.abs().sum(axis=1))
-    daily_ret = weights["QQQ"] * ret_qqq + weights["TQQQ"] * ret_tqqq - turnover * cost_rate
+    """Fractional-share comparison that trades only when target weights change."""
+    asset_values = pd.Series(0.0, index=["QQQ", "TQQQ"])
+    cash = 1.0
+    previous_nav = 1.0
+    prior_target: pd.Series | None = None
+    daily_ret = pd.Series(0.0, index=weights.index)
+    asset_returns = pd.DataFrame({"QQQ": ret_qqq, "TQQQ": ret_tqqq}).reindex(weights.index).fillna(0.0)
+
+    for index_number, date in enumerate(weights.index):
+        nav_before = float(cash + asset_values.sum())
+        target = weights.loc[date].clip(0, 1).fillna(0.0)
+        target_changed = prior_target is None or not np.allclose(
+            target.to_numpy(dtype=float),
+            prior_target.to_numpy(dtype=float),
+            rtol=0.0,
+            atol=1e-12,
+        )
+        if target_changed and nav_before > 0:
+            current_weights = asset_values / nav_before
+            traded_fraction = float((target - current_weights).abs().sum())
+            investable = max(nav_before * (1 - traded_fraction * cost_rate), 0.0)
+            asset_values = investable * target
+            cash = investable * max(0.0, 1 - float(target.sum()))
+            prior_target = target.copy()
+
+        asset_values = asset_values * (1 + asset_returns.loc[date])
+        close_nav = float(cash + asset_values.sum())
+        daily_ret.loc[date] = close_nav / previous_nav - 1 if index_number > 0 else close_nav - 1
+        previous_nav = close_nav
+
     return daily_ret.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 
@@ -544,13 +571,24 @@ def build_execution_plan(
     account_value: float,
     current_shares: pd.Series,
     current_cash: float,
+    previous_target_weights: pd.Series | None = None,
 ) -> tuple[pd.DataFrame, float]:
     current_values = current_shares * prices
     effective_value = account_value if account_value > 0 else current_values.sum() + current_cash
+    target_changed = previous_target_weights is None or not np.allclose(
+        target_weights.to_numpy(dtype=float),
+        previous_target_weights.reindex(target_weights.index).to_numpy(dtype=float),
+        rtol=0.0,
+        atol=1e-12,
+    )
     rows = []
     for symbol in ["QQQ", "TQQQ"]:
-        target_value = effective_value * target_weights[symbol]
-        target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
+        if target_changed:
+            target_value = effective_value * target_weights[symbol]
+            target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
+        else:
+            target_value = current_values[symbol]
+            target_shares = current_shares[symbol]
         order_shares = target_shares - current_shares[symbol]
         rows.append(
             {
@@ -565,7 +603,11 @@ def build_execution_plan(
                 "Estimated Order Value": abs(order_shares) * prices[symbol],
             }
         )
-    target_cash = effective_value * max(0.0, 1 - target_weights.sum())
+    target_cash = (
+        effective_value * max(0.0, 1 - target_weights.sum())
+        if target_changed
+        else current_cash
+    )
     return pd.DataFrame(rows), target_cash
 
 
@@ -650,6 +692,7 @@ with st.expander("Default Strategy", expanded=False):
 | Turnaround allocation | QQQ {1 - turnaround_tqqq_weight:.0%} + TQQQ {turnaround_tqqq_weight:.0%} |
 | Turnaround exit | MA{turnaround_exit_fast} < MA{turnaround_exit_slow} for {turnaround_exit_confirm} day(s), then return to regime logic |
 | Bear regime | Cash {1 - bear_qqq:.0%} + QQQ {bear_qqq:.0%} |
+| Execution | Trade only when target weights change; no price-only drift rebalancing |
 """
     )
 
@@ -811,7 +854,7 @@ legacy_metrics = calc_metrics(legacy_ret)
 summary = pd.DataFrame(
     [
         metric_row("Strategy V2 (Holdings)", strategy_ret, actual_weights["QQQ"], actual_weights["TQQQ"]),
-        metric_row("Legacy (Daily Target)", legacy_ret, weights["QQQ"], weights["TQQQ"]),
+        metric_row("Fractional Target-Change", legacy_ret, weights["QQQ"], weights["TQQQ"]),
         metric_row("QQQ 100%", bench_qqq),
         metric_row("TQQQ 100%", bench_tqqq),
         metric_row("QQQ 80% + TQQQ 20%", fixed_20),
@@ -859,6 +902,7 @@ execution_plan, target_cash = build_execution_plan(
     account_value,
     current_shares,
     current_cash,
+    previous_target_weights=latest,
 )
 action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 
@@ -868,7 +912,7 @@ st.success(
     f"QQQ {vol_window}D volatility {latest_vol:.1%}"
 )
 st.info(
-    f"V2 ${initial_capital:,.0f} whole-share holdings vs legacy fractional daily-target calculation | "
+    f"V2 ${initial_capital:,.0f} whole-share holdings vs fractional target-change calculation | "
     f"Total return difference {strategy_metrics['total'] - legacy_metrics['total']:+.1%}p | "
     f"CAGR difference {strategy_metrics['cagr'] - legacy_metrics['cagr']:+.2%}p | "
     f"MDD difference {strategy_metrics['mdd'] - legacy_metrics['mdd']:+.2%}p"

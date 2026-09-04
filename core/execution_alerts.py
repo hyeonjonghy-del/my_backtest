@@ -478,6 +478,15 @@ def calculate_us_target(config: dict[str, Any], end: datetime) -> dict[str, Any]
     is_turnaround = bool(turnaround.fillna(False).iloc[-1])
     current_vol = float(volatility.ffill().iloc[-1])
     weights = target_weight(config, current_regime, is_turnaround, current_vol)
+    previous_regime = str(regime.ffill().iloc[-2])
+    was_turnaround = bool(turnaround.fillna(False).iloc[-2])
+    previous_vol = float(volatility.ffill().iloc[-2])
+    previous_weights = target_weight(
+        config,
+        previous_regime,
+        was_turnaround,
+        previous_vol,
+    )
     prices = {
         base: float(base_data["adjclose"].ffill().iloc[-1]),
         leveraged: float(leveraged_data["adjclose"].ffill().iloc[-1]),
@@ -487,6 +496,7 @@ def calculate_us_target(config: dict[str, Any], end: datetime) -> dict[str, Any]
         "regime": "Turnaround Bull" if is_turnaround else current_regime,
         "volatility": current_vol,
         "weights": weights,
+        "previous_weights": previous_weights,
         "prices": prices,
     }
 
@@ -529,13 +539,27 @@ def whole_share_plan(
     prices: dict[str, float],
     shares: dict[str, float],
     cash: float,
+    previous_weights: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     account_value = float(cash) + sum(float(shares.get(s, 0)) * prices[s] for s in prices)
+    target_changed = previous_weights is None or any(
+        not math.isclose(
+            float(weights.get(symbol, 0.0)),
+            float(previous_weights.get(symbol, 0.0)),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        for symbol in prices
+    )
     orders: dict[str, dict[str, float | int | str]] = {}
     invested = 0.0
     for symbol, price in prices.items():
-        target_shares = math.floor(account_value * weights.get(symbol, 0.0) / price)
         current_shares = int(float(shares.get(symbol, 0)))
+        target_shares = (
+            math.floor(account_value * weights.get(symbol, 0.0) / price)
+            if target_changed
+            else current_shares
+        )
         delta = target_shares - current_shares
         invested += target_shares * price
         orders[symbol] = {
@@ -546,7 +570,8 @@ def whole_share_plan(
         }
     return {
         "account_value": account_value,
-        "target_cash": max(account_value - invested, 0.0),
+        "target_cash": max(account_value - invested, 0.0) if target_changed else float(cash),
+        "target_changed": target_changed,
         "orders": orders,
     }
 

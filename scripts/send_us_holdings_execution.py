@@ -57,11 +57,24 @@ def build_messages(now: datetime) -> list[str]:
             )
         cash = float(snapshot["cash"])
         shares = {symbol: float(snapshot["shares"].get(symbol, 0.0)) for symbol in symbols}
-        plan = whole_share_plan(result["weights"], result["prices"], shares, cash)
+        suppress_price_drift_rebalancing = strategy["name"] in {
+            "SOXX / SOXL",
+            "QQQ / TQQQ Holdings V2",
+        }
+        plan = whole_share_plan(
+            result["weights"],
+            result["prices"],
+            shares,
+            cash,
+            previous_weights=(
+                result["previous_weights"]
+                if suppress_price_drift_rebalancing
+                else None
+            ),
+        )
         base, leveraged = symbols
 
-        sections = (
-            [
+        sections = [
                 f"[{strategy['name']} EXECUTION]",
                 f"조회시각: {now:%Y-%m-%d %H:%M} KST",
                 f"계좌: {profile['label']}",
@@ -71,6 +84,11 @@ def build_messages(now: datetime) -> list[str]:
                     f"{leveraged} {result['weights'][leveraged]:.1%}, "
                     f"현금 {1 - sum(result['weights'].values()):.1%}"
                 ),
+                *([
+                    "전략비중 변경: 있음"
+                    if plan["target_changed"]
+                    else "전략비중 변경: 없음 (가격변동 리밸런싱 안 함)"
+                ] if suppress_price_drift_rebalancing else []),
                 (
                     f"현재: {base} {plan['orders'][base]['current']}주, "
                     f"{leveraged} {plan['orders'][leveraged]['current']}주, "
@@ -87,7 +105,6 @@ def build_messages(now: datetime) -> list[str]:
                 "",
                 "※ 다음 미국 정규장 시가 지침이며 주문은 자동 제출되지 않습니다.",
             ]
-        )
         messages.append("\n".join(sections))
 
     return messages

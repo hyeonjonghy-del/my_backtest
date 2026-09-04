@@ -124,12 +124,39 @@ def build_strategy_weights(
 
 
 def backtest(weights: pd.DataFrame, ret_base: pd.Series, ret_leveraged: pd.Series, config: USVolConfig) -> pd.Series:
-    turnover = weights.diff().abs().sum(axis=1).fillna(weights.abs().sum(axis=1))
-    daily_ret = (
-        weights[config.base_symbol] * ret_base
-        + weights[config.leveraged_symbol] * ret_leveraged
-        - turnover * config.cost_rate
-    )
+    """Rebalance only after target weights change; otherwise let holdings drift."""
+    columns = [config.base_symbol, config.leveraged_symbol]
+    asset_values = pd.Series(0.0, index=columns)
+    cash = 1.0
+    previous_nav = 1.0
+    previous_target: pd.Series | None = None
+    daily_ret = pd.Series(0.0, index=weights.index)
+    asset_returns = pd.DataFrame(
+        {config.base_symbol: ret_base, config.leveraged_symbol: ret_leveraged}
+    ).reindex(weights.index).fillna(0.0)
+
+    for index_number, date in enumerate(weights.index):
+        nav_before = float(cash + asset_values.sum())
+        target = weights.loc[date, columns].clip(0, 1).fillna(0.0)
+        target_changed = previous_target is None or not np.allclose(
+            target.to_numpy(dtype=float),
+            previous_target.to_numpy(dtype=float),
+            rtol=0.0,
+            atol=1e-12,
+        )
+        if target_changed and nav_before > 0:
+            current_weights = asset_values / nav_before
+            traded_fraction = float((target - current_weights).abs().sum())
+            investable = max(nav_before * (1 - traded_fraction * config.cost_rate), 0.0)
+            asset_values = investable * target
+            cash = investable * max(0.0, 1 - float(target.sum()))
+            previous_target = target.copy()
+
+        asset_values = asset_values * (1 + asset_returns.loc[date])
+        close_nav = float(cash + asset_values.sum())
+        daily_ret.loc[date] = close_nav / previous_nav - 1 if index_number > 0 else close_nav - 1
+        previous_nav = close_nav
+
     return daily_ret.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 

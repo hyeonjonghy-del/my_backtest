@@ -482,13 +482,26 @@ def build_execution_plan(
     account_value: float,
     current_shares: pd.Series,
     current_cash: float,
+    previous_target_weights: pd.Series | None = None,
 ) -> tuple[pd.DataFrame, float]:
     current_values = current_shares * prices
     effective_value = account_value if account_value > 0 else current_values.sum() + current_cash
+    target_changed = previous_target_weights is None or not np.allclose(
+        target_weights.to_numpy(dtype=float),
+        previous_target_weights.reindex(target_weights.index).to_numpy(dtype=float),
+        rtol=0.0,
+        atol=1e-12,
+    )
     rows = []
     for symbol in ["SOXX", "SOXL"]:
-        target_value = effective_value * target_weights[symbol]
-        target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
+        if target_changed:
+            target_value = effective_value * target_weights[symbol]
+            target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
+        else:
+            # Keep shares unchanged when only market prices moved. Rebalance only
+            # after the strategy itself produces a different target allocation.
+            target_value = current_values[symbol]
+            target_shares = current_shares[symbol]
         order_shares = target_shares - current_shares[symbol]
         rows.append(
             {
@@ -503,7 +516,11 @@ def build_execution_plan(
                 "Estimated Order Value": abs(order_shares) * prices[symbol],
             }
         )
-    target_cash = effective_value * max(0.0, 1 - target_weights.sum())
+    target_cash = (
+        effective_value * max(0.0, 1 - target_weights.sum())
+        if target_changed
+        else current_cash
+    )
     return pd.DataFrame(rows), target_cash
 
 
@@ -575,6 +592,7 @@ with st.expander("Default Strategy", expanded=False):
 | Turnaround allocation | SOXX {1 - turnaround_soxl_weight:.0%} + SOXL {turnaround_soxl_weight:.0%} |
 | Turnaround exit | MA{turnaround_exit_fast} < MA{turnaround_exit_slow} for {turnaround_exit_confirm} day(s), then return to v3 logic |
 | Bear regime | Cash {1 - bear_soxx:.0%} + SOXX {bear_soxx:.0%} |
+| Execution | Trade only when target weights change; no price-only drift rebalancing |
 """
     )
 
@@ -802,6 +820,7 @@ execution_plan, target_cash = build_execution_plan(
     account_value,
     current_shares,
     current_cash,
+    previous_target_weights=latest,
 )
 action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 

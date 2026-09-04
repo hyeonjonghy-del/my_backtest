@@ -83,6 +83,45 @@ def metrics(nav: pd.Series) -> dict[str, float]:
     }
 
 
+def holdings_nav(
+    prices: pd.DataFrame,
+    target_weights: pd.DataFrame,
+    cost_bps: float = 0.0,
+) -> tuple[pd.Series, pd.Series]:
+    """Trade only on target changes and let asset weights drift between trades."""
+    prices = prices.ffill()
+    returns = prices.pct_change().fillna(0.0)
+    targets = target_weights.reindex(prices.index).fillna(0.0).reindex(columns=prices.columns, fill_value=0.0)
+    asset_values = pd.Series(0.0, index=prices.columns)
+    cash = 1.0
+    previous_target: pd.Series | None = None
+    nav = pd.Series(1.0, index=prices.index)
+    turnover = pd.Series(0.0, index=prices.index)
+
+    for index_number, date in enumerate(prices.index):
+        nav_before = float(cash + asset_values.sum())
+        desired = targets.loc[date].clip(0, 1)
+        target_changed = previous_target is None or not np.allclose(
+            desired.to_numpy(dtype=float),
+            previous_target.to_numpy(dtype=float),
+            rtol=0.0,
+            atol=1e-12,
+        )
+        if target_changed and nav_before > 0:
+            current_weights = asset_values / nav_before
+            turnover.loc[date] = float((desired - current_weights).abs().sum())
+            fee = nav_before * turnover.loc[date] * cost_bps / 10000
+            investable = max(nav_before - fee, 0.0)
+            asset_values = investable * desired
+            cash = investable * max(0.0, 1 - float(desired.sum()))
+            previous_target = desired.copy()
+
+        asset_values = asset_values * (1 + returns.loc[date])
+        nav.loc[date] = float(cash + asset_values.sum())
+
+    return nav, turnover
+
+
 def run(px: pd.DataFrame, cost_bps: float = 10.0,
         sgov_rank2_weight: float = 0.30,
         sgov_rank1_weight: float = 0.50) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -102,9 +141,13 @@ def run(px: pd.DataFrame, cost_bps: float = 10.0,
     # Strategy 9 v2 ranks the composite growth sleeve, GLD, and SGOV.
     inner_soxx = soxx_soxl.reindex(px.index, method="ffill").shift(1).fillna(0)
     inner_qqq = qqq_tqqq.reindex(px.index, method="ffill").shift(1).fillna(0)
-    soxx_ret = (inner_soxx * px[["SOXX", "SOXL"]].pct_change().fillna(0)).sum(axis=1)
-    qqq_ret = (inner_qqq * px[["QQQ", "TQQQ"]].pct_change().fillna(0)).sum(axis=1)
-    growth_nav = (1 + (0.5 * soxx_ret + 0.5 * qqq_ret)).cumprod()
+    inner_targets = pd.DataFrame(0.0, index=px.index, columns=["SOXX", "SOXL", "QQQ", "TQQQ"])
+    inner_targets[["SOXX", "SOXL"]] = inner_soxx * GROWTH_SOXX_SOXL
+    inner_targets[["QQQ", "TQQQ"]] = inner_qqq * GROWTH_QQQ_TQQQ
+    growth_nav, _ = holdings_nav(
+        px[["SOXX", "SOXL", "QQQ", "TQQQ"]],
+        inner_targets,
+    )
     rank_prices = pd.concat({"Growth": growth_nav.resample("ME").last(), "GLD": m.GLD, "SGOV": m.SGOV}, axis=1)
     mom = rank_prices.pct_change(12).shift(1)
     growth_selected = (mom.Growth > mom.GLD) & (mom.Growth > 0)
@@ -125,16 +168,7 @@ def run(px: pd.DataFrame, cost_bps: float = 10.0,
     daily_target = targets.reindex(px.index, method="ffill").fillna(0)
     daily_target = daily_target.shift(1).fillna(0)
     daily_ret = px.pct_change().fillna(0)
-    nav = pd.Series(1.0, index=px.index)
-    turnover = pd.Series(0.0, index=px.index)
-    current = pd.Series(0.0, index=targets.columns)
-    for i, dt in enumerate(px.index):
-        desired = daily_target.loc[dt]
-        turnover.iloc[i] = (desired - current).abs().sum() / 2
-        growth = (desired[TICKERS] * daily_ret.loc[dt]).sum()
-        fee = turnover.iloc[i] * cost_bps / 10000
-        nav.iloc[i] = (nav.iloc[i - 1] if i else 1.0) * (1 + growth - fee)
-        current = desired
+    nav, turnover = holdings_nav(px[TICKERS], daily_target[TICKERS], cost_bps)
     out = pd.DataFrame({"Integrated": nav})
     # Benchmarks use the same daily valuation convention.
     # Original strategy 9 benchmark NAV.

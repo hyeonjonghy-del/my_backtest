@@ -7,8 +7,12 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from adaptive_120_strategy import DEFAULT_CONFIG, backtest
-from run import fetch_upbit_daily, load_csv
+try:
+    from .adaptive_120_strategy import DEFAULT_CONFIG, backtest
+    from .run import fetch_upbit_daily
+except ImportError:  # Direct `streamlit run` execution from this directory.
+    from adaptive_120_strategy import DEFAULT_CONFIG, backtest
+    from run import fetch_upbit_daily
 
 
 HERE = Path(__file__).resolve().parent

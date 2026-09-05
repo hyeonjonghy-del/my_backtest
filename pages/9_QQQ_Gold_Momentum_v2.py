@@ -17,16 +17,38 @@ sys.path.insert(0, str(ROOT / "strategies"))
 from qqq_gld_sgov_momentum_v2.strategy import ASSETS, backtest, make_sgov_bil_proxy  # noqa: E402
 
 
-DATA_TICKERS = ("QQQ", "GLD", "BIL", "SGOV")
+MARKETS = {
+    "미국: QQQ + GLD + SGOV": {
+        "tickers": ("QQQ", "GLD", "BIL", "SGOV"),
+        "names": ("QQQ", "GLD", "SGOV"),
+        "cash_name": "SGOV",
+        "min_date": date(2007, 5, 30),
+        "default_start": date(2015, 1, 1),
+        "cash_note": "SGOV 상장 전에는 BIL을 사용하고, SGOV 수익률이 제공되기 시작하면 SGOV로 자동 전환합니다.",
+    },
+    "한국: TIGER 미국나스닥100 + ACE KRX금현물 + TIGER 미국초단기국채": {
+        "tickers": ("133690.KS", "411060.KS", "0046A0.KS"),
+        "names": (
+            "TIGER 미국나스닥100 (133690)",
+            "ACE KRX금현물 (411060)",
+            "TIGER 미국초단기(3개월이하)국채 (0046A0)",
+        ),
+        "cash_name": "0046A0",
+        "min_date": date(2025, 4, 29),
+        "default_start": date(2025, 4, 29),
+        "cash_note": "현금 대체 자산은 TIGER 미국초단기(3개월이하)국채(0046A0)를 사용합니다.",
+    },
+}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_prices(start_date: date, end_date: date) -> pd.DataFrame:
+def fetch_prices(market_label: str, start_date: date, end_date: date) -> pd.DataFrame:
+    config = MARKETS[market_label]
     start_ts = int(pd.Timestamp(start_date, tz="UTC").timestamp())
     # Yahoo's period2 is exclusive, so include the selected end date.
     end_ts = int((pd.Timestamp(end_date, tz="UTC") + pd.Timedelta(days=1)).timestamp())
     series = []
-    for ticker in DATA_TICKERS:
+    for ticker in config["tickers"]:
         url = (
             f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}"
             f"?period1={start_ts}&period2={end_ts}&interval=1d&events=div%2Csplits"
@@ -35,7 +57,7 @@ def fetch_prices(start_date: date, end_date: date) -> pd.DataFrame:
         response.raise_for_status()
         chart = response.json()["chart"]
         if not chart.get("result"):
-            if ticker == "SGOV":
+            if market_label.startswith("미국:") and ticker == "SGOV":
                 series.append(pd.Series(dtype=float, name=ticker))
                 continue
             raise ValueError(f"{ticker} 데이터를 받지 못했습니다: {chart.get('error')}")
@@ -43,7 +65,13 @@ def fetch_prices(start_date: date, end_date: date) -> pd.DataFrame:
         index = pd.to_datetime(payload["timestamp"], unit="s", utc=True).tz_convert(None).normalize()
         values = payload["indicators"]["adjclose"][0]["adjclose"]
         series.append(pd.Series(values, index=index, name=ticker).dropna())
-    return make_sgov_bil_proxy(pd.concat(series, axis=1))
+    raw_prices = pd.concat(series, axis=1)
+    if market_label.startswith("미국:"):
+        return make_sgov_bil_proxy(raw_prices)
+
+    korea_prices = raw_prices.loc[:, list(config["tickers"])].dropna(how="any")
+    korea_prices.columns = list(ASSETS)
+    return korea_prices
 
 
 def annual_monthly_table(result: pd.DataFrame) -> pd.DataFrame:
@@ -62,28 +90,16 @@ def annual_monthly_table(result: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
-st.set_page_config(page_title="QQQ · GLD · SGOV Momentum v2", layout="wide")
-st.title("9. QQQ · GLD · SGOV 모멘텀 전략 v2")
-st.caption("12개월 모멘텀 순위로 현금 비중을 정하고, 나머지를 QQQ와 GLD의 8:2 상대 모멘텀 전략에 배분합니다.")
-
-st.info(
-    "고정 배분 규칙: SGOV 3위 → 현금 0% · SGOV 2위 → 현금 20% · "
-    "SGOV 1위 → 현금 40%. 나머지 비중은 QQQ와 GLD 중 강한 자산 80%, 약한 자산 20%입니다."
-)
-
-rule_table = pd.DataFrame(
-    [
-        {"SGOV 12개월 모멘텀 순위": "3위", "SGOV": "0%", "강한 위험자산": "80%", "약한 위험자산": "20%"},
-        {"SGOV 12개월 모멘텀 순위": "2위", "SGOV": "20%", "강한 위험자산": "64%", "약한 위험자산": "16%"},
-        {"SGOV 12개월 모멘텀 순위": "1위", "SGOV": "40%", "강한 위험자산": "48%", "약한 위험자산": "12%"},
-    ]
-)
-st.dataframe(rule_table, use_container_width=True, hide_index=True)
-st.caption("모멘텀이 정확히 같으면 보수적으로 SGOV, GLD, QQQ 순으로 우선합니다. 신호는 전월 말 확정 후 다음 달부터 적용합니다.")
-st.caption("현금 데이터는 SGOV 상장 전에는 BIL을 사용하고, SGOV 수익률이 제공되기 시작하면 SGOV로 자동 전환합니다.")
+st.set_page_config(page_title="Nasdaq · Gold · Cash Momentum v2", layout="wide")
+st.title("9. 나스닥 · 금 · 현금 모멘텀 전략 v2")
+st.caption("12개월 모멘텀 순위로 현금 비중을 정하고, 나머지를 나스닥과 금의 8:2 상대 모멘텀 전략에 배분합니다.")
 
 with st.sidebar:
     st.header("v2 전략 설정")
+    market_label = st.selectbox("시장·자산 조합", list(MARKETS.keys()))
+    market = MARKETS[market_label]
+    display_names = market["names"]
+    cash_name = market["cash_name"]
     st.text_input("모멘텀 기간", value="12개월 (고정)", disabled=True)
     rebalance_months = st.selectbox(
         "리밸런싱 주기", (1, 3, 6, 12), index=0, format_func=lambda value: f"{value}개월"
@@ -91,12 +107,29 @@ with st.sidebar:
     cost_bps = st.number_input("거래비용 (편도, bp)", min_value=0.0, value=10.0, step=1.0)
     today = date.today()
     start_date = st.date_input(
-        "데이터 시작일", value=date(2015, 1, 1), min_value=date(2007, 5, 30), max_value=today
+        "데이터 시작일", value=market["default_start"], min_value=market["min_date"],
+        max_value=today, key=f"v2_start_{cash_name}",
     )
     end_date = st.date_input(
-        "데이터 종료일", value=today, min_value=date(2007, 5, 30), max_value=today
+        "데이터 종료일", value=today, min_value=market["min_date"], max_value=today,
+        key=f"v2_end_{cash_name}",
     )
     run = st.button("v2 백테스트 실행", type="primary", use_container_width=True)
+
+st.info(
+    f"고정 배분 규칙: {cash_name} 3위 → 현금 0% · {cash_name} 2위 → 현금 20% · "
+    f"{cash_name} 1위 → 현금 40%. 나머지는 강한 자산 80%, 약한 자산 20%로 배분합니다."
+)
+rule_table = pd.DataFrame(
+    [
+        {f"{cash_name} 12개월 모멘텀 순위": "3위", cash_name: "0%", "강한 위험자산": "80%", "약한 위험자산": "20%"},
+        {f"{cash_name} 12개월 모멘텀 순위": "2위", cash_name: "20%", "강한 위험자산": "64%", "약한 위험자산": "16%"},
+        {f"{cash_name} 12개월 모멘텀 순위": "1위", cash_name: "40%", "강한 위험자산": "48%", "약한 위험자산": "12%"},
+    ]
+)
+st.dataframe(rule_table, use_container_width=True, hide_index=True)
+st.caption("모멘텀이 정확히 같으면 현금, 금, 나스닥 순으로 우선합니다. 신호는 전월 말 확정 후 다음 달부터 적용합니다.")
+st.caption(market["cash_note"])
 
 if not run:
     st.info("왼쪽에서 기간과 리밸런싱 주기를 선택한 뒤 ‘v2 백테스트 실행’을 누르세요.")
@@ -106,9 +139,9 @@ if start_date > end_date:
     st.error("데이터 시작일은 종료일보다 빠르거나 같아야 합니다.")
     st.stop()
 
-with st.spinner("QQQ, GLD, BIL, SGOV 데이터를 내려받아 v2를 계산 중입니다..."):
+with st.spinner(f"{market_label} 데이터를 내려받아 v2를 계산 중입니다..."):
     try:
-        prices = fetch_prices(start_date, end_date)
+        prices = fetch_prices(market_label, start_date, end_date)
         result, metrics = backtest(
             prices,
             rebalance_months=rebalance_months,
@@ -122,12 +155,13 @@ with st.spinner("QQQ, GLD, BIL, SGOV 데이터를 내려받아 v2를 계산 중�
 latest = result.iloc[-1]
 latest_date = result.index[-1].strftime("%Y-%m-%d")
 st.success(
-    f"12개월 모멘텀 · {rebalance_months}개월 리밸런싱 | "
+    f"{market_label} | 12개월 모멘텀 · {rebalance_months}개월 리밸런싱 | "
     f"실제 계산 기간: {metrics['시작일']} ~ {metrics['종료일']}"
 )
 st.info(
-    f"현재 목표 비중 (기준일 {latest_date}, SGOV 모멘텀 {int(latest['SGOV rank'])}위) | "
-    f"QQQ {latest['Target QQQ']:.0%} / GLD {latest['Target GLD']:.0%} / SGOV {latest['Target SGOV']:.0%}"
+    f"현재 목표 비중 (기준일 {latest_date}, {cash_name} 모멘텀 {int(latest['SGOV rank'])}위) | "
+    f"{display_names[0]} {latest['Target QQQ']:.0%} / {display_names[1]} {latest['Target GLD']:.0%} / "
+    f"{display_names[2]} {latest['Target SGOV']:.0%}"
 )
 
 c1, c2, c3, c4, c5 = st.columns(5)
@@ -135,13 +169,14 @@ c1.metric("CAGR", f"{metrics['CAGR']:.2%}")
 c2.metric("MDD", f"{metrics['MDD']:.2%}")
 c3.metric("최종 배수", f"{metrics['최종 배수']:.2f}x")
 c4.metric("연 변동성", f"{metrics['연 변동성']:.2%}")
-c5.metric("평균 SGOV 비중", f"{metrics['평균 SGOV 비중']:.2%}")
+c5.metric(f"평균 {cash_name} 비중", f"{metrics['평균 SGOV 비중']:.2%}")
 
 overview_tab, history_tab, returns_tab = st.tabs(["전략 결과", "리밸런싱 이력", "월별·연도별 수익률"])
 
 with overview_tab:
     st.subheader("자산 및 포트폴리오 성장곡선")
     growth = prices.loc[result.index].div(prices.loc[result.index[0]])
+    growth.columns = list(display_names)
     growth["전략 포트폴리오"] = result["Wealth"] / result["Wealth"].iloc[0]
     st.line_chart(growth)
 
@@ -150,7 +185,7 @@ with overview_tab:
 
     st.subheader("실제 비중 변화")
     weights = result[[f"Actual {asset}" for asset in ASSETS]].rename(
-        columns={f"Actual {asset}": asset for asset in ASSETS}
+        columns={f"Actual {asset}": name for asset, name in zip(ASSETS, display_names)}
     )
     weights_long = weights.reset_index().melt(id_vars="Date", var_name="자산", value_name="비중")
     st.vega_lite_chart(
@@ -183,7 +218,13 @@ with history_tab:
     ]].copy()
     rebalance_table.index = rebalance_table.index.strftime("%Y-%m-%d")
     rebalance_table.index.name = "리밸런싱일"
-    rebalance_table["SGOV rank"] = rebalance_table["SGOV rank"].map(lambda value: f"{int(value)}위")
+    rebalance_table = rebalance_table.rename(columns={
+        "SGOV rank": f"{cash_name} 순위",
+        **{f"Target {asset}": f"목표 {name}" for asset, name in zip(ASSETS, display_names)},
+        **{f"Actual {asset}": f"실제 {name}" for asset, name in zip(ASSETS, display_names)},
+        "Turnover": "회전율",
+    })
+    rebalance_table[f"{cash_name} 순위"] = rebalance_table[f"{cash_name} 순위"].map(lambda value: f"{int(value)}위")
     for column in rebalance_table.columns[1:]:
         rebalance_table[column] = rebalance_table[column].map(lambda value: f"{value:.2%}")
     st.dataframe(rebalance_table, use_container_width=True)

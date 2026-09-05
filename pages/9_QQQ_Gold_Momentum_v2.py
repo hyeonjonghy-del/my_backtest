@@ -34,9 +34,12 @@ MARKETS = {
             "TIGER 미국초단기(3개월이하)국채 (0046A0)",
         ),
         "cash_name": "0046A0",
-        "min_date": date(2025, 4, 29),
-        "default_start": date(2025, 4, 29),
-        "cash_note": "현금 대체 자산은 TIGER 미국초단기(3개월이하)국채(0046A0)를 사용합니다.",
+        "min_date": date(2021, 12, 15),
+        "default_start": date(2021, 12, 15),
+        "cash_note": (
+            "0046A0 상장 전에는 현금 수익률을 0%로 처리하고, 상장일부터 "
+            "TIGER 미국초단기(3개월이하)국채(0046A0) 수익률로 자동 전환합니다."
+        ),
     },
 }
 
@@ -57,11 +60,20 @@ def fetch_prices(market_label: str, start_date: date, end_date: date) -> pd.Data
         response.raise_for_status()
         chart = response.json()["chart"]
         if not chart.get("result"):
-            if market_label.startswith("미국:") and ticker == "SGOV":
+            is_optional_cash = (
+                (market_label.startswith("미국:") and ticker == "SGOV")
+                or (market_label.startswith("한국:") and ticker == config["tickers"][-1])
+            )
+            if is_optional_cash:
                 series.append(pd.Series(dtype=float, name=ticker))
                 continue
             raise ValueError(f"{ticker} 데이터를 받지 못했습니다: {chart.get('error')}")
         payload = chart["result"][0]
+        if not payload.get("timestamp"):
+            if market_label.startswith("한국:") and ticker == config["tickers"][-1]:
+                series.append(pd.Series(dtype=float, name=ticker))
+                continue
+            raise ValueError(f"{ticker} 가격 데이터가 선택 기간에 없습니다.")
         index = pd.to_datetime(payload["timestamp"], unit="s", utc=True).tz_convert(None).normalize()
         values = payload["indicators"]["adjclose"][0]["adjclose"]
         series.append(pd.Series(values, index=index, name=ticker).dropna())
@@ -69,7 +81,21 @@ def fetch_prices(market_label: str, start_date: date, end_date: date) -> pd.Data
     if market_label.startswith("미국:"):
         return make_sgov_bil_proxy(raw_prices)
 
-    korea_prices = raw_prices.loc[:, list(config["tickers"])].dropna(how="any")
+    risky_tickers = list(config["tickers"][:2])
+    cash_ticker = config["tickers"][-1]
+    korea_prices = raw_prices.loc[:, risky_tickers].dropna(how="any").copy()
+
+    # Keep cash flat before 0046A0 existed, then link its actual adjusted-price
+    # returns from the first available trading day without creating a price jump.
+    cash_prices = raw_prices[cash_ticker].reindex(korea_prices.index).ffill()
+    first_cash_date = cash_prices.first_valid_index()
+    if first_cash_date is None:
+        cash_prices = pd.Series(1.0, index=korea_prices.index, name=cash_ticker)
+    else:
+        cash_prices = cash_prices / cash_prices.loc[first_cash_date]
+        cash_prices.loc[cash_prices.index < first_cash_date] = 1.0
+        cash_prices = cash_prices.ffill().fillna(1.0)
+    korea_prices[cash_ticker] = cash_prices
     korea_prices.columns = list(ASSETS)
     return korea_prices
 

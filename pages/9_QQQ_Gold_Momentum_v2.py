@@ -14,7 +14,10 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "strategies"))
 
-from qqq_gld_sgov_momentum_v2.strategy import ASSETS, backtest  # noqa: E402
+from qqq_gld_sgov_momentum_v2.strategy import ASSETS, backtest, make_sgov_bil_proxy  # noqa: E402
+
+
+DATA_TICKERS = ("QQQ", "GLD", "BIL", "SGOV")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -23,7 +26,7 @@ def fetch_prices(start_date: date, end_date: date) -> pd.DataFrame:
     # Yahoo's period2 is exclusive, so include the selected end date.
     end_ts = int((pd.Timestamp(end_date, tz="UTC") + pd.Timedelta(days=1)).timestamp())
     series = []
-    for ticker in ASSETS:
+    for ticker in DATA_TICKERS:
         url = (
             f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}"
             f"?period1={start_ts}&period2={end_ts}&interval=1d&events=div%2Csplits"
@@ -32,12 +35,15 @@ def fetch_prices(start_date: date, end_date: date) -> pd.DataFrame:
         response.raise_for_status()
         chart = response.json()["chart"]
         if not chart.get("result"):
+            if ticker == "SGOV":
+                series.append(pd.Series(dtype=float, name=ticker))
+                continue
             raise ValueError(f"{ticker} 데이터를 받지 못했습니다: {chart.get('error')}")
         payload = chart["result"][0]
         index = pd.to_datetime(payload["timestamp"], unit="s", utc=True).tz_convert(None).normalize()
         values = payload["indicators"]["adjclose"][0]["adjclose"]
         series.append(pd.Series(values, index=index, name=ticker).dropna())
-    return pd.concat(series, axis=1).dropna(how="any")
+    return make_sgov_bil_proxy(pd.concat(series, axis=1))
 
 
 def annual_monthly_table(result: pd.DataFrame) -> pd.DataFrame:
@@ -58,7 +64,7 @@ def annual_monthly_table(result: pd.DataFrame) -> pd.DataFrame:
 
 st.set_page_config(page_title="QQQ · GLD · SGOV Momentum v2", layout="wide")
 st.title("9. QQQ · GLD · SGOV 모멘텀 전략 v2")
-st.caption("12개월 모멘텀 순위로 SGOV 비중을 정하고, 나머지를 QQQ와 GLD의 8:2 상대 모멘텀 전략에 배분합니다.")
+st.caption("12개월 모멘텀 순위로 현금 비중을 정하고, 나머지를 QQQ와 GLD의 8:2 상대 모멘텀 전략에 배분합니다.")
 
 st.info(
     "고정 배분 규칙: SGOV 3위 → 현금 0% · SGOV 2위 → 현금 20% · "
@@ -74,6 +80,7 @@ rule_table = pd.DataFrame(
 )
 st.dataframe(rule_table, use_container_width=True, hide_index=True)
 st.caption("모멘텀이 정확히 같으면 보수적으로 SGOV, GLD, QQQ 순으로 우선합니다. 신호는 전월 말 확정 후 다음 달부터 적용합니다.")
+st.caption("현금 데이터는 SGOV 상장 전에는 BIL을 사용하고, SGOV 수익률이 제공되기 시작하면 SGOV로 자동 전환합니다.")
 
 with st.sidebar:
     st.header("v2 전략 설정")
@@ -84,10 +91,10 @@ with st.sidebar:
     cost_bps = st.number_input("거래비용 (편도, bp)", min_value=0.0, value=10.0, step=1.0)
     today = date.today()
     start_date = st.date_input(
-        "데이터 시작일", value=date(2021, 1, 1), min_value=date(2020, 5, 26), max_value=today
+        "데이터 시작일", value=date(2015, 1, 1), min_value=date(2007, 5, 30), max_value=today
     )
     end_date = st.date_input(
-        "데이터 종료일", value=today, min_value=date(2020, 5, 26), max_value=today
+        "데이터 종료일", value=today, min_value=date(2007, 5, 30), max_value=today
     )
     run = st.button("v2 백테스트 실행", type="primary", use_container_width=True)
 
@@ -99,7 +106,7 @@ if start_date > end_date:
     st.error("데이터 시작일은 종료일보다 빠르거나 같아야 합니다.")
     st.stop()
 
-with st.spinner("QQQ, GLD, SGOV 데이터를 내려받아 v2를 계산 중입니다..."):
+with st.spinner("QQQ, GLD, BIL, SGOV 데이터를 내려받아 v2를 계산 중입니다..."):
     try:
         prices = fetch_prices(start_date, end_date)
         result, metrics = backtest(
@@ -185,4 +192,3 @@ with history_tab:
 with returns_tab:
     st.dataframe(annual_monthly_table(result).style.format("{:.2%}", na_rep="-"), use_container_width=True)
     st.caption("시작월과 종료월은 선택 기간에 따라 부분 기간 수익률일 수 있습니다.")
-

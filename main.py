@@ -86,6 +86,13 @@ STRATEGIES = [
         "decision": "Keep",
         "note": "Keep as a research strategy unless later performance review says otherwise.",
     },
+    {
+        "page": "9_QQQ_Gold_Momentum_v2.py",
+        "name": "QQQ / GLD / SGOV Momentum v2",
+        "role": "Growth / defensive allocation",
+        "decision": "Keep",
+        "note": "Scale SGOV to 0%, 20%, or 40% by its 12-month momentum rank.",
+    },
 ]
 
 

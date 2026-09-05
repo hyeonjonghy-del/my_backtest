@@ -21,6 +21,7 @@ streamlit run main.py
 | Keep | QQQ / TQQQ Vol Target v2 | `pages/6_qqq_tqqq_vol_target_app_v2.py` | Nasdaq growth satellite |
 | Keep | Dividend Screener | `pages/7_dividend_screener.py` | Supporting screener |
 | Keep | Chart Doctor Bluechip | `pages/8_chartdoctor_bluechip.py` | Research strategy |
+| Keep | QQQ / GLD / SGOV Momentum v2 | `pages/9_QQQ_Gold_Momentum_v2.py` | SGOV rank-based defensive allocation |
 
 ## Deleted From Active Workspace
 

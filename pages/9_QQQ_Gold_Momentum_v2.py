@@ -118,7 +118,7 @@ def annual_monthly_table(result: pd.DataFrame) -> pd.DataFrame:
 
 st.set_page_config(page_title="Nasdaq · Gold · Cash Momentum v2", layout="wide")
 st.title("9. 나스닥 · 금 · 현금 모멘텀 전략 v2")
-st.caption("12개월 모멘텀 순위로 현금 비중을 정하고, 나머지를 나스닥과 금의 8:2 상대 모멘텀 전략에 배분합니다.")
+st.caption("12개월 모멘텀 순위로 현금 비중을 정하고, 나머지를 나스닥과 금의 상대 모멘텀 전략에 배분합니다.")
 
 with st.sidebar:
     st.header("v2 전략 설정")
@@ -144,13 +144,23 @@ with st.sidebar:
 
 st.info(
     f"고정 배분 규칙: {cash_name} 3위 → 현금 0% · {cash_name} 2위 → 현금 20% · "
-    f"{cash_name} 1위 → 현금 40%. 나머지는 강한 자산 80%, 약한 자산 20%로 배분합니다."
+    f"{cash_name} 1위 → 현금 40%. 나머지는 기본적으로 강한 자산 80%, 약한 자산 20%로 배분합니다. "
+    "단, 나스닥의 12개월 모멘텀이 금보다 25%p 이상 높으면 비현금 부분을 나스닥 90%, 금 10%로 강화합니다."
 )
 rule_table = pd.DataFrame(
     [
-        {f"{cash_name} 12개월 모멘텀 순위": "3위", cash_name: "0%", "강한 위험자산": "80%", "약한 위험자산": "20%"},
-        {f"{cash_name} 12개월 모멘텀 순위": "2위", cash_name: "20%", "강한 위험자산": "64%", "약한 위험자산": "16%"},
-        {f"{cash_name} 12개월 모멘텀 순위": "1위", cash_name: "40%", "강한 위험자산": "48%", "약한 위험자산": "12%"},
+        {
+            f"{cash_name} 12개월 모멘텀 순위": "3위", cash_name: "0%",
+            "기본 강한/약한 자산": "80% / 20%", "나스닥 25%p 이상 우위": "나스닥 90% / 금 10%",
+        },
+        {
+            f"{cash_name} 12개월 모멘텀 순위": "2위", cash_name: "20%",
+            "기본 강한/약한 자산": "64% / 16%", "나스닥 25%p 이상 우위": "나스닥 72% / 금 8%",
+        },
+        {
+            f"{cash_name} 12개월 모멘텀 순위": "1위", cash_name: "40%",
+            "기본 강한/약한 자산": "48% / 12%", "나스닥 25%p 이상 우위": "나스닥 54% / 금 6%",
+        },
     ]
 )
 st.dataframe(rule_table, use_container_width=True, hide_index=True)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import importlib
 import sys
 from pathlib import Path
 
@@ -14,7 +15,14 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "strategies"))
 
-from qqq_gld_sgov_momentum_v2.strategy import ASSETS, backtest, make_sgov_bil_proxy  # noqa: E402
+from qqq_gld_sgov_momentum_v2 import strategy as momentum_strategy  # noqa: E402
+
+# Streamlit can keep imported modules alive while applying a new deployment.
+# Reload explicitly so page-only reruns always use the latest allocation rules.
+momentum_strategy = importlib.reload(momentum_strategy)
+ASSETS = momentum_strategy.ASSETS
+backtest = momentum_strategy.backtest
+make_sgov_bil_proxy = momentum_strategy.make_sgov_bil_proxy
 
 
 MARKETS = {

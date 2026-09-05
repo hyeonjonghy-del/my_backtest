@@ -13,6 +13,30 @@ def _sgov_rank(scores: pd.Series) -> int:
     return ranked.index("SGOV") + 1
 
 
+def make_sgov_bil_proxy(raw_prices: pd.DataFrame) -> pd.DataFrame:
+    """Create a continuous cash index using BIL before SGOV history exists.
+
+    The series is linked with daily adjusted-price returns rather than raw price
+    levels, preventing an artificial jump when the source changes to SGOV.
+    """
+    required = ("QQQ", "GLD", "BIL", "SGOV")
+    missing = [asset for asset in required if asset not in raw_prices.columns]
+    if missing:
+        raise ValueError(f"Missing price columns: {missing}")
+
+    base = raw_prices.loc[:, ["QQQ", "GLD", "BIL"]].sort_index().dropna(how="any")
+    if base.empty:
+        raise ValueError("No common QQQ/GLD/BIL price history is available")
+    sgov = raw_prices["SGOV"].reindex(base.index)
+    bil_return = base["BIL"].pct_change(fill_method=None)
+    sgov_return = sgov.pct_change(fill_method=None)
+    cash_return = sgov_return.combine_first(bil_return).fillna(0.0)
+
+    result = base.loc[:, ["QQQ", "GLD"]].copy()
+    result["SGOV"] = (1.0 + cash_return).cumprod() * 100.0
+    return result.loc[:, list(ASSETS)]
+
+
 def make_monthly_targets(
     prices: pd.DataFrame,
     momentum_months: int = 12,

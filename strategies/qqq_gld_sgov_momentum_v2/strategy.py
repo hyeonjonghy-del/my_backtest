@@ -43,14 +43,17 @@ def make_monthly_targets(
     strong_asset_weight: float = 0.80,
     qqq_boost_weight: float = 0.90,
     qqq_lead_threshold: float = 0.25,
+    gold_max_weight: float = 0.60,
     cash_rank2_weight: float = 0.20,
     cash_rank1_weight: float = 0.40,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return month-end momentum and targets for the next holding month.
 
-    QQQ and GLD normally split the non-SGOV allocation in an 80:20 ratio.
+    When QQQ leads GLD, the non-SGOV allocation normally splits 80:20.
     When QQQ's 12-month momentum leads GLD by at least 25 percentage points,
     the non-SGOV allocation is tilted further to QQQ in a 90:10 ratio.
+    When GLD leads QQQ, GLD is capped at 60% of the non-SGOV allocation and
+    QQQ receives the remaining 40%.
     SGOV receives 0%, 20%, or 40% when it ranks third, second, or first.
     Exact momentum ties are resolved conservatively in SGOV's favor, then GLD,
     then QQQ.
@@ -66,6 +69,8 @@ def make_monthly_targets(
         raise ValueError("qqq_boost_weight must be between strong_asset_weight and 1.0")
     if qqq_lead_threshold < 0.0:
         raise ValueError("qqq_lead_threshold cannot be negative")
+    if not 0.5 <= gold_max_weight <= strong_asset_weight:
+        raise ValueError("gold_max_weight must be between 0.5 and strong_asset_weight")
     if not 0.0 <= cash_rank2_weight <= cash_rank1_weight < 1.0:
         raise ValueError("cash weights must satisfy 0 <= rank2 <= rank1 < 1")
 
@@ -77,14 +82,17 @@ def make_monthly_targets(
         cash_rank = _sgov_rank(scores)
         cash_weight = {1: cash_rank1_weight, 2: cash_rank2_weight, 3: 0.0}[cash_rank]
 
-        risky_ranked = sorted(("GLD", "QQQ"), key=lambda asset: -float(scores[asset]))
-        selected_strong_weight = strong_asset_weight
-        if float(scores["QQQ"] - scores["GLD"]) >= qqq_lead_threshold:
-            selected_strong_weight = qqq_boost_weight
+        qqq_lead = float(scores["QQQ"] - scores["GLD"])
+        if qqq_lead >= qqq_lead_threshold:
+            qqq_share = qqq_boost_weight
+        elif qqq_lead >= 0.0:
+            qqq_share = strong_asset_weight
+        else:
+            qqq_share = 1.0 - gold_max_weight
         risky_weight = 1.0 - cash_weight
         row = pd.Series(0.0, index=ASSETS)
-        row.loc[risky_ranked[0]] = risky_weight * selected_strong_weight
-        row.loc[risky_ranked[1]] = risky_weight * (1.0 - selected_strong_weight)
+        row.loc["QQQ"] = risky_weight * qqq_share
+        row.loc["GLD"] = risky_weight * (1.0 - qqq_share)
         row.loc["SGOV"] = cash_weight
         targets.loc[signal_date] = row
 

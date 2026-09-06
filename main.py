@@ -52,6 +52,13 @@ STRATEGIES = [
         "note": "Compare semiconductor exit, replacement-sector, and top-2 sector rotation rules.",
     },
     {
+        "page": "4_Samsung_Electronics_Trend_Vol.py",
+        "name": "Samsung Electronics Trend / Vol v1",
+        "role": "Single-stock satellite",
+        "decision": "Review",
+        "note": "Adapt KODEX 200 trend/volatility filters to Samsung Electronics with volatility-scaled exposure and cash.",
+    },
+    {
         "page": "5_soxx_vol_target_app_v1.py",
         "name": "SOXX Vol Target v1",
         "role": "Defensive semiconductor core",

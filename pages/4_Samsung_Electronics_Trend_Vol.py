@@ -20,7 +20,12 @@ NAME = "삼성전자"
 
 
 st.set_page_config(page_title="삼성전자 추세·변동성 전략", page_icon="📱", layout="wide")
-st.title("삼성전자 추세·변동성 전략 v2")
+title_col, run_col = st.columns([5, 1])
+with title_col:
+    st.title("삼성전자 추세·변동성 전략 v2")
+with run_col:
+    st.write("")
+    run_button = st.button("백테스트 실행", type="primary", use_container_width=True, key="run_backtest_top")
 st.caption(
     "장기 추세가 깨질 때만 전량 현금화하고, RV20과 모멘텀은 상승 추세 안에서 비중을 줄이는 데 사용합니다. "
     "신호는 종가에 확정되고 다음 거래일 시가에 실행됩니다."
@@ -113,7 +118,6 @@ with st.sidebar:
     weak_momentum_weight_pct = st.slider("모멘텀 약화 시 최대 비중 (%)", 0, max_weight_pct, min(35, max_weight_pct), 5)
     high_volatility_weight_pct = st.slider("RV20 초과 시 비중 (%)", 0, max_weight_pct, min(35, max_weight_pct), 5)
     fee_bps = st.slider("편도 거래비용 (bp)", 0, 50, 15, 1)
-    run_button = st.button("백테스트 실행", type="primary", use_container_width=True)
 
 
 st.markdown(

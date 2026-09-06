@@ -84,7 +84,14 @@ def draw_performance(result: pd.DataFrame) -> None:
     )
     strategy_dd = result["strategy_nav"] / result["strategy_nav"].cummax() - 1
     benchmark_dd = result["buy_hold_nav"] / result["buy_hold_nav"].cummax() - 1
-    st.line_chart(pd.DataFrame({"전략 DD": strategy_dd, "삼성전자 DD": benchmark_dd}))
+    st.line_chart(
+        pd.DataFrame(
+            {
+                "전략 누적 MDD": strategy_dd.cummin(),
+                "삼성전자 누적 MDD": benchmark_dd.cummin(),
+            }
+        )
+    )
 
 
 with st.sidebar:
@@ -191,8 +198,8 @@ st.dataframe(
 )
 strategy_drawdown = result["strategy_nav"] / result["strategy_nav"].cummax() - 1.0
 st.caption(
-    f"전략 MDD 발생일: {strategy_drawdown.idxmin():%Y-%m-%d} / "
-    f"현재 DD: {strategy_drawdown.iloc[-1]:.1%}. MDD는 전체 기간의 가장 깊었던 낙폭이며, 현재 DD와 다릅니다."
+    f"전략 MDD: {strategy_drawdown.min():.1%} / 발생일: {strategy_drawdown.idxmin():%Y-%m-%d}. "
+    "아래 차트는 각 시점까지 기록된 최악의 낙폭인 누적 MDD를 표시합니다."
 )
 draw_performance(result)
 

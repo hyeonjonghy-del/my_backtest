@@ -1,7 +1,8 @@
 """Integrated US strategy backtest.
 
 Outer allocator: strategy 9 (QQQ/GLD 12-month relative momentum).
-Growth sleeve: 40% QQQ-only, 30% SOXX/SOXL, 30% QQQ/TQQQ.
+Growth sleeve: selectable fixed 50/50 or 12-month relative-momentum 70/30
+allocation between SOXX/SOXL and QQQ/TQQQ.
 The inner sleeves are monthly, lagged, volatility-targeted approximations of
 pages 5 and 6.  The script deliberately keeps the outer 80%/20% allocation
 and scales every growth sleeve proportionally when the outer risk weight is
@@ -16,8 +17,7 @@ import pandas as pd
 import yfinance as yf
 
 TICKERS = ["QQQ", "GLD", "SOXX", "SOXL", "TQQQ", "SGOV"]
-GROWTH_SOXX_SOXL = 0.50
-GROWTH_QQQ_TQQQ = 0.50
+GROWTH_ALLOCATION_MODES = ("fixed_50_50", "momentum_70_30")
 
 
 def download(start: str, end: str) -> pd.DataFrame:
@@ -122,9 +122,43 @@ def holdings_nav(
     return nav, turnover
 
 
+def growth_sleeve_mix(
+    sleeve_nav: pd.DataFrame,
+    allocation_mode: str = "fixed_50_50",
+    momentum_months: int = 12,
+) -> pd.DataFrame:
+    """Return monthly SOXX-family/QQQ-family mix weights.
+
+    Momentum signals are lagged by one month so only information available
+    before the allocation month is used. Exact ties and insufficient history
+    retain the neutral 50/50 allocation.
+    """
+    if allocation_mode not in GROWTH_ALLOCATION_MODES:
+        raise ValueError(
+            f"growth_allocation_mode must be one of {GROWTH_ALLOCATION_MODES}."
+        )
+    if momentum_months < 1:
+        raise ValueError("momentum_months must be at least 1.")
+    required = ["SOXX/SOXL", "QQQ/TQQQ"]
+    if any(column not in sleeve_nav for column in required):
+        raise ValueError(f"sleeve_nav must contain {required}.")
+
+    mix = pd.DataFrame(0.50, index=sleeve_nav.index, columns=required)
+    if allocation_mode == "fixed_50_50":
+        return mix
+
+    momentum = sleeve_nav[required].pct_change(momentum_months, fill_method=None).shift(1)
+    soxx_leads = momentum["SOXX/SOXL"] > momentum["QQQ/TQQQ"]
+    qqq_leads = momentum["QQQ/TQQQ"] > momentum["SOXX/SOXL"]
+    mix.loc[soxx_leads, required] = (0.70, 0.30)
+    mix.loc[qqq_leads, required] = (0.30, 0.70)
+    return mix
+
+
 def run(px: pd.DataFrame, cost_bps: float = 10.0,
         sgov_rank2_weight: float = 0.30,
-        sgov_rank1_weight: float = 0.50) -> tuple[pd.DataFrame, pd.DataFrame]:
+        sgov_rank1_weight: float = 0.50,
+        growth_allocation_mode: str = "fixed_50_50") -> tuple[pd.DataFrame, pd.DataFrame]:
     if not 0.0 <= sgov_rank2_weight <= 0.80 or not 0.0 <= sgov_rank1_weight <= 0.80:
         raise ValueError("SGOV weights must be between 0% and 80%.")
     if sgov_rank1_weight < sgov_rank2_weight:
@@ -141,9 +175,20 @@ def run(px: pd.DataFrame, cost_bps: float = 10.0,
     # Strategy 9 v2 ranks the composite growth sleeve, GLD, and SGOV.
     inner_soxx = soxx_soxl.reindex(px.index, method="ffill").shift(1).fillna(0)
     inner_qqq = qqq_tqqq.reindex(px.index, method="ffill").shift(1).fillna(0)
+    soxx_sleeve_nav, _ = holdings_nav(px[["SOXX", "SOXL"]], inner_soxx)
+    qqq_sleeve_nav, _ = holdings_nav(px[["QQQ", "TQQQ"]], inner_qqq)
+    sleeve_nav = pd.concat(
+        {
+            "SOXX/SOXL": soxx_sleeve_nav.resample("ME").last(),
+            "QQQ/TQQQ": qqq_sleeve_nav.resample("ME").last(),
+        },
+        axis=1,
+    )
+    monthly_growth_mix = growth_sleeve_mix(sleeve_nav, growth_allocation_mode)
+    daily_growth_mix = monthly_growth_mix.reindex(px.index, method="ffill").fillna(0.50)
     inner_targets = pd.DataFrame(0.0, index=px.index, columns=["SOXX", "SOXL", "QQQ", "TQQQ"])
-    inner_targets[["SOXX", "SOXL"]] = inner_soxx * GROWTH_SOXX_SOXL
-    inner_targets[["QQQ", "TQQQ"]] = inner_qqq * GROWTH_QQQ_TQQQ
+    inner_targets[["SOXX", "SOXL"]] = inner_soxx.mul(daily_growth_mix["SOXX/SOXL"], axis=0)
+    inner_targets[["QQQ", "TQQQ"]] = inner_qqq.mul(daily_growth_mix["QQQ/TQQQ"], axis=0)
     growth_nav, _ = holdings_nav(
         px[["SOXX", "SOXL", "QQQ", "TQQQ"]],
         inner_targets,
@@ -160,9 +205,9 @@ def run(px: pd.DataFrame, cost_bps: float = 10.0,
     targets["SGOV"] = np.where(growth_selected & (cash_rank == 2), sgov_rank2_weight,
                                 np.where(growth_selected & (cash_rank == 1), sgov_rank1_weight, 0.0))
     for col in soxx_soxl:
-        targets[col] += growth_weight * GROWTH_SOXX_SOXL * soxx_soxl[col]
+        targets[col] += growth_weight * monthly_growth_mix["SOXX/SOXL"] * soxx_soxl[col]
     for col in qqq_tqqq:
-        targets[col] += growth_weight * GROWTH_QQQ_TQQQ * qqq_tqqq[col]
+        targets[col] += growth_weight * monthly_growth_mix["QQQ/TQQQ"] * qqq_tqqq[col]
     targets["CASH"] = (1 - targets[TICKERS].sum(axis=1)).clip(lower=0)
     # Execute monthly target from the next trading day and mark daily NAV.
     daily_target = targets.reindex(px.index, method="ffill").fillna(0)
@@ -186,7 +231,8 @@ def run(px: pd.DataFrame, cost_bps: float = 10.0,
     summary["Average SOXL weight"] = daily_target.SOXL.mean()
     summary["Average TQQQ weight"] = daily_target.TQQQ.mean()
     summary["Average SGOV weight"] = daily_target.SGOV.mean()
-    summary.loc[summary.index != "Integrated", ["Average growth weight", "Average SOXL weight", "Average TQQQ weight", "Average SGOV weight"]] = np.nan
+    summary["Average SOXX-family share of growth"] = daily_growth_mix["SOXX/SOXL"].mean()
+    summary.loc[summary.index != "Integrated", ["Average growth weight", "Average SOXL weight", "Average TQQQ weight", "Average SGOV weight", "Average SOXX-family share of growth"]] = np.nan
     return out, summary
 
 
@@ -195,10 +241,15 @@ def main() -> None:
     ap.add_argument("--start", default="2010-01-01")
     ap.add_argument("--end", default=None)
     ap.add_argument("--out", default="outputs/integrated_us_backtest")
+    ap.add_argument(
+        "--growth-allocation-mode",
+        choices=GROWTH_ALLOCATION_MODES,
+        default="fixed_50_50",
+    )
     args = ap.parse_args()
     end = args.end or pd.Timestamp.today().strftime("%Y-%m-%d")
     px = download(args.start, end)
-    nav, summary = run(px)
+    nav, summary = run(px, growth_allocation_mode=args.growth_allocation_mode)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     nav.to_csv(out / "nav.csv")
@@ -210,4 +261,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

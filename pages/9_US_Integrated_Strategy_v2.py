@@ -9,12 +9,28 @@ from integrated_us_backtest import download, run
 
 st.set_page_config(page_title="US Integrated Strategy 9 v2", page_icon="US", layout="wide")
 st.title("US Integrated Strategy 9 v2")
-st.caption("SOXX/SOXL 50% + QQQ/TQQQ 50%, with GLD and SGOV momentum allocation.")
+st.caption("Choose a fixed or 12-month momentum growth mix, with GLD and SGOV momentum allocation.")
+
+growth_mode_label = st.radio(
+    "Growth sleeve allocation",
+    ("Fixed 50:50", "12-month momentum 70:30"),
+    horizontal=True,
+    help=(
+        "Momentum mode compares the trailing 12-month performance of the SOXX/SOXL and "
+        "QQQ/TQQQ sleeves. The stronger sleeve receives 70%; ties and the warm-up period remain 50:50."
+    ),
+)
+growth_allocation_mode = {
+    "Fixed 50:50": "fixed_50_50",
+    "12-month momentum 70:30": "momentum_70_30",
+}[growth_mode_label]
 
 with st.expander("Allocation rules", expanded=True):
     st.markdown(
         """
-        - Growth sleeve: **SOXX/SOXL 50% + QQQ/TQQQ 50%**
+        - Growth sleeve: choose **fixed SOXX/SOXL 50% + QQQ/TQQQ 50%** or
+          **12-month momentum winner 70% + runner-up 30%**
+        - Momentum ties and the initial 12-month warm-up use **50% / 50%**
         - Growth selected: Growth / GLD / SGOV = **80 / 20 / 0**
         - SGOV ranks 2nd: Growth / GLD / SGOV = **50 / 20 / 30**
         - SGOV ranks 1st: Growth / GLD / SGOV = **30 / 20 / 50**
@@ -44,17 +60,26 @@ if st.button("Run integrated backtest", type="primary"):
             prices = download(str(start), str(end))
             nav, summary = run(prices, cost_bps=cost_bps,
                                sgov_rank2_weight=sgov_rank2,
-                               sgov_rank1_weight=sgov_rank1)
+                               sgov_rank1_weight=sgov_rank1,
+                               growth_allocation_mode=growth_allocation_mode)
         except Exception as exc:
             st.error(f"Data download or backtest failed: {exc}")
             st.info("If the server cannot reach Yahoo Finance, retry from a network that allows the connection.")
             st.stop()
 
-    st.success(f"Completed using {prices.index[0].date()} to {prices.index[-1].date()}.")
+    st.success(
+        f"Completed using {prices.index[0].date()} to {prices.index[-1].date()} "
+        f"with {growth_mode_label}."
+    )
     st.subheader("Performance summary")
-    st.dataframe(summary.style.format({"CAGR": "{:.2%}", "MDD": "{:.2%}", "Volatility": "{:.2%}", "Sharpe": "{:.2f}", "Final NAV": "{:.3f}"}), use_container_width=True)
+    percent_columns = {
+        "CAGR", "MDD", "Volatility", "Average growth weight", "Average SOXL weight",
+        "Average TQQQ weight", "Average SGOV weight", "Average SOXX-family share of growth",
+    }
+    formats = {column: "{:.2%}" for column in percent_columns}
+    formats.update({"Sharpe": "{:.2f}", "Final NAV": "{:.3f}"})
+    st.dataframe(summary.style.format(formats, na_rep="-"), use_container_width=True)
     st.subheader("NAV comparison")
     st.line_chart(nav)
     st.download_button("Download NAV CSV", nav.to_csv().encode("utf-8-sig"), "us_integrated_strategy_v2_nav.csv", "text/csv")
     st.download_button("Download summary CSV", summary.to_csv().encode("utf-8-sig"), "us_integrated_strategy_v2_summary.csv", "text/csv")
-

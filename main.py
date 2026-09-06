@@ -53,10 +53,10 @@ STRATEGIES = [
     },
     {
         "page": "4_Samsung_Electronics_Trend_Vol.py",
-        "name": "Samsung Electronics Trend / Vol v2",
+        "name": "Samsung Electronics Trend / Leverage v3",
         "role": "Single-stock satellite",
         "decision": "Review",
-        "note": "Use the long trend as the exit gate and RV20/momentum as exposure reducers, with daily P&L attribution.",
+        "note": "Use Samsung stock normally and add a 25% single-stock leveraged ETF sleeve only in strong bull regimes.",
     },
     {
         "page": "5_soxx_vol_target_app_v1.py",

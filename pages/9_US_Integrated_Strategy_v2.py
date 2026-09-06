@@ -55,21 +55,26 @@ if start >= end:
     st.stop()
 
 if st.button("Run integrated backtest", type="primary"):
-    with st.spinner("Downloading QQQ, GLD, SOXX, SOXL, TQQQ, and SGOV data..."):
+    with st.spinner("Downloading strategy data (BIL is used before SGOV history begins)..."):
         try:
             prices = download(str(start), str(end))
             nav, summary = run(prices, cost_bps=cost_bps,
                                sgov_rank2_weight=sgov_rank2,
                                sgov_rank1_weight=sgov_rank1,
-                               growth_allocation_mode=growth_allocation_mode)
+                               growth_allocation_mode=growth_allocation_mode,
+                               evaluation_start=str(start))
         except Exception as exc:
             st.error(f"Data download or backtest failed: {exc}")
             st.info("If the server cannot reach Yahoo Finance, retry from a network that allows the connection.")
             st.stop()
 
     st.success(
-        f"Completed using {prices.index[0].date()} to {prices.index[-1].date()} "
+        f"Completed for {nav.index[0].date()} to {nav.index[-1].date()} "
         f"with {growth_mode_label}."
+    )
+    st.caption(
+        "Earlier observations are used only to prepare moving averages and 12-month momentum. "
+        "Before SGOV launched, BIL returns are used as the cash proxy."
     )
     st.subheader("Performance summary")
     percent_columns = {

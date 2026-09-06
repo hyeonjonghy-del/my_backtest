@@ -17,23 +17,51 @@ import pandas as pd
 import yfinance as yf
 
 TICKERS = ["QQQ", "GLD", "SOXX", "SOXL", "TQQQ", "SGOV"]
+DOWNLOAD_TICKERS = TICKERS + ["BIL"]
 GROWTH_ALLOCATION_MODES = ("fixed_50_50", "momentum_70_30")
 
 
-def download(start: str, end: str) -> pd.DataFrame:
+def make_sgov_bil_proxy(raw_prices: pd.DataFrame) -> pd.DataFrame:
+    """Use BIL returns before SGOV exists and SGOV returns afterward."""
+    required = ["QQQ", "GLD", "SOXX", "SOXL", "TQQQ", "BIL"]
+    missing = [column for column in required + ["SGOV"] if column not in raw_prices]
+    if missing:
+        raise ValueError(f"Missing required price columns: {missing}")
+
+    base = raw_prices[required].sort_index().ffill().dropna(how="any")
+    if base.empty:
+        raise ValueError("No common growth, gold, and BIL price history is available.")
+
+    sgov = raw_prices["SGOV"].reindex(base.index)
+    bil_return = base["BIL"].pct_change(fill_method=None)
+    sgov_return = sgov.pct_change(fill_method=None)
+    has_sgov_return = sgov.notna() & sgov.shift(1).notna()
+    cash_return = sgov_return.where(has_sgov_return, bil_return).fillna(0.0)
+
+    result = base.drop(columns="BIL").copy()
+    result["SGOV"] = (1.0 + cash_return).cumprod() * 100.0
+    return result.reindex(columns=TICKERS)
+
+
+def download(start: str, end: str, warmup_years: int = 3) -> pd.DataFrame:
+    if warmup_years < 0:
+        raise ValueError("warmup_years must not be negative.")
+    requested_start = pd.Timestamp(start)
+    fetch_start = (requested_start - pd.DateOffset(years=warmup_years)).strftime("%Y-%m-%d")
     cache_dir = Path("outputs") / "yfinance_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     try:
         yf.set_tz_cache_location(str(cache_dir))
     except Exception:
         pass
-    raw = yf.download(TICKERS, start=start, end=end, auto_adjust=True,
-                      progress=False, group_by="column", threads=True)
+    raw = yf.download(DOWNLOAD_TICKERS, start=fetch_start, end=end, auto_adjust=True,
+                      progress=False, group_by="column", threads=False)
     if isinstance(raw.columns, pd.MultiIndex):
         px = raw["Close"].copy()
     else:
         px = raw[["Close"]].rename(columns={"Close": TICKERS[0]})
-    px = px.reindex(columns=TICKERS).dropna(how="all").ffill().dropna()
+    px = px.reindex(columns=DOWNLOAD_TICKERS).dropna(how="all")
+    px = make_sgov_bil_proxy(px)
     if px.empty or len(px) < 300:
         raise RuntimeError("시장 데이터가 충분히 내려오지 않았습니다.")
     return px
@@ -155,10 +183,22 @@ def growth_sleeve_mix(
     return mix
 
 
+def trim_and_rebase(nav: pd.DataFrame, evaluation_start: str | None) -> pd.DataFrame:
+    """Trim warm-up observations and reset every NAV series to 1.0."""
+    if evaluation_start is None:
+        result = nav.copy()
+    else:
+        result = nav.loc[nav.index >= pd.Timestamp(evaluation_start)].copy()
+    if result.empty:
+        raise ValueError("No market data is available on or after the selected start date.")
+    return result.div(result.iloc[0])
+
+
 def run(px: pd.DataFrame, cost_bps: float = 10.0,
         sgov_rank2_weight: float = 0.30,
         sgov_rank1_weight: float = 0.50,
-        growth_allocation_mode: str = "fixed_50_50") -> tuple[pd.DataFrame, pd.DataFrame]:
+        growth_allocation_mode: str = "fixed_50_50",
+        evaluation_start: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not 0.0 <= sgov_rank2_weight <= 0.80 or not 0.0 <= sgov_rank1_weight <= 0.80:
         raise ValueError("SGOV weights must be between 0% and 80%.")
     if sgov_rank1_weight < sgov_rank2_weight:
@@ -218,7 +258,7 @@ def run(px: pd.DataFrame, cost_bps: float = 10.0,
     # Benchmarks use the same daily valuation convention.
     # Original strategy 9 benchmark NAV.
     bench_w = pd.DataFrame(0.0, index=px.index, columns=["QQQ", "GLD"])
-    q = growth_selected.reindex(px.index, method="ffill").fillna(False)
+    q = growth_selected.reindex(px.index, method="ffill").eq(True)
     g = ~q
     bench_w.loc[q, "QQQ"], bench_w.loc[q, "GLD"] = .8, .2
     bench_w.loc[g, "QQQ"], bench_w.loc[g, "GLD"] = .2, .8
@@ -226,12 +266,19 @@ def run(px: pd.DataFrame, cost_bps: float = 10.0,
     out["Original_9_QQQ_GLD"] = (1 + br).cumprod()
     out["QQQ_buy_hold"] = (1 + daily_ret.QQQ).cumprod()
     out["GLD_buy_hold"] = (1 + daily_ret.GLD).cumprod()
+    out = trim_and_rebase(out, evaluation_start)
+    evaluation_index = out.index
     summary = pd.DataFrame({name: metrics(out[name]) for name in out.columns}).T
-    summary["Average growth weight"] = growth_weight.reindex(px.index, method="ffill").mean()
-    summary["Average SOXL weight"] = daily_target.SOXL.mean()
-    summary["Average TQQQ weight"] = daily_target.TQQQ.mean()
-    summary["Average SGOV weight"] = daily_target.SGOV.mean()
-    summary["Average SOXX-family share of growth"] = daily_growth_mix["SOXX/SOXL"].mean()
+    evaluation_target = daily_target.loc[evaluation_index]
+    summary["Average growth weight"] = growth_weight.reindex(
+        px.index, method="ffill"
+    ).loc[evaluation_index].mean()
+    summary["Average SOXL weight"] = evaluation_target.SOXL.mean()
+    summary["Average TQQQ weight"] = evaluation_target.TQQQ.mean()
+    summary["Average SGOV weight"] = evaluation_target.SGOV.mean()
+    summary["Average SOXX-family share of growth"] = daily_growth_mix.loc[
+        evaluation_index, "SOXX/SOXL"
+    ].mean()
     summary.loc[summary.index != "Integrated", ["Average growth weight", "Average SOXL weight", "Average TQQQ weight", "Average SGOV weight", "Average SOXX-family share of growth"]] = np.nan
     return out, summary
 
@@ -249,7 +296,11 @@ def main() -> None:
     args = ap.parse_args()
     end = args.end or pd.Timestamp.today().strftime("%Y-%m-%d")
     px = download(args.start, end)
-    nav, summary = run(px, growth_allocation_mode=args.growth_allocation_mode)
+    nav, summary = run(
+        px,
+        growth_allocation_mode=args.growth_allocation_mode,
+        evaluation_start=args.start,
+    )
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     nav.to_csv(out / "nav.csv")

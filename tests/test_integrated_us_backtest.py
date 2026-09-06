@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from integrated_us_backtest import growth_sleeve_mix
+from integrated_us_backtest import growth_sleeve_mix, make_sgov_bil_proxy, trim_and_rebase
 
 
 class GrowthSleeveMixTest(unittest.TestCase):
@@ -48,6 +48,36 @@ class GrowthSleeveMixTest(unittest.TestCase):
     def test_unknown_mode_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             growth_sleeve_mix(self.sleeve_nav, "unknown")
+
+    def test_bil_is_used_before_sgov_and_sgov_after_launch(self) -> None:
+        index = pd.date_range("2020-05-25", periods=5, freq="B")
+        raw = pd.DataFrame(
+            {
+                "QQQ": [100, 101, 102, 103, 104],
+                "GLD": [100, 101, 102, 103, 104],
+                "SOXX": [100, 101, 102, 103, 104],
+                "SOXL": [100, 101, 102, 103, 104],
+                "TQQQ": [100, 101, 102, 103, 104],
+                "BIL": [100, 101, 102, 103, 104],
+                "SGOV": [np.nan, np.nan, 200, 204, 210],
+            },
+            index=index,
+        )
+        result = make_sgov_bil_proxy(raw)
+        self.assertAlmostEqual(result["SGOV"].iloc[1] / result["SGOV"].iloc[0] - 1, 0.01)
+        self.assertAlmostEqual(result["SGOV"].iloc[2] / result["SGOV"].iloc[1] - 1, 102 / 101 - 1)
+        self.assertAlmostEqual(result["SGOV"].iloc[3] / result["SGOV"].iloc[2] - 1, 0.02)
+
+    def test_selected_start_changes_evaluation_period_and_rebases_nav(self) -> None:
+        index = pd.date_range("2020-01-01", periods=5, freq="YS")
+        nav = pd.DataFrame({"strategy": [1.0, 1.1, 1.3, 1.6, 2.0]}, index=index)
+        early = trim_and_rebase(nav, "2021-01-01")
+        late = trim_and_rebase(nav, "2023-01-01")
+        self.assertEqual(early.index[0], pd.Timestamp("2021-01-01"))
+        self.assertEqual(late.index[0], pd.Timestamp("2023-01-01"))
+        self.assertEqual(float(early.iloc[0, 0]), 1.0)
+        self.assertEqual(float(late.iloc[0, 0]), 1.0)
+        self.assertNotEqual(float(early.iloc[-1, 0]), float(late.iloc[-1, 0]))
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ streamlit run main.py
 | Keep | KOSPI 200 Momentum v3 | `pages/1_KOSPI_Momentum_v3.py` | Practical KOSPI momentum version |
 | Keep | S&P 500 Momentum v3 | `pages/2_SP500_Momentum_v3.py` | Practical S&P 500 momentum version |
 | Keep | KODEX 200 Bull/Bear v5 | `pages/3_korea_bull_bear_app_v5.py` | Practical Korea bull/bear version |
-| Review | Samsung Electronics Trend / Vol v1 | `pages/4_Samsung_Electronics_Trend_Vol.py` | Single-stock trend/volatility strategy with cash |
+| Review | Samsung Electronics Trend / Vol v2 | `pages/4_Samsung_Electronics_Trend_Vol.py` | Trend-gated exposure with RV20 reduction and P&L audit |
 | Keep | SPY / UPRO Bull/Bear v3 | `pages/4_us_bull_bear_app_v3.py` | Practical US bull/bear version |
 | Keep | SOXX / SOXL Vol Target v5 | `pages/5_soxx_soxl_vol_target_app_v5.py` | Semiconductor aggressive satellite |
 | Keep | QQQ / TQQQ Vol Target v2 | `pages/6_qqq_tqqq_vol_target_app_v2.py` | Nasdaq growth satellite |

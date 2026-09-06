@@ -53,10 +53,10 @@ STRATEGIES = [
     },
     {
         "page": "4_Samsung_Electronics_Trend_Vol.py",
-        "name": "Samsung Electronics Trend / Vol v1",
+        "name": "Samsung Electronics Trend / Vol v2",
         "role": "Single-stock satellite",
         "decision": "Review",
-        "note": "Adapt KODEX 200 trend/volatility filters to Samsung Electronics with volatility-scaled exposure and cash.",
+        "note": "Use the long trend as the exit gate and RV20/momentum as exposure reducers, with daily P&L attribution.",
     },
     {
         "page": "5_soxx_vol_target_app_v1.py",

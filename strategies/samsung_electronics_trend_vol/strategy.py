@@ -22,10 +22,12 @@ class StrategyConfig:
     long_ma_window: int = 120
     momentum_window: int = 60
     volatility_window: int = 20
-    volatility_cap: float = 0.45
+    volatility_cap: float = 0.65
     target_volatility: float = 0.30
-    min_invested_weight: float = 0.25
+    min_invested_weight: float = 0.65
     max_invested_weight: float = 1.0
+    weak_momentum_weight: float = 0.35
+    high_volatility_weight: float = 0.35
     fee_rate: float = 0.0015
 
     def validate(self) -> None:
@@ -38,6 +40,10 @@ class StrategyConfig:
             raise ValueError("target_volatility must be positive and no greater than volatility_cap")
         if not 0 <= self.min_invested_weight <= self.max_invested_weight <= 1:
             raise ValueError("weights must satisfy 0 <= min <= max <= 1")
+        if not 0 <= self.weak_momentum_weight <= self.max_invested_weight:
+            raise ValueError("weak_momentum_weight must be between 0 and max_invested_weight")
+        if not 0 <= self.high_volatility_weight <= self.max_invested_weight:
+            raise ValueError("high_volatility_weight must be between 0 and max_invested_weight")
         if not 0 <= self.fee_rate < 0.1:
             raise ValueError("fee_rate must be in [0, 0.1)")
 
@@ -72,7 +78,7 @@ def build_signals(close: pd.Series, config: StrategyConfig) -> pd.DataFrame:
     trend_ok = close > long_ma
     momentum_ok = momentum > 0
     volatility_ok = realized_volatility <= config.volatility_cap
-    risk_on = (trend_ok & momentum_ok & volatility_ok).fillna(False)
+    risk_on = trend_ok.fillna(False)
 
     scaled_weight = (config.target_volatility / realized_volatility.replace(0, np.nan)).clip(
         lower=config.min_invested_weight,
@@ -80,12 +86,21 @@ def build_signals(close: pd.Series, config: StrategyConfig) -> pd.DataFrame:
     )
     # A zero-volatility series is not a reason to exceed the configured maximum.
     scaled_weight = scaled_weight.where(realized_volatility > 0, config.max_invested_weight)
-    target_weight = scaled_weight.where(risk_on, 0.0).fillna(0.0)
+    target_weight = pd.Series(0.0, index=close.index)
+    normal_bull = trend_ok & momentum_ok & volatility_ok
+    weak_momentum_bull = trend_ok & ~momentum_ok & volatility_ok
+    high_volatility_bull = trend_ok & ~volatility_ok
+    target_weight.loc[normal_bull] = scaled_weight.loc[normal_bull]
+    target_weight.loc[weak_momentum_bull] = scaled_weight.loc[weak_momentum_bull].clip(
+        upper=config.weak_momentum_weight
+    )
+    target_weight.loc[high_volatility_bull] = config.high_volatility_weight
+    target_weight = target_weight.clip(0.0, config.max_invested_weight).fillna(0.0)
 
     regime = pd.Series("Cash / risk off", index=close.index, dtype="object")
-    regime.loc[trend_ok & ~momentum_ok] = "Cash / momentum weak"
-    regime.loc[trend_ok & momentum_ok & ~volatility_ok] = "Cash / volatility high"
-    regime.loc[risk_on] = "Samsung / risk on"
+    regime.loc[weak_momentum_bull] = "Samsung reduced / momentum weak"
+    regime.loc[high_volatility_bull] = "Samsung reduced / volatility high"
+    regime.loc[normal_bull] = "Samsung / risk on"
 
     return pd.DataFrame(
         {
@@ -118,6 +133,7 @@ def run_backtest(ohlcv: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
     previous_weight = 0.0
     rows: list[dict[str, float]] = []
     for date in prices.index:
+        starting_nav = nav
         before_open = nav * (1.0 + previous_weight * float(overnight_return.loc[date]))
         new_weight = float(executable_weight.loc[date])
         turnover = abs(new_weight - previous_weight)
@@ -127,10 +143,15 @@ def run_backtest(ohlcv: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
         rows.append(
             {
                 "strategy_nav": nav,
+                "prior_weight": previous_weight,
                 "executed_weight": new_weight,
                 "cash_weight": 1.0 - new_weight,
                 "turnover": turnover,
                 "fee_cost": fee_cost,
+                "overnight_contribution": before_open / starting_nav - 1.0 if starting_nav > 0 else 0.0,
+                "fee_contribution": after_fee / before_open - 1.0 if before_open > 0 else 0.0,
+                "intraday_contribution": nav / after_fee - 1.0 if after_fee > 0 else 0.0,
+                "cash_all_day": previous_weight == 0.0 and new_weight == 0.0,
             }
         )
         previous_weight = new_weight

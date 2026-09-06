@@ -84,11 +84,12 @@ def draw_performance(result: pd.DataFrame) -> None:
     )
     strategy_dd = result["strategy_nav"] / result["strategy_nav"].cummax() - 1
     benchmark_dd = result["buy_hold_nav"] / result["buy_hold_nav"].cummax() - 1
+    st.subheader("MDD 비교")
     st.line_chart(
         pd.DataFrame(
             {
-                "전략 누적 MDD": strategy_dd.cummin(),
-                "삼성전자 누적 MDD": benchmark_dd.cummin(),
+                f"전략 (MDD {strategy_dd.min():.1%})": strategy_dd,
+                f"삼성전자 (MDD {benchmark_dd.min():.1%})": benchmark_dd,
             }
         )
     )
@@ -197,9 +198,11 @@ st.dataframe(
     use_container_width=True,
 )
 strategy_drawdown = result["strategy_nav"] / result["strategy_nav"].cummax() - 1.0
+benchmark_drawdown = result["buy_hold_nav"] / result["buy_hold_nav"].cummax() - 1.0
 st.caption(
     f"전략 MDD: {strategy_drawdown.min():.1%} / 발생일: {strategy_drawdown.idxmin():%Y-%m-%d}. "
-    "아래 차트는 각 시점까지 기록된 최악의 낙폭인 누적 MDD를 표시합니다."
+    f"삼성전자 MDD: {benchmark_drawdown.min():.1%} / 발생일: {benchmark_drawdown.idxmin():%Y-%m-%d}. "
+    "MDD 비교 차트의 각 선에서 가장 낮은 지점이 해당 자산의 MDD입니다."
 )
 draw_performance(result)
 

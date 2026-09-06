@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from importlib import reload
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from strategies.samsung_electronics_trend_vol.strategy import (
-    StrategyConfig,
-    performance_metrics,
-    run_backtest,
-)
+from strategies.samsung_electronics_trend_vol import strategy as samsung_strategy
+
+
+# Streamlit Cloud can keep an already imported strategy module alive across a
+# deployment. Reload it so page controls and the dataclass always use the same
+# deployed version.
+samsung_strategy = reload(samsung_strategy)
+StrategyConfig = samsung_strategy.StrategyConfig
+performance_metrics = samsung_strategy.performance_metrics
+run_backtest = samsung_strategy.run_backtest
 
 
 TICKER = "005930"
@@ -27,7 +33,7 @@ with title_col:
     st.title("삼성전자 실전 추세·레버리지 전략 v3")
 with run_col:
     st.write("")
-    run_button = st.button("백테스트 실행", type="primary", use_container_width=True, key="run_backtest_top")
+    run_button = st.button("백테스트 실행", type="primary", width="stretch", key="run_backtest_top")
 st.caption(
     "일반 상승에는 삼성전자, 강한 상승에는 삼성전자와 2배 레버리지 ETF를 함께 보유합니다. "
     "신호는 종가에 확정되고 다음 거래일 시가에 실행됩니다."
@@ -256,7 +262,7 @@ st.dataframe(
     display_metrics.style.format(
         {"총수익률": "{:.1%}", "CAGR": "{:.1%}", "MDD": "{:.1%}", "샤프": "{:.2f}", "칼마": "{:.2f}"}
     ),
-    use_container_width=True,
+    width="stretch",
 )
 leveraged_days = result["executed_leverage_weight"] > 0
 actual_leverage_days = int((leveraged_days & result["leverage_return_source"].eq("Actual ETF")).sum())
@@ -302,7 +308,7 @@ with tab2:
         }
     )
     st.bar_chart(annual)
-    st.dataframe(annual.style.format("{:.1%}"), use_container_width=True)
+    st.dataframe(annual.style.format("{:.1%}"), width="stretch")
     validation_rows = []
     for label, period_nav in {
         "전반기 2019~2022": result.loc["2019-01-01":"2022-12-31", "strategy_nav"],
@@ -320,7 +326,7 @@ with tab2:
             validation.style.format(
                 {"총수익률": "{:.1%}", "CAGR": "{:.1%}", "MDD": "{:.1%}", "샤프": "{:.2f}", "칼마": "{:.2f}"}
             ),
-            use_container_width=True,
+            width="stretch",
         )
         st.caption("전체기간 성과가 최근 급등 구간에만 의존하는지 확인하기 위한 고정 구간 비교입니다.")
 
@@ -359,7 +365,7 @@ with tab3:
                 "strategy_return": "{:.2%}",
             }
         ),
-        use_container_width=True,
+        width="stretch",
         height=450,
     )
     invalid_cash_rows = result.loc[result["cash_all_day"] & result["strategy_return"].abs().gt(1e-12)]

@@ -1,29 +1,36 @@
 # Strategy Inventory
 
-## Keep
+## Execute
 
-| Strategy | Role | Reason |
-| --- | --- | --- |
-| KOSPI 200 Momentum v3 | Korea equity core | More practical than v2 because v3 fixes important backtest assumptions. |
-| S&P 500 Momentum v3 | US equity core | More practical than v2 because v3 improves historical universe handling. |
-| Korea Bull/Bear v5 | Defensive / regime strategy | Keep the latest practical version for Korea ETF regime switching. |
-| US Bull/Bear v3 | Defensive / regime strategy | Keep the latest practical version for US ETF regime switching. |
-| QQQ / TQQQ Vol Target | Growth satellite | Keep as a controlled Nasdaq leverage sleeve. |
-| SOXX / SOXL Vol Target | Aggressive satellite | Keep as a smaller semiconductor leverage sleeve. |
-| Dividend Screener | Supporting tool | Useful for research and screening, not a direct allocation sleeve. |
-| Chart Doctor Bluechip | Research | Keep until later evidence says it should be removed. |
+- KOSPI200 Bull/Bear
+- S&P500 Momentum
+- SOXX / SOXL Vol Target
+- QQQ / TQQQ Holdings V2
 
-## Removed
+## Reference
 
-| Strategy | Reason |
-| --- | --- |
-| KOSPI 200 Momentum v2 | Superseded by v3. |
-| S&P 500 Momentum v2 | Superseded by v3. |
-| Korea Bull/Bear v2 | Superseded by v5. |
-| Korea Bull/Bear v3 | Superseded by v5. |
-| Korea Bull/Bear v4 | Superseded by v5. |
-| US Bull/Bear v2 | Superseded by v3. |
-| KOSDAQ150 Bull/Bear v2 | Not meaningful enough as a practical allocation sleeve. |
-| KOSDAQ150 Bull/Bear v3 | Not meaningful enough as a practical allocation sleeve. |
-| KOSDAQ150 Vol Harvest v4 | Not meaningful enough as a practical allocation sleeve. |
-| Larry Williams Breakout | Removed because the strategy is not worth carrying forward. |
+- KOSPI200 Bull/Bear v1 (Aggressive)
+- S&P500 Bull/Bear
+- SOXX Vol Target
+
+## Monitor or review
+
+- Samsung Electronics Trend / Leverage
+- QQQ / Gold / SGOV Momentum V2
+- US Integrated Strategy V2
+
+## Removed from this repository
+
+- KOSPI200 Momentum
+- S&P500 Sector Diversified Momentum V2
+- KODEX Sector Rotation
+- KODEX Semiconductor Vol Target
+- Korea Sector Momentum V1 and V2
+- KOSDAQ150 Bull/Bear
+- QQQ Holdings V3 and V4
+- QQQ / TQQQ Vol Target duplicate
+- QQQ / Gold Momentum V1
+- Dividend Screener
+- Upbit BTC strategies
+
+Removed strategies remain recoverable from Git history.

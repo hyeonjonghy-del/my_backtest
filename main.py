@@ -10,116 +10,95 @@ PAGES_DIR = ROOT / "pages"
 
 STRATEGIES = [
     {
-        "page": "1_KOSPI_Momentum_v3.py",
-        "name": "KOSPI 200 Momentum v3",
-        "role": "Core candidate",
-        "decision": "Keep",
-        "note": "Use v3 as the practical KOSPI momentum version.",
+        "page": "3_KOSPI200_Bull_Bear.py",
+        "name": "KOSPI200 Bull/Bear",
+        "role": "Korea core",
+        "decision": "Execute",
+        "note": "Primary Korea-market strategy.",
     },
     {
-        "page": "2_SP500_Momentum_v3.py",
-        "name": "S&P 500 Momentum v3",
-        "role": "Core candidate",
-        "decision": "Keep",
-        "note": "Use v3 as the practical S&P 500 momentum version.",
-    },
-    {
-        "page": "3_korea_bull_bear_app_v5.py",
-        "name": "KODEX 200 Bull/Bear v5",
-        "role": "Defensive / regime candidate",
-        "decision": "Keep",
-        "note": "Use v5 as the practical Korea bull/bear strategy.",
-    },
-    {
-        "page": "4_us_bull_bear_app_v3.py",
-        "name": "SPY / UPRO Bull/Bear v3",
-        "role": "Defensive / regime candidate",
-        "decision": "Keep",
-        "note": "Use v3 as the practical US bull/bear strategy.",
-    },
-    {
-        "page": "3_kodex_semiconductor_vol_target_app_v1.py",
-        "name": "KODEX Semiconductor Vol Target v1",
-        "role": "Defensive semiconductor core",
-        "decision": "Keep",
-        "note": "Use KODEX semiconductor and short-term bond ETFs to reduce drawdown without leverage.",
-    },
-    {
-        "page": "3_kodex_sector_rotation_app_v1.py",
-        "name": "KODEX Sector Rotation Research v1",
-        "role": "Research / rotation candidate",
-        "decision": "Review",
-        "note": "Compare semiconductor exit, replacement-sector, and top-2 sector rotation rules.",
+        "page": "3_KOSPI200_Bull_Bear_v1(aggressive).py",
+        "name": "KOSPI200 Bull/Bear v1 (Aggressive)",
+        "role": "Korea reference",
+        "decision": "Reference",
+        "note": "Keep for comparison with the primary Korea strategy.",
     },
     {
         "page": "4_Samsung_Electronics_Trend_Vol.py",
-        "name": "Samsung Electronics Trend / Leverage v3",
-        "role": "Single-stock satellite",
-        "decision": "Review",
-        "note": "Use Samsung stock normally and add a 25% single-stock leveraged ETF sleeve only in strong bull regimes.",
+        "name": "Samsung Electronics Trend / Leverage",
+        "role": "Korea monitor",
+        "decision": "Monitor",
+        "note": "Monitor until enough live leveraged-ETF history is available.",
     },
     {
-        "page": "5_soxx_vol_target_app_v1.py",
-        "name": "SOXX Vol Target v1",
-        "role": "Defensive semiconductor core",
-        "decision": "Keep",
-        "note": "Use SOXX and BIL only to reduce drawdown without leveraged ETFs.",
+        "page": "2_S&P500_Momentun.py",
+        "name": "S&P500 Momentum",
+        "role": "US core",
+        "decision": "Execute",
+        "note": "Primary US stock-selection strategy.",
     },
     {
-        "page": "5_soxx_soxl_vol_target_app_v5.py",
-        "name": "SOXX / SOXL Vol Target v5",
-        "role": "Aggressive satellite",
-        "decision": "Keep",
-        "note": "Keep as a small semiconductor satellite sleeve.",
+        "page": "4_S&P500_Bull_Bear.py",
+        "name": "S&P500 Bull/Bear",
+        "role": "US reference",
+        "decision": "Reference",
+        "note": "Keep as a regime-strategy comparison.",
     },
     {
-        "page": "6_qqq_tqqq_vol_target_app_v2.py",
-        "name": "QQQ / TQQQ Vol Target v2",
-        "role": "Growth satellite",
-        "decision": "Keep",
-        "note": "Keep as the Nasdaq growth satellite sleeve.",
+        "page": "5_SOXX_SOXL_vol.py",
+        "name": "SOXX / SOXL Vol Target",
+        "role": "US semiconductor",
+        "decision": "Execute",
+        "note": "Primary semiconductor strategy.",
     },
     {
-        "page": "7_dividend_screener.py",
-        "name": "Dividend Screener",
-        "role": "Research / screening",
-        "decision": "Keep",
-        "note": "Use as a supporting stock-screening tool, not a core allocation strategy.",
+        "page": "5_SOXX.vol.py",
+        "name": "SOXX Vol Target",
+        "role": "US semiconductor reference",
+        "decision": "Reference",
+        "note": "Keep the unleveraged version for comparison.",
     },
     {
-        "page": "8_chartdoctor_bluechip.py",
-        "name": "Chart Doctor Bluechip",
-        "role": "Research",
-        "decision": "Keep",
-        "note": "Keep as a research strategy unless later performance review says otherwise.",
+        "page": "6_QQQ_TQQQ_holdings_v2.py",
+        "name": "QQQ / TQQQ Holdings V2",
+        "role": "US growth",
+        "decision": "Execute",
+        "note": "Sole active QQQ/TQQQ implementation.",
     },
     {
         "page": "9_QQQ_Gold_Momentum_v2.py",
-        "name": "QQQ / GLD / SGOV Momentum v2",
-        "role": "Growth / defensive allocation",
+        "name": "QQQ / Gold / SGOV Momentum V2",
+        "role": "US asset allocation",
         "decision": "Keep",
-        "note": "Scale SGOV to 0%, 20%, or 40% by its 12-month momentum rank.",
+        "note": "Preferred QQQ/Gold allocation version.",
+    },
+    {
+        "page": "9_US_Integrated_Strategy_v2.py",
+        "name": "US Integrated Strategy V2",
+        "role": "US allocation review",
+        "decision": "Review",
+        "note": "Keep unchanged while the allocation approach is reconsidered.",
     },
 ]
 
 
 st.set_page_config(
     page_title="my_backtest Strategy Dashboard",
-    page_icon="?뱢",
+    page_icon="📊",
     layout="wide",
 )
 
 st.title("my_backtest Strategy Dashboard")
-st.caption("A simplified list of strategies to keep, replace, or review.")
+st.caption("Active strategies, reference models, and monitored candidates.")
 
 page_count = len(list(PAGES_DIR.glob("*.py"))) if PAGES_DIR.exists() else 0
-keep_count = sum(1 for item in STRATEGIES if item["decision"] == "Keep")
-satellite_count = sum(1 for item in STRATEGIES if "satellite" in item["role"].lower())
+execute_count = sum(1 for item in STRATEGIES if item["decision"] == "Execute")
+monitor_count = sum(1 for item in STRATEGIES if item["decision"] in {"Monitor", "Review"})
 
 c1, c2, c3 = st.columns(3)
-c1.metric("Current pages", page_count)
-c2.metric("Keep", keep_count)
-c3.metric("Satellite sleeves", satellite_count)
+c1.metric("Active pages", page_count)
+c2.metric("Execute", execute_count)
+c3.metric("Monitor / Review", monitor_count)
 
 st.markdown("### Strategy List")
 st.dataframe(
@@ -137,13 +116,13 @@ st.dataframe(
     hide_index=True,
 )
 
-st.markdown("### Next Questions")
+st.markdown("### Operating Principle")
 st.markdown(
     """
-1. Confirm the simplified strategy set.
-2. Decide target allocation by strategy role: core, defensive, growth, and satellite.
-3. Add a simple allocation dashboard.
-4. Improve management only after the strategy set and weights are final.
+1. Execute only strategies marked `Execute`.
+2. Reference strategies are comparisons, not separate allocations.
+3. Monitor and review strategies remain visible without receiving capital.
+4. Removed experiments are preserved under `archived_pages/`.
     """
 )
 

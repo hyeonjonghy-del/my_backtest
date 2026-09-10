@@ -59,7 +59,7 @@ def build_messages(now: datetime) -> list[str]:
         shares = {symbol: float(snapshot["shares"].get(symbol, 0.0)) for symbol in symbols}
         suppress_price_drift_rebalancing = strategy["name"] in {
             "SOXX / SOXL",
-            "QQQ / TQQQ Holdings V2",
+            "QQQ / TQQQ Holdings",
         }
         plan = whole_share_plan(
             result["weights"],

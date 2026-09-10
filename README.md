@@ -20,9 +20,9 @@ streamlit run main.py
 | Reference | S&P500 Bull/Bear | US regime comparison |
 | Execute | SOXX / SOXL Vol Target | Semiconductor strategy |
 | Reference | SOXX Vol Target | Unleveraged semiconductor comparison |
-| Execute | QQQ / TQQQ Holdings V2 | Nasdaq growth strategy |
-| Keep | QQQ / Gold / SGOV Momentum V2 | Multi-asset allocation |
-| Review | US Integrated Strategy V2 | Retained for further evaluation |
+| Execute | QQQ / TQQQ Holdings | Nasdaq growth strategy |
+| Keep | QQQ / Gold / SGOV Momentum | Multi-asset allocation |
+| Review | US Integrated Strategy | Retained for further evaluation |
 
 Only strategies marked **Execute** are intended to receive capital. Reference, Monitor, and Review pages remain available for comparison without a separate allocation.
 

@@ -9,7 +9,7 @@ instructions.
 - KODEX base and aggressive strategies: two separate messages on weekdays at
   15:35 KST. Each contains current holdings, full target holdings, the 70%
   after-hours closing-price order, and the remaining 30% next-open order.
-- SOXX/SOXL and QQQ/TQQQ Holdings V2: two separate messages Tuesday-Saturday
+- SOXX/SOXL and QQQ/TQQQ Holdings: two separate messages Tuesday-Saturday
   at 06:30 KST. Each contains its account's USD cash, current shares, target
   shares, and exact next-regular-open orders.
 

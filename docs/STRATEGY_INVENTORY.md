@@ -5,7 +5,7 @@
 - KOSPI200 Bull/Bear
 - S&P500 Momentum
 - SOXX / SOXL Vol Target
-- QQQ / TQQQ Holdings V2
+- QQQ / TQQQ Holdings
 
 ## Reference
 
@@ -16,8 +16,8 @@
 ## Monitor or review
 
 - Samsung Electronics Trend / Leverage
-- QQQ / Gold / SGOV Momentum V2
-- US Integrated Strategy V2
+- QQQ / Gold / SGOV Momentum
+- US Integrated Strategy
 
 ## Removed from this repository
 

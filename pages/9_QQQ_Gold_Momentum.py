@@ -1,4 +1,4 @@
-"""QQQ/GLD/SGOV rank-based momentum strategy v2 for Streamlit."""
+"""QQQ/GLD/SGOV rank-based momentum strategy for Streamlit."""
 
 from __future__ import annotations
 
@@ -124,12 +124,12 @@ def annual_monthly_table(result: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
-st.set_page_config(page_title="Nasdaq · Gold · Cash Momentum v2", layout="wide")
-st.title("9. 나스닥 · 금 · 현금 모멘텀 전략 v2")
+st.set_page_config(page_title="Nasdaq · Gold · Cash Momentum", layout="wide")
+st.title("9. 나스닥 · 금 · 현금 모멘텀 전략")
 st.caption("12개월 모멘텀 순위로 현금 비중을 정하고, 나머지를 나스닥과 금의 상대 모멘텀 전략에 배분합니다.")
 
 with st.sidebar:
-    st.header("v2 전략 설정")
+    st.header("전략 설정")
     market_label = st.selectbox("시장·자산 조합", list(MARKETS.keys()))
     market = MARKETS[market_label]
     display_names = market["names"]
@@ -148,7 +148,7 @@ with st.sidebar:
         "데이터 종료일", value=today, min_value=market["min_date"], max_value=today,
         key=f"v2_end_{cash_name}",
     )
-    run = st.button("v2 백테스트 실행", type="primary", use_container_width=True)
+    run = st.button("백테스트 실행", type="primary", use_container_width=True)
 
 st.info(
     f"고정 배분 규칙: {cash_name} 3위 → 현금 0% · {cash_name} 2위 → 현금 20% · "
@@ -182,14 +182,14 @@ st.caption("모멘텀이 정확히 같으면 현금, 금, 나스닥 순으로 �
 st.caption(market["cash_note"])
 
 if not run:
-    st.info("왼쪽에서 기간과 리밸런싱 주기를 선택한 뒤 ‘v2 백테스트 실행’을 누르세요.")
+    st.info("왼쪽에서 기간과 리밸런싱 주기를 선택한 뒤 ‘백테스트 실행’을 누르세요.")
     st.stop()
 
 if start_date > end_date:
     st.error("데이터 시작일은 종료일보다 빠르거나 같아야 합니다.")
     st.stop()
 
-with st.spinner(f"{market_label} 데이터를 내려받아 v2를 계산 중입니다..."):
+with st.spinner(f"{market_label} 데이터를 내려받아 전략을 계산 중입니다..."):
     try:
         prices = fetch_prices(market_label, start_date, end_date)
         result, metrics = backtest(

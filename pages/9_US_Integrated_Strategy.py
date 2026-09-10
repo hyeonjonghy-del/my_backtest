@@ -1,4 +1,4 @@
-"""Streamlit page for integrated US Strategy 9 v2."""
+"""Streamlit page for integrated US Strategy 9."""
 
 from datetime import date
 
@@ -7,8 +7,8 @@ import streamlit as st
 from integrated_us_backtest import download, run
 
 
-st.set_page_config(page_title="US Integrated Strategy 9 v2", page_icon="US", layout="wide")
-st.title("US Integrated Strategy 9 v2")
+st.set_page_config(page_title="US Integrated Strategy 9", page_icon="US", layout="wide")
+st.title("US Integrated Strategy 9")
 st.caption("Choose a fixed or 12-month momentum growth mix, with GLD and SGOV momentum allocation.")
 
 growth_mode_label = st.radio(
@@ -86,5 +86,5 @@ if st.button("Run integrated backtest", type="primary"):
     st.dataframe(summary.style.format(formats, na_rep="-"), use_container_width=True)
     st.subheader("NAV comparison")
     st.line_chart(nav)
-    st.download_button("Download NAV CSV", nav.to_csv().encode("utf-8-sig"), "us_integrated_strategy_v2_nav.csv", "text/csv")
-    st.download_button("Download summary CSV", summary.to_csv().encode("utf-8-sig"), "us_integrated_strategy_v2_summary.csv", "text/csv")
+    st.download_button("Download NAV CSV", nav.to_csv().encode("utf-8-sig"), "us_integrated_strategy_nav.csv", "text/csv")
+    st.download_button("Download summary CSV", summary.to_csv().encode("utf-8-sig"), "us_integrated_strategy_summary.csv", "text/csv")

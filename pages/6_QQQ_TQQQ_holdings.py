@@ -1,4 +1,4 @@
-"""QQQ / TQQQ holdings-based trend and volatility-target backtest v2."""
+"""QQQ / TQQQ holdings-based trend and volatility-target backtest."""
 
 from __future__ import annotations
 
@@ -40,17 +40,17 @@ COLORS = {
     "dd": "#B91C1C",
 }
 
-st.set_page_config(page_title="QQQ/TQQQ Holdings Backtest V2", page_icon="US", layout="wide")
+st.set_page_config(page_title="QQQ/TQQQ Holdings Backtest", page_icon="US", layout="wide")
 title_col, run_col = st.columns([4, 1])
 with title_col:
-    st.title("QQQ / TQQQ Holdings-Based Backtest V2")
+    st.title("QQQ / TQQQ Holdings-Based Backtest")
 with run_col:
     st.write("")
     run_btn = st.button("Run backtest", type="primary", use_container_width=True, key="run_backtest_top")
 st.caption(
     "Default: Strong Bull uses TQQQ tactically, Weak Bull shifts toward QQQ, "
     "and deep-drawdown turnarounds stay active until short-term momentum breaks. "
-    "V2 starts with a fixed dollar balance, trades whole shares only, and keeps residual cash."
+    "The strategy starts with a fixed dollar balance, trades whole shares only, and keeps residual cash."
 )
 
 
@@ -853,7 +853,7 @@ strategy_metrics = calc_metrics(strategy_ret)
 legacy_metrics = calc_metrics(legacy_ret)
 summary = pd.DataFrame(
     [
-        metric_row("Strategy V2 (Holdings)", strategy_ret, actual_weights["QQQ"], actual_weights["TQQQ"]),
+        metric_row("Strategy (Holdings)", strategy_ret, actual_weights["QQQ"], actual_weights["TQQQ"]),
         metric_row("Fractional Target-Change", legacy_ret, weights["QQQ"], weights["TQQQ"]),
         metric_row("QQQ 100%", bench_qqq),
         metric_row("TQQQ 100%", bench_tqqq),
@@ -912,7 +912,7 @@ st.success(
     f"QQQ {vol_window}D volatility {latest_vol:.1%}"
 )
 st.info(
-    f"V2 ${initial_capital:,.0f} whole-share holdings vs fractional target-change calculation | "
+    f"${initial_capital:,.0f} whole-share holdings vs fractional target-change calculation | "
     f"Total return difference {strategy_metrics['total'] - legacy_metrics['total']:+.1%}p | "
     f"CAGR difference {strategy_metrics['cagr'] - legacy_metrics['cagr']:+.2%}p | "
     f"MDD difference {strategy_metrics['mdd'] - legacy_metrics['mdd']:+.2%}p"
@@ -933,7 +933,7 @@ tab_perf, tab_execute, tab_signal, tab_table, tab_monthly = st.tabs(
 with tab_perf:
     nav_df = pd.DataFrame(
         {
-            "Strategy V2": strategy_metrics["nav"],
+            "Strategy": strategy_metrics["nav"],
             "Legacy": legacy_metrics["nav"],
             "QQQ": calc_metrics(bench_qqq)["nav"],
             "TQQQ": calc_metrics(bench_tqqq)["nav"],
@@ -959,7 +959,7 @@ with tab_perf:
 
     dd_df = pd.DataFrame(
         {
-            "Strategy V2 DD": strategy_metrics["dd"],
+            "Strategy DD": strategy_metrics["dd"],
             "Legacy DD": legacy_metrics["dd"],
             "QQQ DD": calc_metrics(bench_qqq)["dd"],
             "TQQQ DD": calc_metrics(bench_tqqq)["dd"],
@@ -978,7 +978,7 @@ with tab_perf:
     st.pyplot(
         static_yearly_returns_chart(
             {
-                "Strategy V2": strategy_metrics["nav"],
+                "Strategy": strategy_metrics["nav"],
                 "Legacy": legacy_metrics["nav"],
                 "QQQ": calc_metrics(bench_qqq)["nav"],
                 "TQQQ": calc_metrics(bench_tqqq)["nav"],

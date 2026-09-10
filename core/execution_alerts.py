@@ -429,7 +429,7 @@ US_STRATEGIES: tuple[dict[str, Any], ...] = (
         "bear_base": 0.20,
     },
     {
-        "name": "QQQ / TQQQ Holdings V2",
+        "name": "QQQ / TQQQ Holdings",
         "symbols": ("QQQ", "TQQQ"),
         "profile": "default",
         "target_vol": 0.35,

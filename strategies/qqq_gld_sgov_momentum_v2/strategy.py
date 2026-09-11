@@ -54,7 +54,8 @@ def make_monthly_targets(
     the non-SGOV allocation is tilted further to QQQ in a 90:10 ratio.
     When GLD leads QQQ, GLD is capped at 60% of the non-SGOV allocation and
     QQQ receives the remaining 40%.
-    SGOV receives 0%, 20%, or 40% when it ranks third, second, or first.
+    SGOV receives 0%, 20%, or the configurable rank-1 weight (40% by
+    default) when it ranks third, second, or first.
     Exact momentum ties are resolved conservatively in SGOV's favor, then GLD,
     then QQQ.
     """
@@ -104,6 +105,8 @@ def backtest(
     rebalance_months: int = 1,
     momentum_months: int = 12,
     cost_bps: float = 10.0,
+    cash_rank1_weight: float = 0.40,
+    cash_rank2_weight: float = 0.20,
 ) -> tuple[pd.DataFrame, dict[str, float | str]]:
     if rebalance_months not in (1, 3, 6, 12):
         raise ValueError("rebalance_months must be one of 1, 3, 6, or 12")
@@ -114,7 +117,12 @@ def backtest(
     if clean_prices.empty:
         raise ValueError("No common QQQ/GLD/SGOV price history is available")
 
-    momentum, signal_targets = make_monthly_targets(clean_prices, momentum_months)
+    momentum, signal_targets = make_monthly_targets(
+        clean_prices,
+        momentum_months,
+        cash_rank1_weight=cash_rank1_weight,
+        cash_rank2_weight=cash_rank2_weight,
+    )
     # A completed month-end signal is first tradable in the following month.
     applied_targets = signal_targets.shift(1)
     valid_signal_ranks = momentum.apply(

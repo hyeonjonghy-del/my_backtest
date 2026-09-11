@@ -138,6 +138,14 @@ with st.sidebar:
     rebalance_months = st.selectbox(
         "리밸런싱 주기", (1, 3, 6, 12), index=0, format_func=lambda value: f"{value}개월"
     )
+    cash_rank1_pct = st.slider(
+        f"{cash_name} 모멘텀 1위 목표 비중 (%)",
+        min_value=20,
+        max_value=70,
+        value=40,
+        step=5,
+        help=f"{cash_name}가 12개월 모멘텀 1위일 때 적용할 목표 비중입니다.",
+    )
     cost_bps = st.number_input("거래비용 (편도, bp)", min_value=0.0, value=10.0, step=1.0)
     today = date.today()
     start_date = st.date_input(
@@ -150,30 +158,38 @@ with st.sidebar:
     )
     run = st.button("백테스트 실행", type="primary", use_container_width=True)
 
+cash_rank1_weight = cash_rank1_pct / 100.0
+
+
+def allocation_text(cash_weight: float, qqq_share: float) -> str:
+    risky_weight = 1.0 - cash_weight
+    return f"나스닥 {risky_weight * qqq_share:.0%} / 금 {risky_weight * (1.0 - qqq_share):.0%}"
+
+
 st.info(
-    f"고정 배분 규칙: {cash_name} 3위 → 현금 0% · {cash_name} 2위 → 현금 20% · "
-    f"{cash_name} 1위 → 현금 40%. 비현금 부분은 나스닥 우위 시 기본 80:20, "
+    f"배분 규칙: {cash_name} 3위 → 현금 0% · {cash_name} 2위 → 현금 20% · "
+    f"{cash_name} 1위 → 현금 {cash_rank1_weight:.0%}. 비현금 부분은 나스닥 우위 시 기본 80:20, "
     "나스닥이 25%p 이상 앞서면 90:10으로 강화합니다. 금 우위 시에는 금을 최대 60%로 제한합니다."
 )
 rule_table = pd.DataFrame(
     [
         {
             f"{cash_name} 12개월 모멘텀 순위": "3위", cash_name: "0%",
-            "나스닥 우위 (<25%p)": "나스닥 80% / 금 20%",
-            "나스닥 25%p 이상 우위": "나스닥 90% / 금 10%",
-            "금 우위": "나스닥 40% / 금 60%",
+            "나스닥 우위 (<25%p)": allocation_text(0.0, 0.8),
+            "나스닥 25%p 이상 우위": allocation_text(0.0, 0.9),
+            "금 우위": allocation_text(0.0, 0.4),
         },
         {
             f"{cash_name} 12개월 모멘텀 순위": "2위", cash_name: "20%",
-            "나스닥 우위 (<25%p)": "나스닥 64% / 금 16%",
-            "나스닥 25%p 이상 우위": "나스닥 72% / 금 8%",
-            "금 우위": "나스닥 32% / 금 48%",
+            "나스닥 우위 (<25%p)": allocation_text(0.2, 0.8),
+            "나스닥 25%p 이상 우위": allocation_text(0.2, 0.9),
+            "금 우위": allocation_text(0.2, 0.4),
         },
         {
-            f"{cash_name} 12개월 모멘텀 순위": "1위", cash_name: "40%",
-            "나스닥 우위 (<25%p)": "나스닥 48% / 금 12%",
-            "나스닥 25%p 이상 우위": "나스닥 54% / 금 6%",
-            "금 우위": "나스닥 24% / 금 36%",
+            f"{cash_name} 12개월 모멘텀 순위": "1위", cash_name: f"{cash_rank1_weight:.0%}",
+            "나스닥 우위 (<25%p)": allocation_text(cash_rank1_weight, 0.8),
+            "나스닥 25%p 이상 우위": allocation_text(cash_rank1_weight, 0.9),
+            "금 우위": allocation_text(cash_rank1_weight, 0.4),
         },
     ]
 )
@@ -197,6 +213,7 @@ with st.spinner(f"{market_label} 데이터를 내려받아 전략을 계산 중�
             rebalance_months=rebalance_months,
             momentum_months=12,
             cost_bps=cost_bps,
+            cash_rank1_weight=cash_rank1_weight,
         )
     except Exception as exc:
         st.error(f"데이터를 불러오거나 계산하는 중 오류가 발생했습니다: {exc}")

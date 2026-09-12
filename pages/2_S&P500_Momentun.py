@@ -270,6 +270,13 @@ def buy_and_hold_equal_weight_returns(prices: pd.DataFrame) -> pd.Series:
     entry_prices = prices.iloc[0]
     if entry_prices.isna().any() or (entry_prices <= 0).any():
         raise ValueError("리밸런싱 진입일의 종가가 없거나 0 이하인 종목이 있습니다.")
+    # A missing quote after entry must not silently change the number of
+    # holdings used by DataFrame.mean(). Keep the last tradable close until a
+    # new quote arrives; this also prevents a delayed final quote from turning
+    # the portfolio's final NAV into NaN.
+    prices = prices.ffill()
+    if prices.isna().any().any():
+        raise ValueError("보유 기간 주가를 직전 종가로 연결할 수 없는 종목이 있습니다.")
     # Split the stock sleeve equally at the entry close and keep share counts
     # fixed. Each position's weight then drifts with its price until rebalance.
     relative_values = prices.div(entry_prices, axis=1)

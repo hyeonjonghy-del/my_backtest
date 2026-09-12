@@ -230,7 +230,8 @@ def cash_etf_for_date(cash_prices: pd.DataFrame, decision_date: pd.Timestamp) ->
 def mix_stock_and_cash(stock_returns: pd.Series, cash_returns: pd.Series,
                        stock_weight: float, previous_stock: float,
                        previous_cash: float, transaction_cost: float,
-                       cash_ticker_changed: bool = False) -> tuple:
+                       cash_ticker_changed: bool = False,
+                       cash_ticker: str = "현금 ETF") -> tuple:
     """Hold the two sleeves between rebalances; weights drift with performance.
 
     Stock sleeve holds the shares bought at the rebalance until the next rebalance.
@@ -242,7 +243,15 @@ def mix_stock_and_cash(stock_returns: pd.Series, cash_returns: pd.Series,
     if cash_weight == 0:
         cash_returns = pd.Series(0.0, index=stock_returns.index)
     elif cash_returns.isna().any():
-        raise ValueError("현금 ETF 수익률에 결측이 있습니다. 기간을 생략하지 않고 중단합니다.")
+        missing_dates = cash_returns.index[cash_returns.isna()]
+        shown_dates = ", ".join(d.strftime("%Y-%m-%d") for d in missing_dates[:10])
+        remainder = len(missing_dates) - 10
+        if remainder > 0:
+            shown_dates += f" 외 {remainder}일"
+        raise ValueError(
+            f"{cash_ticker} 수익률 결측 날짜: {shown_dates}. "
+            "과거 구간을 임의로 보간하지 않고 중단합니다."
+        )
     stock_value = stock_weight * (1.0 + stock_returns).cumprod()
     cash_value = cash_weight * (1.0 + cash_returns).cumprod()
     total = stock_value + cash_value
@@ -483,14 +492,30 @@ if run_btn:
         st.warning(f"⚠️ 시작일을 {data_avail_start.strftime('%Y-%m')}로 자동 조정합니다.")
         start_dt = data_avail_start
 
-    end_dt   = min(df_price.index[-1], requested_end_dt)
-    all_days = df_price.index
+    end_dt = min(df_price.index[-1], requested_end_dt)
 
     use_sgov_allocation = sgov_target_weight > 0
     cash_prices = None
     if use_sgov_allocation:
         try:
             cash_prices = download_cash_prices(fetch_start, fetch_end).loc[:end_dt]
+            end_cash_ticker = cash_etf_for_date(cash_prices, end_dt)
+            cash_valid_days = cash_prices.index[cash_prices[end_cash_ticker].notna()]
+            common_days = df_price.index.intersection(cash_valid_days)
+            common_days = common_days[common_days <= end_dt]
+            if common_days.empty:
+                raise ValueError(
+                    f"종료일 이전에 주식과 {end_cash_ticker} 가격이 함께 존재하는 거래일이 없습니다."
+                )
+            common_end_dt = common_days[-1]
+            if common_end_dt < end_dt:
+                st.warning(
+                    f"⚠️ 최신 {end_cash_ticker} 가격이 주식 데이터보다 늦게 확정되어 "
+                    f"백테스트 종료일을 {end_dt.date()}에서 "
+                    f"마지막 공통 거래일 {common_end_dt.date()}로 자동 조정했습니다."
+                )
+                end_dt = common_end_dt
+                cash_prices = cash_prices.loc[:end_dt]
             st.info(
                 f"고정 배분 ON · 주식 {100-sgov_target_pct}% / SGOV {sgov_target_pct}% · "
                 "SGOV 상장 전 BIL 대체 · SGOV 0% 결과도 동일 기간에 비교합니다."
@@ -498,6 +523,10 @@ if run_btn:
         except Exception as exc:
             st.error(f"SGOV/BIL 데이터 오류: {exc}")
             st.stop()
+
+    # Rebalancing dates and holding periods must use the final date shared by
+    # every required price series, not merely the latest stock-data date.
+    all_days = df_price.index[df_price.index <= end_dt]
 
     # ── 5-6. 리밸런싱 날짜 생성 ─────────────────────────
     target_months   = list(range(1, 13, rebalance_step))
@@ -594,6 +623,7 @@ if run_btn:
                             cash_period_returns, 0.0,
                             previous_stock_weight, previous_cash_weight, transaction_cost,
                             previous_cash_ticker is not None and previous_cash_ticker != cash_ticker,
+                            cash_ticker,
                         )
                         previous_stock_weight, previous_cash_weight = 0.0, 1.0
                         previous_cash_ticker = cash_ticker
@@ -701,6 +731,7 @@ if run_btn:
                     port_ret, cash_period_returns, target_stock,
                     previous_stock_weight, previous_cash_weight, transaction_cost,
                     previous_cash_ticker is not None and previous_cash_ticker != cash_ticker,
+                    cash_ticker,
                 )
                 previous_stock_weight = float(stock_weights.iloc[-1])
                 previous_cash_weight = 1.0 - previous_stock_weight

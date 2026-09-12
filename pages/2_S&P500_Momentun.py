@@ -31,11 +31,18 @@ import requests
 from math import ceil
 from datetime import datetime
 from chart_utils import static_area_chart, static_yearly_returns_chart
+from core.sp500_universe import (
+    UniverseDataError,
+    get_universe_at as point_in_time_universe_at,
+    load_point_in_time_universe,
+)
 
 # Keep inputs independent of the reporting start year.  This makes overlapping
 # backtest periods reproducible when only the displayed start year changes.
 HISTORICAL_UNIVERSE_START_YEAR = 2000
 CANONICAL_PRICE_START = "2013-01-01"  # fixed shared history for reproducible 2015+ comparisons
+MIN_PRICE_COVERAGE = 0.85
+TARGET_PRICE_COVERAGE = 0.98
 
 # ─────────────────────────────────────────────────────────
 # 0. 한글 폰트 설정
@@ -65,16 +72,17 @@ with run_col:
     st.write("")
     run_btn = st.button("Run backtest", type="primary", use_container_width=True, key="run_backtest_top")
 st.markdown("""
-**생존편향(Survivorship Bias)을 제거**한 백테스트입니다.  
-Wikipedia S&P500 편출입 이력을 자동 수집하여 각 리밸런싱 시점의 **실제 구성종목**을 복원합니다.  
-v3는 과거 유니버스 역추적 시 편출입 변경을 한 번씩만 순차 적용하도록 수정했습니다.
+**생존편향(Survivorship Bias)을 제거**한 백테스트입니다.
+Wikipedia의 현재 구성표와 분리된 과거 변경표를 함께 검증하여 각 리밸런싱 시점의
+**실제 구성종목(point-in-time universe)**을 복원합니다. 변경 이력이나 가격 커버리지가
+기준에 미달하면 현재 종목으로 대체하지 않고 백테스트를 중단합니다.
 """)
 
 # ─────────────────────────────────────────────────────────
 # 2. Wikipedia에서 S&P500 구성종목 + 편출입 이력 수집
 # ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600 * 24, show_spinner=False)
-def build_sp500_universe() -> tuple:
+def _build_sp500_universe_legacy_unused() -> tuple:
     """
     Wikipedia에서 S&P500 현재 구성종목과 편출입 이력을 수집하여
     시점별 실제 구성종목 딕셔너리를 반환합니다.
@@ -208,6 +216,29 @@ def build_sp500_universe() -> tuple:
         f"{len(universe_dict)}개 분기 시점"
     )
 
+    return universe_dict, sector_map
+
+
+@st.cache_data(ttl=3600 * 24, show_spinner=False)
+def build_sp500_universe() -> tuple:
+    """Load and strictly validate point-in-time S&P 500 membership."""
+    status = st.empty()
+    status.text("🌐 S&P500 현재 구성과 과거 편출입 이력을 분리 수집 중...")
+    try:
+        universe_dict, sector_map, audit = load_point_in_time_universe(
+            start_date=pd.Timestamp(f"{HISTORICAL_UNIVERSE_START_YEAR}-01-01")
+        )
+    except UniverseDataError as exc:
+        status.empty()
+        st.error(f"❌ S&P500 과거 유니버스 검증 실패: {exc}")
+        return {}, {}
+    status.empty()
+    st.success(
+        "✅ Point-in-time 유니버스 검증 완료: "
+        f"현재 {audit['current_count']}개, 과거 변경 {audit['change_count']}건, "
+        f"전체 고유 종목 {audit['all_ticker_count']}개, "
+        f"마지막 변경 {audit['latest_change_date'].date()}"
+    )
     return universe_dict, sector_map
 
 
@@ -363,7 +394,9 @@ def download_price_data(tickers_tuple: tuple, start_str: str, end_str: str) -> p
 
     price_df = pd.concat(all_prices, axis=1)
     price_df = price_df.loc[:, ~price_df.columns.duplicated()]
-    # Never back-fill: it would create prices before a ticker actually traded.\n    price_df = price_df.sort_index().ffill()
+    # Forward-fill only after a ticker has traded. Never back-fill prices into
+    # dates before listing because that would introduce future information.
+    price_df = price_df.sort_index().ffill()
     return price_df
 
 
@@ -568,6 +601,8 @@ if run_btn:
     previous_stock_weight = 0.0
     previous_cash_weight = 0.0
     previous_cash_ticker = None
+    price_coverage_records = []
+    completed_period_dates = []
 
     prog2   = st.progress(0)
     status2 = st.empty()
@@ -646,15 +681,21 @@ if run_btn:
                         })
                     portfolio_returns_list.append(cash_ret)
                     portfolio_weight_list.append(pd.Series(0.0, index=cash_ret.index))
+                    completed_period_dates.append(curr_date)
                 previous_position = "cash"
                 continue
 
             # ── 당시 S&P500 구성종목 ──────────────────────
-            universe_at = get_universe_at(curr_date, universe_dict)
+            universe_at = point_in_time_universe_at(curr_date, universe_dict)
+            if not universe_at:
+                raise ValueError("판단일 당시 S&P500 구성종목을 확인할 수 없습니다.")
             valid_cols  = [t for t in universe_at if t in df_price.columns]
 
             if len(valid_cols) < top_n:
-                continue
+                raise ValueError(
+                    f"유니버스 {len(universe_at)}개 중 가격 열이 있는 종목이 "
+                    f"{len(valid_cols)}개뿐입니다."
+                )
 
             # ── 모멘텀 점수 계산 (11-1) ───────────────────
             past_target = curr_date - pd.DateOffset(months=momentum_window)
@@ -677,9 +718,26 @@ if run_btn:
             mom_score  = ((price_ref - price_past) / price_past)
             mom_score  = mom_score.replace([np.inf, -np.inf], np.nan).dropna()
 
+            priced_tickers = set(mom_score.index)
+            missing_tickers = sorted(set(universe_at) - priced_tickers)
+            price_coverage = len(priced_tickers) / len(universe_at)
+            price_coverage_records.append({
+                '판단일': curr_date,
+                '당시 구성종목': len(universe_at),
+                '모멘텀 계산 가능': len(priced_tickers),
+                '가격 커버리지': price_coverage,
+                '누락 종목': ', '.join(missing_tickers),
+            })
+            if price_coverage < MIN_PRICE_COVERAGE:
+                raise ValueError(
+                    f"과거 가격 커버리지가 {price_coverage:.1%}로 "
+                    f"최소 기준 {MIN_PRICE_COVERAGE:.0%}보다 낮습니다. "
+                    f"누락: {', '.join(missing_tickers[:15])}"
+                )
+
             actual_n   = min(top_n, len(mom_score))
             if actual_n == 0:
-                continue
+                raise ValueError("모멘텀을 계산할 수 있는 종목이 없습니다.")
 
             # Stable secondary order makes exact momentum ties reproducible.
             top_series = mom_score.sort_index().nlargest(actual_n)
@@ -697,32 +755,35 @@ if run_btn:
             # ── Look-ahead Bias 제거 ──────────────────────
             curr_loc = all_days.get_loc(curr_date)
             if curr_loc + 1 >= len(all_days):
-                continue
+                raise ValueError("판단일 다음 거래일이 없습니다.")
             entry_date = all_days[curr_loc + 1]
             if entry_date >= next_date:
-                continue
+                raise ValueError("진입일이 다음 리밸런싱일보다 늦습니다.")
 
             price_period = df_price[top_stocks].loc[entry_date:next_date]
             if price_period.shape[0] < 2:
-                continue
+                raise ValueError("보유 기간 가격이 2거래일 미만입니다.")
 
             daily_ret = price_period.pct_change(fill_method=None).dropna(how='all')
             if daily_ret.empty:
-                continue
+                raise ValueError("보유 기간 수익률을 계산할 수 없습니다.")
 
             # ── 데이터 정합성 검증 ────────────────────────
             # 하루 수익률이 ±100% 초과인 종목은 주식분할 조정 오류나
             # 티커 재사용으로 인한 데이터 오류 가능성이 매우 높으므로 제외
             bad_data_mask = (daily_ret.abs() > 1.0).any()
-            valid_stocks  = daily_ret.columns[~bad_data_mask].tolist()
-
-            if not valid_stocks:
-                continue
+            bad_stocks = daily_ret.columns[bad_data_mask].tolist()
+            if bad_stocks:
+                raise ValueError(
+                    "±100%를 초과하는 비정상 일간수익률이 발견되었습니다: "
+                    + ", ".join(bad_stocks)
+                )
+            valid_stocks = daily_ret.columns.tolist()
             price_period = price_period[valid_stocks]
             daily_ret = daily_ret[valid_stocks]
             port_ret = buy_and_hold_equal_weight_returns(price_period)
             if port_ret.empty:
-                continue
+                raise ValueError("선정 종목의 보유수익률이 비어 있습니다.")
 
             # 거래비용 반영
             unfiltered_port_ret = port_ret.copy()
@@ -773,21 +834,35 @@ if run_btn:
             portfolio_returns_list.append(port_ret)
             portfolio_weight_list.append(stock_weights if use_sgov_allocation
                                          else pd.Series(1.0, index=port_ret.index))
+            completed_period_dates.append(curr_date)
 
         except Exception as exc:
-            if use_sgov_allocation:
-                st.error(f"{curr_date.date()} 리밸런싱 계산 오류: {exc}")
-                st.stop()
-            continue
+            st.error(f"{curr_date.date()} 리밸런싱 계산 오류: {exc}")
+            st.stop()
 
     prog2.empty()
     status2.empty()
 
-    if use_sgov_allocation and len(allocation_records) != total:
-        covered = {r['판단일'] for r in allocation_records}
+    if len(completed_period_dates) != total:
+        covered = set(completed_period_dates)
         missing = [str(d.date()) for d in period_dates[:-1] if d not in covered]
         st.error("계산에서 누락된 리밸런싱 기간이 있어 결과를 표시하지 않습니다: " + ', '.join(missing))
         st.stop()
+
+    minimum_coverage = 1.0
+    if price_coverage_records:
+        minimum_coverage = min(record['가격 커버리지'] for record in price_coverage_records)
+        coverage_message = (
+            f"Point-in-time 유니버스 가격 감사: 리밸런싱 {len(price_coverage_records)}회, "
+            f"최저 커버리지 {minimum_coverage:.1%} "
+            f"(중단 기준 {MIN_PRICE_COVERAGE:.0%}, 정밀 목표 {TARGET_PRICE_COVERAGE:.0%})"
+        )
+        if minimum_coverage < TARGET_PRICE_COVERAGE:
+            st.warning(
+                "⚠️ " + coverage_message + " · 누락 종목을 순위에서 제외한 공개데이터 근사 결과입니다."
+            )
+        else:
+            st.info("🔎 " + coverage_message)
 
     if not portfolio_returns_list:
         st.error("❌ 유효한 수익률 데이터가 없습니다.")
@@ -840,7 +915,12 @@ if run_btn:
     # ─────────────────────────────────────────────────────
     # 6. 결과 표시
     # ─────────────────────────────────────────────────────
-    st.markdown("## 📊 Backtest Results — ✅ Survivorship Bias Removed")
+    result_quality = (
+        "✅ Point-in-Time Universe Verified"
+        if minimum_coverage >= TARGET_PRICE_COVERAGE
+        else f"⚠️ Public-Data Approximation (min coverage {minimum_coverage:.1%})"
+    )
+    st.markdown(f"## 📊 Backtest Results — {result_quality}")
 
     cost_label = f"Transaction cost {transaction_cost*100:.2f}% per trade"
     mom_label  = f"{momentum_window}M (excl. last 1M)" if skip_recent else f"{momentum_window}M"
@@ -999,7 +1079,7 @@ if run_btn:
         else:
             st.subheader("📌 Current Picks (as of latest date)")
         latest_date  = df_price.index[-1]
-        latest_univ  = get_universe_at(latest_date, universe_dict)
+        latest_univ  = point_in_time_universe_at(latest_date, universe_dict)
         valid_latest = [t for t in latest_univ if t in df_price.columns]
 
         past_now_loc = df_price.index.get_indexer(
@@ -1056,6 +1136,13 @@ if run_btn:
         history_df = pd.DataFrame(history_records)
         st.dataframe(history_df, use_container_width=True, height=420)
         st.caption(f"Total {len(history_df)} records | Cash periods: {cash_periods}")
+        if price_coverage_records:
+            st.subheader("Point-in-time 데이터 감사")
+            coverage_df = pd.DataFrame(price_coverage_records)
+            st.dataframe(
+                coverage_df.style.format({'가격 커버리지': '{:.1%}'}),
+                use_container_width=True,
+            )
         if use_sgov_allocation:
             st.subheader("SGOV 목표비중 배분 이력")
             st.dataframe(pd.DataFrame(allocation_records), use_container_width=True)
@@ -1068,6 +1155,10 @@ if run_btn:
         full_returns.to_frame('일간수익률').to_excel(writer, sheet_name='일간수익률')
         m_pivot.to_excel(writer, sheet_name='월별수익률')
         history_df.to_excel(writer, sheet_name='매매기록', index=False)
+        if price_coverage_records:
+            pd.DataFrame(price_coverage_records).to_excel(
+                writer, sheet_name='데이터_감사', index=False
+            )
         if use_sgov_allocation:
             pd.DataFrame(allocation_records).to_excel(writer, sheet_name='SGOV_배분이력', index=False)
             weight_df.to_excel(writer, sheet_name='주식_현금비중')

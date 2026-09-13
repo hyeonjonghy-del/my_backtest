@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from core.us_execution import latest_completed_nyse_session, validated_common_dates
 
 
 TRADING_DAYS = 252
@@ -348,6 +349,7 @@ def load_yahoo_chart(symbol: str, start: datetime, end: datetime) -> pd.DataFram
     adjusted = result["indicators"].get("adjclose", [{}])[0].get("adjclose", quote["close"])
     frame = pd.DataFrame(
         {
+            "open": quote["open"],
             "close": quote["close"],
             "adjclose": adjusted,
         },
@@ -427,6 +429,7 @@ US_STRATEGIES: tuple[dict[str, Any], ...] = (
         "turnaround_drawdown": 0.20,
         "turnaround_leveraged_weight": 0.50,
         "bear_base": 0.20,
+        "cost_rate": 0.0025,
     },
     {
         "name": "QQQ / TQQQ Holdings",
@@ -453,11 +456,17 @@ def calculate_us_target(config: dict[str, Any], end: datetime) -> dict[str, Any]
     start = datetime(2015, 1, 1)
     base_data = load_yahoo_chart(base, start, end)
     leveraged_data = load_yahoo_chart(leveraged, start, end)
-    index = base_data.index.intersection(leveraged_data.index)
+    index = validated_common_dates({base: base_data, leveraged: leveraged_data}, start.date(), end.date())
     if len(index) < 250:
         raise RuntimeError(f"{config['name']}: 가격 이력이 부족합니다.")
     base_data = base_data.reindex(index)
     leveraged_data = leveraged_data.reindex(index)
+    expected_latest = latest_completed_nyse_session(end)
+    if index[-1] != expected_latest:
+        raise RuntimeError(
+            f"{config['name']}: latest completed NYSE session is {expected_latest.date()}, "
+            f"but market data ends at {index[-1].date()}."
+        )
     price = base_data["adjclose"].ffill()
     returns = price.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0)
     fast = price.rolling(30).mean()
@@ -488,8 +497,8 @@ def calculate_us_target(config: dict[str, Any], end: datetime) -> dict[str, Any]
         previous_vol,
     )
     prices = {
-        base: float(base_data["adjclose"].ffill().iloc[-1]),
-        leveraged: float(leveraged_data["adjclose"].ffill().iloc[-1]),
+        base: float(base_data["close"].iloc[-1]),
+        leveraged: float(leveraged_data["close"].iloc[-1]),
     }
     return {
         "signal_date": index[-1].date(),
@@ -540,6 +549,7 @@ def whole_share_plan(
     shares: dict[str, float],
     cash: float,
     previous_weights: dict[str, float] | None = None,
+    fee_rate: float = 0.0,
 ) -> dict[str, Any]:
     account_value = float(cash) + sum(float(shares.get(s, 0)) * prices[s] for s in prices)
     target_changed = previous_weights is None or any(
@@ -551,15 +561,27 @@ def whole_share_plan(
         )
         for symbol in prices
     )
+    if not 0 <= fee_rate < 1:
+        raise ValueError("fee_rate must be in [0, 1)")
+    net_value = account_value
+    for _ in range(80):
+        candidates = {
+            symbol: math.floor(net_value * weights.get(symbol, 0.0) / price)
+            for symbol, price in prices.items()
+        }
+        turnover = sum(abs(candidates[s] - int(float(shares.get(s, 0)))) * prices[s] for s in prices)
+        revised = max(account_value - fee_rate * turnover, 0.0)
+        if abs(revised - net_value) < 0.01:
+            net_value = revised
+            break
+        net_value = revised
     orders: dict[str, dict[str, float | int | str]] = {}
+    recovery_orders: dict[str, dict[str, float | int | str]] = {}
     invested = 0.0
     for symbol, price in prices.items():
         current_shares = int(float(shares.get(symbol, 0)))
-        target_shares = (
-            math.floor(account_value * weights.get(symbol, 0.0) / price)
-            if target_changed
-            else current_shares
-        )
+        calculated_target = math.floor(net_value * weights.get(symbol, 0.0) / price)
+        target_shares = calculated_target if target_changed else current_shares
         delta = target_shares - current_shares
         invested += target_shares * price
         orders[symbol] = {
@@ -568,10 +590,20 @@ def whole_share_plan(
             "order": delta,
             "action": "매수" if delta > 0 else "매도" if delta < 0 else "유지",
         }
+        recovery_delta = calculated_target - current_shares
+        recovery_orders[symbol] = {
+            "current": current_shares, "target": calculated_target, "order": recovery_delta,
+            "action": "매수" if recovery_delta > 0 else "매도" if recovery_delta < 0 else "유지",
+        }
+    estimated_fees = sum(
+        abs(candidates[s] - int(float(shares.get(s, 0)))) * prices[s] for s in prices
+    ) * fee_rate
     return {
         "account_value": account_value,
-        "target_cash": max(account_value - invested, 0.0) if target_changed else float(cash),
+        "target_cash": max(account_value - invested - estimated_fees, 0.0) if target_changed else float(cash),
+        "estimated_fees": estimated_fees if target_changed else 0.0,
         "target_changed": target_changed,
         "orders": orders,
+        "recovery_orders": recovery_orders,
     }
 

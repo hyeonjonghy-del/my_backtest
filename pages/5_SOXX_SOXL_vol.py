@@ -10,6 +10,13 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from core.us_execution import (
+    adjusted_open,
+    fixed_units_open_backtest,
+    latest_completed_nyse_session,
+    rebalance_due_after_close,
+    validated_common_dates,
+)
 from kiwoom_account import (
     KIWOOM_SOURCE,
     render_account_controls,
@@ -439,41 +446,9 @@ def backtest_open_execution_close_valuation(
     close_prices: pd.DataFrame,
     cost_rate: float,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """Trade only when target weights change, then hold shares and cash unchanged."""
-    units = pd.Series(0.0, index=target_weights.columns)
-    cash = 1.0
-    previous_close_nav = 1.0
-    previous_target = None
-    daily_ret = pd.Series(0.0, index=target_weights.index, name="Strategy")
-    turnover = pd.Series(0.0, index=target_weights.index, name="Turnover")
-    close_nav = pd.Series(0.0, index=target_weights.index, name="Close NAV")
-
-    for number, date in enumerate(target_weights.index):
-        open_px = open_prices.loc[date]
-        nav_at_open = float(cash + (units * open_px).sum())
-        desired = target_weights.loc[date].clip(0, 1).fillna(0.0)
-        target_changed = previous_target is None or not np.allclose(
-            desired.to_numpy(dtype=float),
-            previous_target.to_numpy(dtype=float),
-            rtol=0.0,
-            atol=1e-12,
-        )
-        traded_fraction = 0.0
-        if target_changed:
-            current_weights = units * open_px / nav_at_open if nav_at_open > 0 else units * 0
-            traded_fraction = float((desired - current_weights).abs().sum())
-            trading_cost = nav_at_open * traded_fraction * cost_rate
-            investable = max(nav_at_open - trading_cost, 0.0)
-            target_values = investable * desired
-            units = (target_values / open_px).replace([np.inf, -np.inf], 0.0).fillna(0.0)
-            cash = max(investable - float(target_values.sum()), 0.0)
-            previous_target = desired.copy()
-        nav_at_close = float(cash + (units * close_prices.loc[date]).sum())
-        close_nav.loc[date] = nav_at_close
-        daily_ret.loc[date] = nav_at_close / previous_close_nav - 1 if number > 0 else nav_at_close - 1
-        turnover.loc[date] = traded_fraction
-        previous_close_nav = nav_at_close
-    return daily_ret, turnover, close_nav
+    prior_closes = close_prices.shift(1)
+    prior_closes.iloc[0] = open_prices.iloc[0]
+    return fixed_units_open_backtest(target_weights, prior_closes, open_prices, close_prices, cost_rate)
 
 
 def build_execution_plan(
@@ -483,19 +458,31 @@ def build_execution_plan(
     current_shares: pd.Series,
     current_cash: float,
     previous_target_weights: pd.Series | None = None,
+    cost_rate: float = 0.0,
+    force_sync: bool = False,
 ) -> tuple[pd.DataFrame, float]:
     current_values = current_shares * prices
     effective_value = account_value if account_value > 0 else current_values.sum() + current_cash
-    target_changed = previous_target_weights is None or not np.allclose(
+    target_changed = force_sync or previous_target_weights is None or not np.allclose(
         target_weights.to_numpy(dtype=float),
         previous_target_weights.reindex(target_weights.index).to_numpy(dtype=float),
         rtol=0.0,
         atol=1e-12,
     )
+    net_value = effective_value
+    if target_changed:
+        for _ in range(80):
+            candidate = np.floor(net_value * target_weights / prices).replace([np.inf, -np.inf], 0).fillna(0)
+            turnover = float(((candidate - current_shares).abs() * prices).sum())
+            revised = max(float(effective_value) - cost_rate * turnover, 0.0)
+            if abs(revised - net_value) < 0.01:
+                net_value = revised
+                break
+            net_value = revised
     rows = []
     for symbol in ["SOXX", "SOXL"]:
         if target_changed:
-            target_value = effective_value * target_weights[symbol]
+            target_value = net_value * target_weights[symbol]
             target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
         else:
             # Keep shares unchanged when only market prices moved. Rebalance only
@@ -516,11 +503,9 @@ def build_execution_plan(
                 "Estimated Order Value": abs(order_shares) * prices[symbol],
             }
         )
-    target_cash = (
-        effective_value * max(0.0, 1 - target_weights.sum())
-        if target_changed
-        else current_cash
-    )
+    fees = sum(row["Estimated Order Value"] for row in rows) * cost_rate
+    invested = sum(row["Target Shares"] * row["Latest Price"] for row in rows)
+    target_cash = max(effective_value - invested - fees, 0.0) if target_changed else current_cash
     return pd.DataFrame(rows), target_cash
 
 
@@ -562,6 +547,10 @@ with st.sidebar:
     bear_soxx = st.slider("Bear-regime SOXX weight (%)", 0, 100, 20, 5) / 100
     rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=0, horizontal=True)
     cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.25, step=0.01) / 100
+    recover_execution = st.checkbox(
+        "Recover missed/partial prior execution", value=False,
+        help="Force the account back to the current strategy target even when the signal target did not change.",
+    )
 
     st.subheader("Execution")
     account_state = render_account_controls(
@@ -614,12 +603,18 @@ try:
     end_dt = datetime.combine(end_date, datetime.min.time())
     soxx = load_yahoo_chart(SOXX, warmup_start, end_dt)
     soxl = load_yahoo_chart(SOXL, warmup_start, end_dt)
+    if end_date >= datetime.now().date():
+        completed = latest_completed_nyse_session(datetime.now(timezone.utc))
+        soxx, soxl = soxx.loc[soxx.index <= completed], soxl.loc[soxl.index <= completed]
 except Exception as exc:
     st.error(f"Could not load Yahoo Finance data: {exc}")
     st.stop()
 
-common_idx = soxx.index.intersection(soxl.index)
-common_idx = common_idx[(common_idx.date >= start_date) & (common_idx.date <= end_date)]
+try:
+    common_idx = validated_common_dates({SOXX: soxx, SOXL: soxl}, start_date, end_date)
+except ValueError as exc:
+    st.error(f"Market data integrity check failed: {exc}")
+    st.stop()
 if len(common_idx) < 200:
     st.error("Not enough data for the selected backtest period.")
     st.stop()
@@ -628,10 +623,8 @@ full_idx = common_idx.union(soxx.index[soxx.index < common_idx[0]])
 soxx = soxx.reindex(full_idx).sort_index()
 soxl = soxl.reindex(full_idx).sort_index()
 price = soxx["adjclose"].ffill()
-soxx_adj_factor = (soxx["adjclose"] / soxx["close"]).replace([np.inf, -np.inf], np.nan).ffill()
-soxl_adj_factor = (soxl["adjclose"] / soxl["close"]).replace([np.inf, -np.inf], np.nan).ffill()
-soxx_adjopen = (soxx["open"] * soxx_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()
-soxl_adjopen = (soxl["open"] * soxl_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()
+soxx_adjopen = adjusted_open(soxx)
+soxl_adjopen = adjusted_open(soxl)
 close_ret_soxx_full = soxx["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
 ret_soxx_full = soxx["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
 ret_soxl_full = soxl["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
@@ -750,10 +743,10 @@ close_target_weights = pd.DataFrame(
 )
 ret_soxx = ret_soxx_full.reindex(common_idx).fillna(0.0)
 ret_soxl = ret_soxl_full.reindex(common_idx).fillna(0.0)
-open_prices = pd.DataFrame({"SOXX": soxx_adjopen, "SOXL": soxl_adjopen}).reindex(common_idx).ffill()
+open_prices = pd.DataFrame({"SOXX": soxx_adjopen, "SOXL": soxl_adjopen}).reindex(common_idx)
 close_prices = pd.DataFrame(
     {"SOXX": soxx["adjclose"], "SOXL": soxl["adjclose"]}
-).reindex(common_idx).ffill()
+).reindex(common_idx)
 strategy_ret, executed_turnover, close_nav = backtest_open_execution_close_valuation(
     weights, open_prices, close_prices, cost_rate
 )
@@ -763,8 +756,18 @@ early_defense_ret, _, early_defense_close_nav = backtest_open_execution_close_va
 
 bench_soxx = ret_soxx
 bench_soxl = ret_soxl
-fixed_20 = 0.8 * ret_soxx + 0.2 * ret_soxl
-fixed_30 = 0.7 * ret_soxx + 0.3 * ret_soxl
+comparison_prior_closes = close_prices.shift(1)
+comparison_prior_closes.iloc[0] = open_prices.iloc[0]
+fixed_20, _, _ = fixed_units_open_backtest(
+    pd.DataFrame({"SOXX": 0.8, "SOXL": 0.2}, index=common_idx),
+    comparison_prior_closes, open_prices, close_prices, cost_rate,
+    rebalance_every_session=True,
+)
+fixed_30, _, _ = fixed_units_open_backtest(
+    pd.DataFrame({"SOXX": 0.7, "SOXL": 0.3}, index=common_idx),
+    comparison_prior_closes, open_prices, close_prices, cost_rate,
+    rebalance_every_session=True,
+)
 
 strategy_metrics = calc_metrics(strategy_ret)
 summary = pd.DataFrame(
@@ -791,7 +794,7 @@ latest_date = weights.index[-1].date()
 latest_turnaround = bool(close_turnaround_signal.reindex(weights.index).fillna(False).iloc[-1])
 latest_regime = str(close_display_regime_signal.ffill().iloc[-1])
 latest_vol = vol.reindex(weights.index).ffill().iloc[-1]
-next_target = calc_target_weight(
+calculated_next_target = calc_target_weight(
     str(close_regime_signal.reindex(weights.index).ffill().iloc[-1]),
     latest_turnaround,
     latest_vol,
@@ -805,10 +808,12 @@ next_target = calc_target_weight(
     turnaround_soxl_weight,
     bear_soxx,
 )
+rebalance_due = rebalance_due_after_close(latest_date, rebalance)
+next_target = calculated_next_target if rebalance_due else latest.copy()
 latest_prices = pd.Series(
     {
-        "SOXX": soxx["adjclose"].reindex(weights.index).ffill().iloc[-1],
-        "SOXL": soxl["adjclose"].reindex(weights.index).ffill().iloc[-1],
+        "SOXX": soxx["close"].reindex(weights.index).iloc[-1],
+        "SOXL": soxl["close"].reindex(weights.index).iloc[-1],
     }
 )
 current_shares = pd.Series({"SOXX": current_soxx_shares, "SOXL": current_soxl_shares})
@@ -821,13 +826,16 @@ execution_plan, target_cash = build_execution_plan(
     current_shares,
     current_cash,
     previous_target_weights=latest,
+    cost_rate=cost_rate,
+    force_sync=recover_execution,
 )
 action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 
 st.success(
     f"{action_label} | Today's target for next open from close signal ({latest_date}): {latest_regime} | "
     f"SOXX {next_target['SOXX']:.1%}, SOXL {next_target['SOXL']:.1%}, Cash {1 - next_target.sum():.1%} | "
-    f"SOXX {vol_window}D volatility {latest_vol:.1%}"
+    f"SOXX {vol_window}D volatility {latest_vol:.1%} | "
+    f"Next session rebalance: {'Yes' if rebalance_due else 'No'}"
 )
 
 cols = st.columns(6)
@@ -908,7 +916,8 @@ with tab_execute:
     st.subheader("Next Trade Plan")
     st.caption(
         "Signal uses the latest close. Backtest returns assume rebalancing at the next regular-session open. "
-        "The table uses the latest adjusted close only as a sizing estimate because the next open is not known yet."
+        "Share quantities are fixed from the latest raw close and are therefore estimates for the unknown next open. "
+        "Use the recovery option only for a new account or a missed/partial prior fill."
     )
     exec_shown = execution_plan.copy()
     for col in ["Latest Price", "Target Value", "Estimated Order Value"]:

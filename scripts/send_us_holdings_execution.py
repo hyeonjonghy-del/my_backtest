@@ -71,6 +71,7 @@ def build_messages(now: datetime) -> list[str]:
                 if suppress_price_drift_rebalancing
                 else None
             ),
+            fee_rate=float(strategy.get("cost_rate", 0.0)),
         )
         base, leveraged = symbols
 
@@ -102,8 +103,18 @@ def build_messages(now: datetime) -> list[str]:
                 "EXECUTION:",
                 _order_line(base, plan["orders"][base]),
                 _order_line(leveraged, plan["orders"][leveraged]),
+                *(
+                    [
+                        "",
+                        "미체결/신규계좌 복구용 현재목표 동기화 (필요할 때만):",
+                        _order_line(base, plan["recovery_orders"][base]),
+                        _order_line(leveraged, plan["recovery_orders"][leveraged]),
+                    ]
+                    if not plan["target_changed"]
+                    else []
+                ),
                 "",
-                "※ 다음 미국 정규장 시가 지침이며 주문은 자동 제출되지 않습니다.",
+                "※ 수량은 확정 종가로 정한 다음 미국 정규장 시가 주문 수량이며 주문은 자동 제출되지 않습니다.",
             ]
         messages.append("\n".join(sections))
 

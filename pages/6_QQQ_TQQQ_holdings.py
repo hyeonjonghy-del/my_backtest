@@ -20,6 +20,14 @@ from chart_utils import static_area_chart as mpl_static_area_chart
 from chart_utils import static_line_chart as mpl_static_line_chart
 from chart_utils import position_action_label
 from chart_utils import static_yearly_returns_chart
+from core.us_execution import (
+    adjusted_open,
+    fixed_units_open_backtest,
+    latest_completed_nyse_session,
+    rebalance_due_after_close,
+    validated_common_dates,
+    whole_share_open_backtest,
+)
 
 TRADING_DAYS = 252
 QQQ = "QQQ"
@@ -178,7 +186,7 @@ def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.Da
     period2 = int(datetime.combine((end_dt + timedelta(days=1)).date(), datetime.min.time(), tzinfo=timezone.utc).timestamp())
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        f"?period1={period1}&period2={period2}&interval=1d&events=history&includeAdjustedClose=true"
+        f"?period1={period1}&period2={period2}&interval=1d&events=div%2Csplits&includeAdjustedClose=true"
     )
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20) as response:
@@ -199,6 +207,20 @@ def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.Da
         },
         index=index,
     )
+    df["split_ratio"] = 1.0
+    df["dividend"] = 0.0
+    events = result.get("events", {})
+    for event in events.get("splits", {}).values():
+        event_date = pd.to_datetime(event["date"], unit="s").normalize()
+        numerator = float(event.get("numerator", 0.0))
+        denominator = float(event.get("denominator", 0.0))
+        if event_date in df.index and numerator > 0 and denominator > 0:
+            df.loc[event_date, "split_ratio"] *= numerator / denominator
+    for event in events.get("dividends", {}).values():
+        event_date = pd.to_datetime(event["date"], unit="s").normalize()
+        amount = float(event.get("amount", 0.0))
+        if event_date in df.index and amount >= 0:
+            df.loc[event_date, "dividend"] += amount
     return normalize_index(df).dropna(subset=["adjclose"])
 
 
@@ -446,125 +468,6 @@ def calc_target_weight(
     return target
 
 
-def legacy_backtest(
-    weights: pd.DataFrame,
-    ret_qqq: pd.Series,
-    ret_tqqq: pd.Series,
-    cost_rate: float,
-) -> pd.Series:
-    """Fractional-share comparison that trades only when target weights change."""
-    asset_values = pd.Series(0.0, index=["QQQ", "TQQQ"])
-    cash = 1.0
-    previous_nav = 1.0
-    prior_target: pd.Series | None = None
-    daily_ret = pd.Series(0.0, index=weights.index)
-    asset_returns = pd.DataFrame({"QQQ": ret_qqq, "TQQQ": ret_tqqq}).reindex(weights.index).fillna(0.0)
-
-    for index_number, date in enumerate(weights.index):
-        nav_before = float(cash + asset_values.sum())
-        target = weights.loc[date].clip(0, 1).fillna(0.0)
-        target_changed = prior_target is None or not np.allclose(
-            target.to_numpy(dtype=float),
-            prior_target.to_numpy(dtype=float),
-            rtol=0.0,
-            atol=1e-12,
-        )
-        if target_changed and nav_before > 0:
-            current_weights = asset_values / nav_before
-            traded_fraction = float((target - current_weights).abs().sum())
-            investable = max(nav_before * (1 - traded_fraction * cost_rate), 0.0)
-            asset_values = investable * target
-            cash = investable * max(0.0, 1 - float(target.sum()))
-            prior_target = target.copy()
-
-        asset_values = asset_values * (1 + asset_returns.loc[date])
-        close_nav = float(cash + asset_values.sum())
-        daily_ret.loc[date] = close_nav / previous_nav - 1 if index_number > 0 else close_nav - 1
-        previous_nav = close_nav
-
-    return daily_ret.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-
-def holdings_backtest(
-    target_weights: pd.DataFrame,
-    open_prices: pd.DataFrame,
-    close_prices: pd.DataFrame,
-    cost_rate: float,
-    initial_capital: float,
-) -> tuple[pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
-    """Trade whole shares when targets change and retain all residual cash."""
-    shares = pd.Series(0.0, index=["QQQ", "TQQQ"])
-    cash = float(initial_capital)
-    previous_close_nav = float(initial_capital)
-    prior_target: pd.Series | None = None
-    daily_ret = pd.Series(0.0, index=target_weights.index)
-    actual_weights = pd.DataFrame(0.0, index=target_weights.index, columns=["QQQ", "TQQQ"])
-    turnover = pd.Series(0.0, index=target_weights.index)
-    share_history = pd.DataFrame(0.0, index=target_weights.index, columns=["QQQ", "TQQQ"])
-    cash_history = pd.Series(0.0, index=target_weights.index)
-
-    for index_number, date in enumerate(target_weights.index):
-        prices = open_prices.loc[date]
-        asset_values = shares * prices
-        nav_before = float(cash + asset_values.sum())
-        target = target_weights.loc[date].clip(0, 1)
-        should_rebalance = prior_target is None or not np.allclose(
-            target.values,
-            prior_target.values,
-            atol=1e-12,
-            rtol=0,
-        )
-
-        if should_rebalance and nav_before > 0:
-            target_shares = np.floor(nav_before * target / prices).replace([np.inf, -np.inf], 0.0).fillna(0.0)
-
-            def remaining_cash(candidate_shares: pd.Series) -> float:
-                trade_value = ((candidate_shares - shares).abs() * prices).sum()
-                trading_cost = float(trade_value * cost_rate)
-                return float(nav_before - (candidate_shares * prices).sum() - trading_cost)
-
-            cash_after_trade = remaining_cash(target_shares)
-            while cash_after_trade < -1e-9 and bool((target_shares > 0).any()):
-                candidates: list[tuple[float, str, pd.Series, float]] = []
-                for symbol in target_shares.index[target_shares > 0]:
-                    candidate = target_shares.copy()
-                    candidate.loc[symbol] -= 1
-                    candidate_cash = remaining_cash(candidate)
-                    candidate_weights = candidate * prices / nav_before
-                    allocation_error = float(((candidate_weights - target) ** 2).sum())
-                    candidates.append((allocation_error, str(symbol), candidate, candidate_cash))
-                _, _, target_shares, cash_after_trade = min(candidates, key=lambda item: (item[0], item[1]))
-
-            order_shares = target_shares - shares
-            traded_value = float((order_shares.abs() * prices).sum())
-            trading_cost = traded_value * cost_rate
-            nav_after_trade = max(nav_before - trading_cost, 0.0)
-            shares = target_shares
-            cash = max(float(nav_before - (shares * prices).sum() - trading_cost), 0.0)
-            turnover.loc[date] = traded_value / nav_before
-            prior_target = target.copy()
-        else:
-            nav_after_trade = nav_before
-
-        marked_values = shares * close_prices.loc[date]
-        marked_nav = float(cash + marked_values.sum())
-        if marked_nav > 0:
-            actual_weights.loc[date] = marked_values / marked_nav
-        share_history.loc[date] = shares
-        cash_history.loc[date] = cash
-
-        daily_ret.loc[date] = marked_nav / previous_close_nav - 1 if previous_close_nav > 0 else 0.0
-        previous_close_nav = marked_nav
-
-    return (
-        daily_ret.replace([np.inf, -np.inf], np.nan).fillna(0.0),
-        actual_weights,
-        turnover,
-        share_history,
-        cash_history,
-    )
-
-
 def build_execution_plan(
     target_weights: pd.Series,
     prices: pd.Series,
@@ -572,19 +475,33 @@ def build_execution_plan(
     current_shares: pd.Series,
     current_cash: float,
     previous_target_weights: pd.Series | None = None,
+    cost_rate: float = 0.0,
+    force_sync: bool = False,
 ) -> tuple[pd.DataFrame, float]:
     current_values = current_shares * prices
     effective_value = account_value if account_value > 0 else current_values.sum() + current_cash
-    target_changed = previous_target_weights is None or not np.allclose(
+    target_changed = force_sync or previous_target_weights is None or not np.allclose(
         target_weights.to_numpy(dtype=float),
         previous_target_weights.reindex(target_weights.index).to_numpy(dtype=float),
         rtol=0.0,
         atol=1e-12,
     )
+    net_value = effective_value
+    if target_changed:
+        for _ in range(80):
+            candidate = np.floor(net_value * target_weights / prices).replace(
+                [np.inf, -np.inf], 0
+            ).fillna(0)
+            turnover = float(((candidate - current_shares).abs() * prices).sum())
+            revised = max(float(effective_value) - cost_rate * turnover, 0.0)
+            if abs(revised - net_value) < 0.01:
+                net_value = revised
+                break
+            net_value = revised
     rows = []
     for symbol in ["QQQ", "TQQQ"]:
         if target_changed:
-            target_value = effective_value * target_weights[symbol]
+            target_value = net_value * target_weights[symbol]
             target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
         else:
             target_value = current_values[symbol]
@@ -603,11 +520,9 @@ def build_execution_plan(
                 "Estimated Order Value": abs(order_shares) * prices[symbol],
             }
         )
-    target_cash = (
-        effective_value * max(0.0, 1 - target_weights.sum())
-        if target_changed
-        else current_cash
-    )
+    fees = sum(row["Estimated Order Value"] for row in rows) * cost_rate
+    invested = sum(row["Target Shares"] * row["Latest Price"] for row in rows)
+    target_cash = max(effective_value - invested - fees, 0.0) if target_changed else current_cash
     return pd.DataFrame(rows), target_cash
 
 
@@ -661,6 +576,11 @@ with st.sidebar:
     bear_qqq = st.slider("Bear-regime QQQ weight (%)", 0, 100, 30, 5) / 100
     rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=0, horizontal=True)
     cost_rate = st.number_input("One-way trading cost (%)", min_value=0.0, value=0.25, step=0.01) / 100
+    recover_execution = st.checkbox(
+        "Recover missed/partial prior execution",
+        value=False,
+        help="Force the account back to the current strategy target even when the signal target did not change.",
+    )
 
     st.subheader("Execution")
     account_state = render_account_controls(
@@ -692,6 +612,9 @@ with st.expander("Default Strategy", expanded=False):
 | Turnaround allocation | QQQ {1 - turnaround_tqqq_weight:.0%} + TQQQ {turnaround_tqqq_weight:.0%} |
 | Turnaround exit | MA{turnaround_exit_fast} < MA{turnaround_exit_slow} for {turnaround_exit_confirm} day(s), then return to regime logic |
 | Bear regime | Cash {1 - bear_qqq:.0%} + QQQ {bear_qqq:.0%} |
+| Signal pricing | Split/dividend-adjusted closes for indicators only |
+| Execution pricing | Prior raw close fixes whole-share orders; next raw open executes them |
+| Corporate actions | Historical splits change share counts; ex-date dividends enter cash after that day's trade |
 | Execution | Trade only when target weights change; no price-only drift rebalancing |
 """
     )
@@ -714,12 +637,18 @@ try:
     end_dt = datetime.combine(end_date, datetime.min.time())
     qqq = load_yahoo_chart(QQQ, warmup_start, end_dt)
     tqqq = load_yahoo_chart(TQQQ, warmup_start, end_dt)
+    if end_date >= datetime.now().date():
+        completed = latest_completed_nyse_session(datetime.now(timezone.utc))
+        qqq, tqqq = qqq.loc[qqq.index <= completed], tqqq.loc[tqqq.index <= completed]
 except Exception as exc:
     st.error(f"Could not load Yahoo Finance data: {exc}")
     st.stop()
 
-common_idx = qqq.index.intersection(tqqq.index)
-common_idx = common_idx[(common_idx.date >= start_date) & (common_idx.date <= end_date)]
+try:
+    common_idx = validated_common_dates({QQQ: qqq, TQQQ: tqqq}, start_date, end_date)
+except ValueError as exc:
+    st.error(f"Market data integrity check failed: {exc}")
+    st.stop()
 if len(common_idx) < 200:
     st.error("Not enough data for the selected backtest period.")
     st.stop()
@@ -728,10 +657,8 @@ full_idx = common_idx.union(qqq.index[qqq.index < common_idx[0]])
 qqq = qqq.reindex(full_idx).sort_index()
 tqqq = tqqq.reindex(full_idx).sort_index()
 price = qqq["adjclose"].ffill()
-qqq_adj_factor = (qqq["adjclose"] / qqq["close"]).replace([np.inf, -np.inf], np.nan).ffill()
-tqqq_adj_factor = (tqqq["adjclose"] / tqqq["close"]).replace([np.inf, -np.inf], np.nan).ffill()
-qqq_adjopen = (qqq["open"] * qqq_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()
-tqqq_adjopen = (tqqq["open"] * tqqq_adj_factor).replace([np.inf, -np.inf], np.nan).ffill()
+qqq_adjopen = adjusted_open(qqq)
+tqqq_adjopen = adjusted_open(tqqq)
 close_ret_qqq_full = qqq["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
 ret_qqq_full = qqq["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
 ret_tqqq_full = tqqq["adjclose"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
@@ -826,35 +753,67 @@ close_target_weights = pd.DataFrame(
 )
 ret_qqq = ret_qqq_full.reindex(common_idx).fillna(0.0)
 ret_tqqq = ret_tqqq_full.reindex(common_idx).fillna(0.0)
-legacy_ret = legacy_backtest(weights, ret_qqq, ret_tqqq, cost_rate)
-open_prices = pd.DataFrame(
+adjusted_open_prices = pd.DataFrame(
     {
-        "QQQ": qqq_adjopen.reindex(common_idx).ffill(),
-        "TQQQ": tqqq_adjopen.reindex(common_idx).ffill(),
+        "QQQ": qqq_adjopen.reindex(common_idx),
+        "TQQQ": tqqq_adjopen.reindex(common_idx),
     }
 )
-close_prices = pd.DataFrame(
-    {"QQQ": qqq["adjclose"].reindex(common_idx).ffill(), "TQQQ": tqqq["adjclose"].reindex(common_idx).ffill()}
+adjusted_close_prices = pd.DataFrame(
+    {"QQQ": qqq["adjclose"].reindex(common_idx), "TQQQ": tqqq["adjclose"].reindex(common_idx)}
 )
-strategy_ret, actual_weights, executed_turnover, share_history, backtest_cash = holdings_backtest(
+adjusted_prior_closes = pd.DataFrame(
+    {"QQQ": qqq["adjclose"].shift(1).reindex(common_idx), "TQQQ": tqqq["adjclose"].shift(1).reindex(common_idx)}
+)
+fractional_ret, _, _ = fixed_units_open_backtest(
+    weights, adjusted_prior_closes, adjusted_open_prices, adjusted_close_prices, cost_rate
+)
+
+raw_open_prices = pd.DataFrame(
+    {"QQQ": qqq["open"].reindex(common_idx), "TQQQ": tqqq["open"].reindex(common_idx)}
+)
+raw_close_prices = pd.DataFrame(
+    {"QQQ": qqq["close"].reindex(common_idx), "TQQQ": tqqq["close"].reindex(common_idx)}
+)
+raw_prior_closes = pd.DataFrame(
+    {"QQQ": qqq["close"].shift(1).reindex(common_idx), "TQQQ": tqqq["close"].shift(1).reindex(common_idx)}
+)
+split_ratios = pd.DataFrame(
+    {"QQQ": qqq["split_ratio"].reindex(common_idx), "TQQQ": tqqq["split_ratio"].reindex(common_idx)}
+).fillna(1.0)
+dividends = pd.DataFrame(
+    {"QQQ": qqq["dividend"].reindex(common_idx), "TQQQ": tqqq["dividend"].reindex(common_idx)}
+).fillna(0.0)
+strategy_ret, actual_weights, executed_turnover, share_history, backtest_cash = whole_share_open_backtest(
     weights,
-    open_prices,
-    close_prices,
+    raw_prior_closes,
+    raw_open_prices,
+    raw_close_prices,
+    split_ratios,
+    dividends,
     cost_rate,
     initial_capital,
 )
 
 bench_qqq = ret_qqq
 bench_tqqq = ret_tqqq
-fixed_20 = 0.8 * ret_qqq + 0.2 * ret_tqqq
-fixed_30 = 0.7 * ret_qqq + 0.3 * ret_tqqq
+fixed_20, _, _ = fixed_units_open_backtest(
+    pd.DataFrame({"QQQ": 0.8, "TQQQ": 0.2}, index=common_idx),
+    adjusted_prior_closes, adjusted_open_prices, adjusted_close_prices, cost_rate,
+    rebalance_every_session=True,
+)
+fixed_30, _, _ = fixed_units_open_backtest(
+    pd.DataFrame({"QQQ": 0.7, "TQQQ": 0.3}, index=common_idx),
+    adjusted_prior_closes, adjusted_open_prices, adjusted_close_prices, cost_rate,
+    rebalance_every_session=True,
+)
 
 strategy_metrics = calc_metrics(strategy_ret)
-legacy_metrics = calc_metrics(legacy_ret)
+legacy_metrics = calc_metrics(fractional_ret)
 summary = pd.DataFrame(
     [
         metric_row("Strategy (Holdings)", strategy_ret, actual_weights["QQQ"], actual_weights["TQQQ"]),
-        metric_row("Fractional Target-Change", legacy_ret, weights["QQQ"], weights["TQQQ"]),
+        metric_row("Fractional Same-Timing", fractional_ret, weights["QQQ"], weights["TQQQ"]),
         metric_row("QQQ 100%", bench_qqq),
         metric_row("TQQQ 100%", bench_tqqq),
         metric_row("QQQ 80% + TQQQ 20%", fixed_20),
@@ -870,7 +829,7 @@ latest_date = weights.index[-1].date()
 latest_turnaround = bool(close_turnaround_signal.reindex(weights.index).fillna(False).iloc[-1])
 latest_regime = str(close_display_regime_signal.ffill().iloc[-1])
 latest_vol = vol.reindex(weights.index).ffill().iloc[-1]
-next_target = calc_target_weight(
+calculated_next_target = calc_target_weight(
     str(close_regime_signal.reindex(weights.index).ffill().iloc[-1]),
     latest_turnaround,
     latest_vol,
@@ -886,10 +845,12 @@ next_target = calc_target_weight(
     turnaround_tqqq_weight,
     bear_qqq,
 )
+rebalance_due = rebalance_due_after_close(latest_date, rebalance)
+next_target = calculated_next_target if rebalance_due else latest.copy()
 latest_prices = pd.Series(
     {
-        "QQQ": qqq["adjclose"].reindex(weights.index).ffill().iloc[-1],
-        "TQQQ": tqqq["adjclose"].reindex(weights.index).ffill().iloc[-1],
+        "QQQ": qqq["close"].reindex(weights.index).iloc[-1],
+        "TQQQ": tqqq["close"].reindex(weights.index).iloc[-1],
     }
 )
 current_shares = pd.Series({"QQQ": current_qqq_shares, "TQQQ": current_tqqq_shares})
@@ -903,16 +864,19 @@ execution_plan, target_cash = build_execution_plan(
     current_shares,
     current_cash,
     previous_target_weights=latest,
+    cost_rate=cost_rate,
+    force_sync=recover_execution,
 )
 action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 
 st.success(
     f"{action_label} | Today's target for next open from close signal ({latest_date}): {latest_regime} | "
     f"QQQ {next_target['QQQ']:.1%}, TQQQ {next_target['TQQQ']:.1%}, Cash {1 - next_target.sum():.1%} | "
-    f"QQQ {vol_window}D volatility {latest_vol:.1%}"
+    f"QQQ {vol_window}D volatility {latest_vol:.1%} | "
+    f"Next session rebalance: {'Yes' if rebalance_due else 'No'}"
 )
 st.info(
-    f"${initial_capital:,.0f} whole-share holdings vs fractional target-change calculation | "
+    f"${initial_capital:,.0f} whole-share holdings vs fractional same-timing calculation | "
     f"Total return difference {strategy_metrics['total'] - legacy_metrics['total']:+.1%}p | "
     f"CAGR difference {strategy_metrics['cagr'] - legacy_metrics['cagr']:+.2%}p | "
     f"MDD difference {strategy_metrics['mdd'] - legacy_metrics['mdd']:+.2%}p"
@@ -934,7 +898,7 @@ with tab_perf:
     nav_df = pd.DataFrame(
         {
             "Strategy": strategy_metrics["nav"],
-            "Legacy": legacy_metrics["nav"],
+            "Fractional Same-Timing": legacy_metrics["nav"],
             "QQQ": calc_metrics(bench_qqq)["nav"],
             "TQQQ": calc_metrics(bench_tqqq)["nav"],
             "80/20": calc_metrics(fixed_20)["nav"],
@@ -960,7 +924,7 @@ with tab_perf:
     dd_df = pd.DataFrame(
         {
             "Strategy DD": strategy_metrics["dd"],
-            "Legacy DD": legacy_metrics["dd"],
+            "Fractional DD": legacy_metrics["dd"],
             "QQQ DD": calc_metrics(bench_qqq)["dd"],
             "TQQQ DD": calc_metrics(bench_tqqq)["dd"],
         }
@@ -979,7 +943,7 @@ with tab_perf:
         static_yearly_returns_chart(
             {
                 "Strategy": strategy_metrics["nav"],
-                "Legacy": legacy_metrics["nav"],
+                "Fractional": legacy_metrics["nav"],
                 "QQQ": calc_metrics(bench_qqq)["nav"],
                 "TQQQ": calc_metrics(bench_tqqq)["nav"],
             },
@@ -998,7 +962,8 @@ with tab_execute:
     st.subheader("Next Trade Plan")
     st.caption(
         "Signal uses the latest close. Backtest returns assume rebalancing at the next regular-session open. "
-        "The table uses the latest adjusted close only as a sizing estimate because the next open is not known yet."
+        "Share quantities are fixed from the latest raw close and are therefore estimates for the unknown next open. "
+        "Use the recovery option only for a new account or a missed/partial prior fill."
     )
     exec_shown = execution_plan.copy()
     for col in ["Latest Price", "Target Value", "Estimated Order Value"]:

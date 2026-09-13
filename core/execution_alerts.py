@@ -447,6 +447,7 @@ US_STRATEGIES: tuple[dict[str, Any], ...] = (
         "turnaround_drawdown": 0.10,
         "turnaround_leveraged_weight": 0.50,
         "bear_base": 0.30,
+        "cost_rate": 0.0025,
     },
 )
 

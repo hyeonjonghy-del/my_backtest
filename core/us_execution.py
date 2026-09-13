@@ -112,6 +112,132 @@ def fixed_units_open_backtest(
     return daily.fillna(0.0), pd.Series(turnover_rows, index=dates, name="Turnover"), nav
 
 
+def whole_share_open_backtest(
+    targets,
+    prior_closes,
+    opens,
+    closes,
+    splits,
+    dividends,
+    fee_rate,
+    initial_capital,
+):
+    """Backtest executable whole-share orders with raw prices and corporate actions.
+
+    Targets are known after the prior close. Desired share counts are therefore
+    fixed from the prior raw close, then sells and affordable buys execute at the
+    next raw open. Split adjustments occur before that open; dividends are added
+    to cash on the ex-date as an economic-value approximation.
+    """
+    if not 0 <= fee_rate < 1:
+        raise ValueError("fee_rate must be in [0, 1)")
+    if initial_capital <= 0:
+        raise ValueError("initial_capital must be positive")
+
+    dates = pd.DatetimeIndex(targets.index)
+    assets = list(targets.columns)
+    price_frames = []
+    for frame, label in [(prior_closes, "prior close"), (opens, "open"), (closes, "close")]:
+        values = frame.reindex(index=dates, columns=assets).astype(float)
+        if not np.isfinite(values.to_numpy()).all() or (values <= 0).any().any():
+            raise ValueError(f"Missing or invalid {label} prices")
+        price_frames.append(values)
+    prior_values, open_values, close_values = [frame.to_numpy(dtype=float) for frame in price_frames]
+
+    split_values = splits.reindex(index=dates, columns=assets, fill_value=1.0).astype(float).to_numpy()
+    dividend_values = dividends.reindex(index=dates, columns=assets, fill_value=0.0).astype(float).to_numpy()
+    if not np.isfinite(split_values).all() or (split_values <= 0).any():
+        raise ValueError("Split ratios must be finite and positive")
+    if not np.isfinite(dividend_values).all() or (dividend_values < 0).any():
+        raise ValueError("Dividends must be finite and non-negative")
+
+    shares = np.zeros(len(assets), dtype=float)
+    cash = float(initial_capital)
+    previous_nav = float(initial_capital)
+    previous_target = None
+    returns, turnover_rows, cash_rows = [], [], []
+    weight_rows, share_rows = [], []
+
+    for number, _date in enumerate(dates):
+        target = np.clip(targets.iloc[number].to_numpy(dtype=float), 0.0, 1.0)
+        if not np.isfinite(target).all() or target.sum() > 1 + 1e-10:
+            raise ValueError("Targets must be finite long-only weights with total <= 1")
+        changed = previous_target is None or not np.allclose(
+            target, previous_target, atol=1e-12, rtol=0.0
+        )
+
+        split = split_values[number]
+        pre_split_shares = shares.copy()
+        shares *= split
+        dividend_receivable = float(np.dot(shares, dividend_values[number]))
+        open_px = open_values[number]
+        nav_before = cash + float(np.dot(shares, open_px))
+        traded = 0.0
+
+        if changed:
+            sizing_px = prior_values[number]
+            signal_nav = cash + float(np.dot(pre_split_shares, sizing_px))
+            current_values = pre_split_shares * sizing_px
+            low, high = 0.0, signal_nav
+            for _ in range(48):
+                net = (low + high) / 2
+                required = net + fee_rate * float(np.abs(net * target - current_values).sum())
+                if required > signal_nav:
+                    high = net
+                else:
+                    low = net
+            desired_pre_split = np.floor(low * target / sizing_px + 1e-10)
+            desired = np.floor(desired_pre_split * split + 1e-12)
+            delta = desired - shares
+
+            sells = np.minimum(delta, 0.0)
+            sell_value = float(np.dot(-sells, open_px))
+            cash += sell_value * (1 - fee_rate)
+            shares += sells
+            traded += sell_value
+
+            desired_buys = np.maximum(desired - shares, 0.0)
+            buy_cost = float(np.dot(desired_buys, open_px)) * (1 + fee_rate)
+            while buy_cost > cash + 1e-9 and desired_buys.sum() > 0:
+                candidates = []
+                for asset_number in np.flatnonzero(desired_buys > 0):
+                    candidate = desired_buys.copy()
+                    candidate[asset_number] -= 1
+                    resulting = shares + candidate
+                    weights_at_open = resulting * open_px / max(nav_before, 1e-12)
+                    error = float(np.square(weights_at_open - target).sum())
+                    candidates.append((error, asset_number, candidate))
+                _, _, desired_buys = min(candidates, key=lambda item: (item[0], item[1]))
+                buy_cost = float(np.dot(desired_buys, open_px)) * (1 + fee_rate)
+
+            buy_value = float(np.dot(desired_buys, open_px))
+            cash -= buy_value * (1 + fee_rate)
+            shares += desired_buys
+            traded += buy_value
+            cash = max(cash, 0.0)
+            previous_target = target.copy()
+
+        # Ex-date entitlement belongs to the shares held before today's open,
+        # including positions sold at that open and excluding new purchases.
+        cash += dividend_receivable
+        close_nav = cash + float(np.dot(shares, close_values[number]))
+        returns.append(close_nav / previous_nav - 1 if previous_nav > 0 else 0.0)
+        previous_nav = close_nav
+        values = shares * close_values[number]
+        weight_rows.append(values / close_nav if close_nav > 0 else np.zeros(len(assets)))
+        share_rows.append(shares.copy())
+        cash_rows.append(cash)
+        turnover_rows.append(traded / nav_before if nav_before > 0 else 0.0)
+
+    return (
+        pd.Series(returns, index=dates, name="Return").replace([np.inf, -np.inf], np.nan).fillna(0.0),
+        pd.DataFrame(weight_rows, index=dates, columns=assets),
+        pd.Series(turnover_rows, index=dates, name="Turnover"),
+        pd.DataFrame(share_rows, index=dates, columns=assets),
+        pd.Series(cash_rows, index=dates, name="Cash"),
+    )
+
+
 def next_nyse_session(date):
     import pandas_market_calendars as mcal
 

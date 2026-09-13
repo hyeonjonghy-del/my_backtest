@@ -11,6 +11,12 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+from core.us_execution import (
+    adjusted_open,
+    fixed_units_open_backtest,
+    latest_completed_nyse_session,
+    validated_common_dates,
+)
 from kiwoom_account import (
     KIWOOM_SOURCE,
     render_account_controls,
@@ -79,11 +85,6 @@ def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.Da
         index=index,
     )
     return normalize_index(frame).dropna(subset=["adjclose"])
-
-
-def adjusted_open(frame: pd.DataFrame) -> pd.Series:
-    factor = (frame["adjclose"] / frame["close"]).replace([np.inf, -np.inf], np.nan).ffill()
-    return (frame["open"] * factor).replace([np.inf, -np.inf], np.nan).ffill()
 
 
 def calc_metrics(daily_ret: pd.Series) -> dict[str, object]:
@@ -159,32 +160,13 @@ def backtest_open_execution_close_valuation(
     close_prices: pd.DataFrame,
     cost_rate: float,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """Trade at each open, carry holdings, and mark portfolio NAV at each close."""
-    units = pd.Series(0.0, index=target_weights.columns)
-    cash = 1.0
-    previous_close_nav = 1.0
-    daily_ret = pd.Series(0.0, index=target_weights.index, name="Strategy")
-    turnover = pd.Series(0.0, index=target_weights.index, name="Turnover")
-    close_nav = pd.Series(0.0, index=target_weights.index, name="Close NAV")
-
-    for number, date in enumerate(target_weights.index):
-        open_px = open_prices.loc[date]
-        nav_at_open = float(cash + (units * open_px).sum())
-        current_values = units * open_px
-        current_weights = current_values / nav_at_open if nav_at_open > 0 else current_values * 0
-        desired = target_weights.loc[date].clip(0, 1)
-        traded_fraction = float(desired.sum()) if number == 0 else float((desired - current_weights).abs().sum() / 2)
-        trading_cost = nav_at_open * traded_fraction * cost_rate
-        investable = max(nav_at_open - trading_cost, 0.0)
-        target_values = investable * desired
-        units = (target_values / open_px).replace([np.inf, -np.inf], 0.0).fillna(0.0)
-        cash = max(investable - float(target_values.sum()), 0.0)
-        nav_at_close = float(cash + (units * close_prices.loc[date]).sum())
-        close_nav.loc[date] = nav_at_close
-        daily_ret.loc[date] = nav_at_close / previous_close_nav - 1 if number > 0 else nav_at_close - 1
-        turnover.loc[date] = traded_fraction
-        previous_close_nav = nav_at_close
-    return daily_ret, turnover, close_nav
+    """Size at the prior close and rebalance at every next open."""
+    prior_closes = close_prices.shift(1)
+    prior_closes.iloc[0] = open_prices.iloc[0]
+    return fixed_units_open_backtest(
+        target_weights, prior_closes, open_prices, close_prices, cost_rate,
+        rebalance_every_session=True,
+    )
 
 
 def fixed_mix_return(soxx_ret: pd.Series, bil_ret: pd.Series, soxx_weight: float) -> pd.Series:
@@ -411,12 +393,18 @@ try:
     end_dt = datetime.combine(end_date, datetime.min.time())
     soxx = load_yahoo_chart(SOXX, warmup_start, end_dt)
     bil = load_yahoo_chart(BIL, warmup_start, end_dt)
+    if end_date >= datetime.now().date():
+        completed = latest_completed_nyse_session(datetime.now(timezone.utc))
+        soxx, bil = soxx.loc[soxx.index <= completed], bil.loc[bil.index <= completed]
 except Exception as exc:
     st.error(f"Could not load Yahoo Finance data: {exc}")
     st.stop()
 
-common_idx = soxx.index.intersection(bil.index)
-common_idx = common_idx[(common_idx.date >= start_date) & (common_idx.date <= end_date)]
+try:
+    common_idx = validated_common_dates({SOXX: soxx, BIL: bil}, start_date, end_date)
+except ValueError as exc:
+    st.error(f"Market data integrity check failed: {exc}")
+    st.stop()
 if len(common_idx) < 200:
     st.error("Not enough data for the selected period.")
     st.stop()
@@ -437,15 +425,25 @@ weights_full, close_bull, realized_vol, fast_ma, slow_ma = build_weights(
 weights = weights_full.reindex(common_idx).ffill().fillna({"SOXX": bear_soxx, "BIL": 1 - bear_soxx})
 ret_soxx = ret_soxx_full.reindex(common_idx).fillna(0.0)
 ret_bil = ret_bil_full.reindex(common_idx).fillna(0.0)
-open_prices = pd.DataFrame({"SOXX": soxx_open, "BIL": bil_open}).reindex(common_idx).ffill()
-close_prices = pd.DataFrame({"SOXX": soxx["adjclose"], "BIL": bil["adjclose"]}).reindex(common_idx).ffill()
+open_prices = pd.DataFrame({"SOXX": soxx_open, "BIL": bil_open}).reindex(common_idx)
+close_prices = pd.DataFrame({"SOXX": soxx["adjclose"], "BIL": bil["adjclose"]}).reindex(common_idx)
 strategy_ret, turnover, close_nav = backtest_open_execution_close_valuation(
     weights, open_prices, close_prices, cost_rate
 )
 
 bench_soxx = ret_soxx
-fixed_80 = fixed_mix_return(ret_soxx, ret_bil, 0.8)
-fixed_60 = fixed_mix_return(ret_soxx, ret_bil, 0.6)
+comparison_prior_closes = close_prices.shift(1)
+comparison_prior_closes.iloc[0] = open_prices.iloc[0]
+fixed_80, _, _ = fixed_units_open_backtest(
+    pd.DataFrame({"SOXX": 0.8, "BIL": 0.2}, index=common_idx),
+    comparison_prior_closes, open_prices, close_prices, cost_rate,
+    rebalance_every_session=True,
+)
+fixed_60, _, _ = fixed_units_open_backtest(
+    pd.DataFrame({"SOXX": 0.6, "BIL": 0.4}, index=common_idx),
+    comparison_prior_closes, open_prices, close_prices, cost_rate,
+    rebalance_every_session=True,
+)
 metrics = calc_metrics(strategy_ret)
 summary = pd.DataFrame([
     metric_row("Strategy", strategy_ret, weights["SOXX"]),
@@ -455,8 +453,8 @@ summary = pd.DataFrame([
 ])
 
 latest_date = common_idx[-1]
-latest_price = price.reindex(common_idx).ffill().iloc[-1]
-latest_bil_price = bil["adjclose"].reindex(common_idx).ffill().iloc[-1]
+latest_price = soxx["close"].reindex(common_idx).iloc[-1]
+latest_bil_price = bil["close"].reindex(common_idx).iloc[-1]
 latest_vol = realized_vol.reindex(common_idx).ffill().iloc[-1]
 latest_bull = bool(close_bull.reindex(common_idx).fillna(False).iloc[-1])
 next_soxx_weight = min(target_vol / latest_vol, 1.0) if latest_bull and latest_vol > 0 else bear_soxx
@@ -535,13 +533,29 @@ with tab_execution:
     st.subheader("Next Trade Plan")
     if effective_value <= 0:
         effective_value = current_soxx_shares * latest_price + current_bil_shares * latest_bil_price + current_cash
-    execution_rows = []
-    for symbol, px, current_shares in [
+    execution_inputs = [
         ("SOXX", latest_price, current_soxx_shares),
         ("BIL", latest_bil_price, current_bil_shares),
-    ]:
-        target_value = effective_value * next_weights[symbol]
-        target_shares = np.floor(target_value / px) if px > 0 else 0
+    ]
+    net_value = effective_value
+    for _ in range(80):
+        candidates = {
+            symbol: np.floor(net_value * next_weights[symbol] / px) if px > 0 else 0
+            for symbol, px, _ in execution_inputs
+        }
+        traded_value = sum(
+            abs(candidates[symbol] - current_shares) * px
+            for symbol, px, current_shares in execution_inputs
+        )
+        revised = max(effective_value - traded_value * cost_rate, 0.0)
+        if abs(revised - net_value) < 0.01:
+            net_value = revised
+            break
+        net_value = revised
+    execution_rows = []
+    for symbol, px, current_shares in execution_inputs:
+        target_value = net_value * next_weights[symbol]
+        target_shares = candidates[symbol]
         order_shares = target_shares - current_shares
         execution_rows.append({
             "Symbol": symbol,
@@ -559,7 +573,8 @@ with tab_execution:
                                          "Target Value": "${:,.0f}", "Estimated Order Value": "${:,.0f}"}),
                  use_container_width=True, hide_index=True)
     invested = sum(row["Target Shares"] * row["Latest Price"] for row in execution_rows)
-    st.metric("Estimated residual cash after whole-share orders", f"${max(effective_value - invested, 0):,.2f}")
+    fees = sum(row["Estimated Order Value"] for row in execution_rows) * cost_rate
+    st.metric("Estimated residual cash after whole-share orders", f"${max(effective_value - invested - fees, 0):,.2f}")
 
 with tab_signal:
     signal_frame = pd.DataFrame({

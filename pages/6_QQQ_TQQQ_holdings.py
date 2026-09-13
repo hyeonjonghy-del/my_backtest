@@ -25,6 +25,7 @@ from core.us_execution import (
     fixed_units_open_backtest,
     latest_completed_nyse_session,
     rebalance_due_after_close,
+    split_unadjusted_price,
     validated_common_dates,
     whole_share_open_backtest,
 )
@@ -769,14 +770,16 @@ fractional_ret, _, _ = fixed_units_open_backtest(
     weights, adjusted_prior_closes, adjusted_open_prices, adjusted_close_prices, cost_rate
 )
 
+qqq_raw_open, tqqq_raw_open = split_unadjusted_price(qqq, "open"), split_unadjusted_price(tqqq, "open")
+qqq_raw_close, tqqq_raw_close = split_unadjusted_price(qqq, "close"), split_unadjusted_price(tqqq, "close")
 raw_open_prices = pd.DataFrame(
-    {"QQQ": qqq["open"].reindex(common_idx), "TQQQ": tqqq["open"].reindex(common_idx)}
+    {"QQQ": qqq_raw_open.reindex(common_idx), "TQQQ": tqqq_raw_open.reindex(common_idx)}
 )
 raw_close_prices = pd.DataFrame(
-    {"QQQ": qqq["close"].reindex(common_idx), "TQQQ": tqqq["close"].reindex(common_idx)}
+    {"QQQ": qqq_raw_close.reindex(common_idx), "TQQQ": tqqq_raw_close.reindex(common_idx)}
 )
 raw_prior_closes = pd.DataFrame(
-    {"QQQ": qqq["close"].shift(1).reindex(common_idx), "TQQQ": tqqq["close"].shift(1).reindex(common_idx)}
+    {"QQQ": qqq_raw_close.shift(1).reindex(common_idx), "TQQQ": tqqq_raw_close.shift(1).reindex(common_idx)}
 )
 split_ratios = pd.DataFrame(
     {"QQQ": qqq["split_ratio"].reindex(common_idx), "TQQQ": tqqq["split_ratio"].reindex(common_idx)}
@@ -849,8 +852,8 @@ rebalance_due = rebalance_due_after_close(latest_date, rebalance)
 next_target = calculated_next_target if rebalance_due else latest.copy()
 latest_prices = pd.Series(
     {
-        "QQQ": qqq["close"].reindex(weights.index).iloc[-1],
-        "TQQQ": tqqq["close"].reindex(weights.index).iloc[-1],
+        "QQQ": qqq_raw_close.reindex(weights.index).iloc[-1],
+        "TQQQ": tqqq_raw_close.reindex(weights.index).iloc[-1],
     }
 )
 current_shares = pd.Series({"QQQ": current_qqq_shares, "TQQQ": current_tqqq_shares})

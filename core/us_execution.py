@@ -53,56 +53,58 @@ def fixed_units_open_backtest(
         values = frame.reindex(index=dates, columns=assets).astype(float)
         if not np.isfinite(values.to_numpy()).all() or (values <= 0).any().any():
             raise ValueError(f"Missing or invalid {label} prices")
-    units = pd.Series(0.0, index=assets)
+    target_values = targets.reindex(index=dates, columns=assets).to_numpy(dtype=float)
+    prior_values = prior_closes.reindex(index=dates, columns=assets).to_numpy(dtype=float)
+    open_values = opens.reindex(index=dates, columns=assets).to_numpy(dtype=float)
+    close_values = closes.reindex(index=dates, columns=assets).to_numpy(dtype=float)
+    units = np.zeros(len(assets), dtype=float)
     cash = 1.0
     previous_target = None
-    prior_nav = 1.0
     nav_rows, turnover_rows = [], []
 
-    for number, date in enumerate(dates):
-        target = targets.loc[date].astype(float).clip(0, 1)
+    for number in range(len(dates)):
+        target = np.clip(target_values[number], 0.0, 1.0)
         if not np.isfinite(target).all() or target.sum() > 1 + 1e-10:
             raise ValueError("Targets must be finite long-only weights with total <= 1")
         changed = (
             rebalance_every_session
             or previous_target is None
-            or not np.allclose(target, previous_target, atol=1e-12, rtol=0)
+            or not np.allclose(target, previous_target, atol=1e-12, rtol=0.0)
         )
         traded = 0.0
+        open_px = open_values[number]
+        nav_before_trade = cash + float(np.dot(units, open_px))
         if changed:
-            sizing_px = prior_closes.loc[date]
-            signal_nav = cash + float((units * sizing_px).sum())
+            sizing_px = prior_values[number]
+            signal_nav = cash + float(np.dot(units, sizing_px))
             current_values = units * sizing_px
             low, high = 0.0, signal_nav
-            for _ in range(80):
+            for _ in range(48):
                 net = (low + high) / 2
-                required = net + fee_rate * float((net * target - current_values).abs().sum())
+                required = net + fee_rate * float(np.abs(net * target - current_values).sum())
                 if required > signal_nav:
                     high = net
                 else:
                     low = net
             desired_units = low * target / sizing_px
 
-            open_px = opens.loc[date]
             delta = desired_units - units
-            sells = delta.clip(upper=0)
-            available = cash + float((-sells * open_px).sum()) * (1 - fee_rate)
-            buys = delta.clip(lower=0)
-            buy_value = float((buys * open_px).sum())
+            sells = np.minimum(delta, 0.0)
+            available = cash + float(np.dot(-sells, open_px)) * (1 - fee_rate)
+            buys = np.maximum(delta, 0.0)
+            buy_value = float(np.dot(buys, open_px))
             if buy_value * (1 + fee_rate) > available and buy_value > 0:
                 buys *= max(available, 0.0) / (buy_value * (1 + fee_rate))
             executed = sells + buys
-            traded = float((executed.abs() * open_px).sum())
-            cash += -float((executed * open_px).sum()) - traded * fee_rate
+            traded = float(np.dot(np.abs(executed), open_px))
+            cash += -float(np.dot(executed, open_px)) - traded * fee_rate
             cash = max(cash, 0.0)
             units += executed
             previous_target = target.copy()
 
-        close_nav = cash + float((units * closes.loc[date]).sum())
+        close_nav = cash + float(np.dot(units, close_values[number]))
         nav_rows.append(close_nav)
-        open_nav = cash + float((units * opens.loc[date]).sum())
-        turnover_rows.append(traded / open_nav if open_nav > 0 else 0.0)
-        prior_nav = close_nav
+        turnover_rows.append(traded / nav_before_trade if nav_before_trade > 0 else 0.0)
 
     nav = pd.Series(nav_rows, index=dates, name="Close NAV")
     daily = nav.pct_change(fill_method=None)

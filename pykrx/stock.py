@@ -25,21 +25,30 @@ def _normalize_ohlcv(raw: pd.DataFrame) -> pd.DataFrame:
         return _empty()
 
     df = raw.copy()
-    df.columns = [str(col).lower() for col in df.columns]
-    rename = {
-        "adj close": "close",
-        "adjclose": "close",
-        "open": "open",
-        "high": "high",
-        "low": "low",
-        "close": "close",
-        "volume": "volume",
-    }
-    df = df.rename(columns=rename)
+    df.columns = [str(col).strip().lower() for col in df.columns]
+    # yfinance supplies both Close and Adj Close. Renaming both to ``close``
+    # creates duplicate columns, and selecting df["close"] then returns a
+    # DataFrame instead of the Series expected below. Execution prices must
+    # use the unadjusted exchange close; Adj Close is only a last-resort input.
+    df = df.loc[:, ~df.columns.duplicated(keep="first")]
+
+    def pick(*names: str) -> pd.Series | None:
+        for name in names:
+            if name in df.columns:
+                return df[name]
+        return None
 
     out = pd.DataFrame(index=pd.to_datetime(df.index).tz_localize(None).normalize())
+    sources = {
+        "open": ("open",),
+        "high": ("high",),
+        "low": ("low",),
+        "close": ("close", "adj close", "adjclose"),
+        "volume": ("volume",),
+    }
     for source, target in KOREAN_COLUMNS.items():
-        out[target] = pd.to_numeric(df[source], errors="coerce") if source in df.columns else pd.NA
+        values = pick(*sources[source])
+        out[target] = pd.to_numeric(values, errors="coerce") if values is not None else pd.NA
     return out.dropna(how="all").sort_index()
 
 

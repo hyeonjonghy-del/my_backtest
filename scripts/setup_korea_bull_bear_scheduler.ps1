@@ -1,6 +1,6 @@
 param(
     [string]$TaskName = "KODEX Bull Bear Telegram Signal",
-    [string]$Time = "15:35",
+    [string]$Time = "15:45",
     [string]$Python = "C:\Users\user\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
 )
 

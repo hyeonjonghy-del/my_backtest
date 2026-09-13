@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from core.kospi_accounting import backtest_ledger, validated_common_dates
 from chart_utils import static_area_chart
 
 from kiwoom_account import (
@@ -445,112 +446,18 @@ def portfolio_trade_row(
     }
 
 
-def backtest_portfolio_next_open(
-    dates: pd.DatetimeIndex,
-    target_weights: pd.DataFrame,
-    ret_co: pd.DataFrame,
-    ret_oc: pd.DataFrame,
-    fee_rate: float,
-) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
-    nav = 1.0
-    assets = list(target_weights.columns)
-    prev_weights = pd.Series(0.0, index=assets)
-    nav_rows: list[float] = []
-    weight_rows: list[pd.Series] = []
-    trades: list[dict[str, object]] = []
-    executable_weights = target_weights.shift(1).reindex(dates).fillna(0.0)
-
-    for i, date in enumerate(dates):
-        nav *= 1 + float((prev_weights * ret_co.loc[date, assets]).sum())
-        new_weights = executable_weights.loc[date, assets].astype(float)
-        turnover = portfolio_turnover(new_weights, prev_weights)
-        if i > 0 and turnover > 0:
-            before_fee = nav
-            nav *= 1 - min(max(fee_rate * turnover, 0.0), 0.99)
-            trades.append(
-                portfolio_trade_row(date, "Next open", prev_weights, new_weights, turnover, before_fee - nav, nav)
-            )
-        prev_weights = new_weights
-        nav *= 1 + float((prev_weights * ret_oc.loc[date, assets]).sum())
-        nav_rows.append(nav)
-        weight_rows.append(prev_weights.copy())
-
-    return pd.Series(nav_rows, index=dates, name="Strategy"), pd.DataFrame(weight_rows, index=dates), pd.DataFrame(trades)
+def backtest_portfolio_next_open(dates, target_weights, ret_co, ret_oc, fee_rate):
+    return backtest_ledger(dates, target_weights, ret_co, ret_oc, fee_rate)
 
 
-def backtest_portfolio_after_close_fill(
-    dates: pd.DatetimeIndex,
-    target_weights: pd.DataFrame,
-    ret_co: pd.DataFrame,
-    ret_oc: pd.DataFrame,
-    fee_rate: float,
-    after_close_fill_rate: float,
-) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
-    nav = 1.0
-    assets = list(target_weights.columns)
-    open_weights = pd.Series(0.0, index=assets)
-    nav_rows: list[float] = []
-    weight_rows: list[pd.Series] = []
-    trades: list[dict[str, object]] = []
-    open_targets = target_weights.shift(1).reindex(dates).fillna(0.0)
-
-    for i, date in enumerate(dates):
-        nav *= 1 + float((open_weights * ret_co.loc[date, assets]).sum())
-        intraday_target = open_targets.loc[date, assets].astype(float)
-        intraday_turnover = portfolio_turnover(intraday_target, open_weights)
-        if i > 0 and intraday_turnover > 0:
-            before_fee = nav
-            nav *= 1 - min(max(fee_rate * intraday_turnover, 0.0), 0.99)
-            trades.append(
-                portfolio_trade_row(date, "Next open residual", open_weights, intraday_target, intraday_turnover, before_fee - nav, nav)
-            )
-        nav *= 1 + float((intraday_target * ret_oc.loc[date, assets]).sum())
-
-        next_target = target_weights.loc[date, assets].astype(float)
-        close_weights = intraday_target + (next_target - intraday_target) * after_close_fill_rate
-        close_turnover = portfolio_turnover(close_weights, intraday_target)
-        if close_turnover > 0:
-            before_fee = nav
-            nav *= 1 - min(max(fee_rate * close_turnover, 0.0), 0.99)
-            trades.append(
-                portfolio_trade_row(date, "After-close fixed close", intraday_target, close_weights, close_turnover, before_fee - nav, nav)
-            )
-
-        open_weights = close_weights
-        nav_rows.append(nav)
-        weight_rows.append(close_weights.copy())
-
-    return pd.Series(nav_rows, index=dates, name="After-close Fill Strategy"), pd.DataFrame(weight_rows, index=dates), pd.DataFrame(trades)
+def backtest_portfolio_after_close_fill(dates, target_weights, ret_co, ret_oc, fee_rate, after_close_fill_rate):
+    return backtest_ledger(dates, target_weights, ret_co, ret_oc, fee_rate,
+                           mode="after_close", fill_rate=after_close_fill_rate)
 
 
-def backtest_portfolio_same_close(
-    dates: pd.DatetimeIndex,
-    target_weights: pd.DataFrame,
-    ret_cc: pd.DataFrame,
-    fee_rate: float,
-) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
-    nav = 1.0
-    assets = list(target_weights.columns)
-    prev_weights = pd.Series(0.0, index=assets)
-    nav_rows: list[float] = []
-    weight_rows: list[pd.Series] = []
-    trades: list[dict[str, object]] = []
-
-    for date in dates:
-        nav *= 1 + float((prev_weights * ret_cc.loc[date, assets]).sum())
-        new_weights = target_weights.loc[date, assets].astype(float)
-        turnover = portfolio_turnover(new_weights, prev_weights)
-        if turnover > 0:
-            before_fee = nav
-            nav *= 1 - min(max(fee_rate * turnover, 0.0), 0.99)
-            trades.append(
-                portfolio_trade_row(date, "Ideal same close", prev_weights, new_weights, turnover, before_fee - nav, nav)
-            )
-        prev_weights = new_weights
-        nav_rows.append(nav)
-        weight_rows.append(prev_weights.copy())
-
-    return pd.Series(nav_rows, index=dates, name="Ideal Same-Close Strategy"), pd.DataFrame(weight_rows, index=dates), pd.DataFrame(trades)
+def backtest_portfolio_same_close(dates, target_weights, ret_cc, fee_rate):
+    return backtest_ledger(dates, target_weights, ret_cc, ret_cc * 0, fee_rate,
+                           mode="same_close")
 
 
 def slice_nav(nav: pd.Series, start: pd.Timestamp | None) -> pd.Series:
@@ -797,8 +704,11 @@ if kodex_200.empty or kodex_lev.empty:
     st.error("Could not load KODEX ETF data. Check pykrx or KRX data access.")
     st.stop()
 
-common_idx = kodex_200.index.intersection(kodex_lev.index)
-common_idx = common_idx[(common_idx.date >= start_date) & (common_idx.date <= end_date)]
+try:
+    common_idx = validated_common_dates(kodex_200, kodex_lev, start_date, end_date)
+except ValueError as exc:
+    st.error(f"KODEX data integrity check failed: {exc}")
+    st.stop()
 if len(common_idx) < 60:
     st.error("Not enough trading-day data for the selected backtest period.")
     st.stop()
@@ -878,6 +788,7 @@ execution_plan, execution_summary = build_holdings_trade_plan(
     },
     current_cash,
     account_value,
+    fee,
 )
 action_label = "Hold" if execution_summary["total_order_value"] <= 0 else "Rebalance"
 

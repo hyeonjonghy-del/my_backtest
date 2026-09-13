@@ -723,6 +723,7 @@ def build_holdings_trade_plan(
     current_shares: Mapping[str, float],
     current_cash: float,
     account_value: float,
+    fee_rate: float = 0.0,
 ) -> tuple[object, dict[str, float]]:
     import pandas as pd
     current_values = {
@@ -734,19 +735,40 @@ def build_holdings_trade_plan(
         if float(account_value) > 0
         else sum(current_values.values()) + float(current_cash)
     )
+    if not 0 <= float(fee_rate) < 1:
+        raise ValueError("fee_rate must be between 0 and 1")
     rows: list[dict[str, object]] = []
     invested = 0.0
     total_order_value = 0.0
+    # Size the portfolio against post-trade value. This reserves commissions
+    # even when the target allocation is 100%, avoiding an unaffordable final
+    # buy order. The fixed-point loop also accounts for sales funding buys.
+    net_value = effective_value
+    for _ in range(80):
+        turnover = 0.0
+        for asset, raw_price in latest_prices.items():
+            price = float(raw_price)
+            weight = float(target_weights.get(asset, 0.0))
+            target_qty = math.floor(net_value * weight / price) if price > 0 else 0
+            held_qty = float(current_shares.get(asset, 0.0))
+            turnover += abs(target_qty - held_qty) * price
+        revised = max(effective_value - float(fee_rate) * turnover, 0.0)
+        if abs(revised - net_value) < 0.01:
+            net_value = revised
+            break
+        net_value = revised
+    estimated_fees = 0.0
     for asset, raw_price in latest_prices.items():
         price = float(raw_price)
         weight = float(target_weights.get(asset, 0.0))
-        target_value = effective_value * weight
+        target_value = net_value * weight
         target_qty = math.floor(target_value / price) if price > 0 else 0
         held_qty = float(current_shares.get(asset, 0.0))
         order_qty = target_qty - held_qty
         order_value = abs(order_qty) * price
         invested += target_qty * price
         total_order_value += order_value
+        estimated_fees += order_value * float(fee_rate)
         rows.append({
             "Symbol": asset,
             "Latest Price": price,
@@ -760,7 +782,8 @@ def build_holdings_trade_plan(
         })
     return pd.DataFrame(rows), {
         "effective_value": effective_value,
-        "target_cash": max(effective_value - invested, 0.0),
+        "estimated_fees": estimated_fees,
+        "target_cash": max(effective_value - invested - estimated_fees, 0.0),
         "target_invested": invested,
         "target_invested_weight": invested / effective_value if effective_value > 0 else 0.0,
         "total_order_value": total_order_value,

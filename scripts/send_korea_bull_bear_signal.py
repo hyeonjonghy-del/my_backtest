@@ -31,6 +31,7 @@ from core.execution_alerts import (  # noqa: E402
     load_secrets,
     load_yahoo_chart,
 )
+from core.kospi_accounting import validated_common_dates  # noqa: E402
 
 YFINANCE_CACHE = ROOT / "data" / "yfinance-cache"
 YFINANCE_CACHE.mkdir(parents=True, exist_ok=True)
@@ -52,6 +53,7 @@ DEFAULTS = {
     "high_vol_kodex_weight": 0.50,
     "leverage_weight": 1.00,
     "after_close_fill_rate": 0.70,
+    "fee_rate": 0.0003,
 }
 
 
@@ -318,23 +320,38 @@ def format_kodex_execution(
     signal_lines: list[str],
 ) -> str:
     account_value = cash + sum(current[code] * prices[code] for code in prices)
-    target = {
-        KODEX_LEVERAGE: math.floor(
-            account_value * float(target_weights["KODEX Leverage"]) / prices[KODEX_LEVERAGE]
-        ),
-        KODEX_200: math.floor(
-            account_value * float(target_weights["KODEX 200"]) / prices[KODEX_200]
-        ),
-    }
+    net_value = account_value
+    for _ in range(80):
+        candidate = {
+            KODEX_LEVERAGE: math.floor(
+                net_value * float(target_weights["KODEX Leverage"]) / prices[KODEX_LEVERAGE]
+            ),
+            KODEX_200: math.floor(
+                net_value * float(target_weights["KODEX 200"]) / prices[KODEX_200]
+            ),
+        }
+        turnover = sum(abs(candidate[code] - current[code]) * prices[code] for code in candidate)
+        revised = max(account_value - DEFAULTS["fee_rate"] * turnover, 0.0)
+        if abs(revised - net_value) < 0.01:
+            net_value = revised
+            break
+        net_value = revised
+    target = candidate
     delta = {code: target[code] - current[code] for code in target}
-    after_close_available = clock_time(15, 30) <= now.time() < clock_time(16, 0)
+    estimated_fees = DEFAULTS["fee_rate"] * sum(
+        abs(delta[code]) * prices[code] for code in delta
+    )
+    after_close_available = clock_time(15, 40) <= now.time() < clock_time(16, 0)
     after_close = (
         {code: math.trunc(delta[code] * DEFAULTS["after_close_fill_rate"]) for code in delta}
         if after_close_available
         else {code: 0 for code in delta}
     )
     next_open = {code: delta[code] - after_close[code] for code in delta}
-    target_cash = max(account_value - sum(target[code] * prices[code] for code in target), 0.0)
+    target_cash = max(
+        account_value - sum(target[code] * prices[code] for code in target) - estimated_fees,
+        0.0,
+    )
 
     def order_text(name: str, quantity: int) -> str:
         if quantity > 0:
@@ -396,8 +413,12 @@ def calculate_messages(now: datetime) -> list[str]:
     if kodex_200.empty or kodex_lev.empty:
         raise RuntimeError("KODEX ETF data could not be loaded.")
 
-    common_idx = kodex_200.index.intersection(kodex_lev.index)
-    common_idx = common_idx[(common_idx.date >= DEFAULTS["start_date"]) & (common_idx.date <= today)]
+    try:
+        common_idx = validated_common_dates(
+            kodex_200, kodex_lev, DEFAULTS["start_date"], today
+        )
+    except ValueError as exc:
+        raise RuntimeError(f"KODEX data integrity check failed: {exc}") from exc
     if len(common_idx) < 60:
         raise RuntimeError("Not enough KODEX trading-day data.")
 

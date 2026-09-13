@@ -2,10 +2,18 @@ import unittest
 
 import pandas as pd
 
-from core.us_execution import whole_share_open_backtest
+from core.us_execution import split_unadjusted_price, whole_share_open_backtest
 
 
 class WholeShareOpenBacktestTests(unittest.TestCase):
+    def test_yahoo_split_adjusted_prices_are_restored_before_share_split(self):
+        dates = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"])
+        frame = pd.DataFrame(
+            {"close": [50.0, 50.0, 51.0], "split_ratio": [1.0, 2.0, 1.0]}, index=dates
+        )
+        restored = split_unadjusted_price(frame, "close")
+        self.assertEqual(restored.tolist(), [100.0, 50.0, 51.0])
+
     def _frames(self, dates, prior, opens, closes):
         columns = ["QQQ", "TQQQ"]
         return (

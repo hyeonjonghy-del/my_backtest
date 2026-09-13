@@ -41,6 +41,14 @@ def adjusted_open(frame):
     return result.where((result > 0) & np.isfinite(result))
 
 
+def split_unadjusted_price(frame, column):
+    """Reconstruct contemporaneous prices from Yahoo's split-adjusted OHLC."""
+    ratios = pd.to_numeric(frame.get("split_ratio", 1.0), errors="coerce").fillna(1.0)
+    future_factor = ratios.iloc[::-1].cumprod().iloc[::-1] / ratios
+    result = pd.to_numeric(frame[column], errors="coerce") * future_factor
+    return result.where((result > 0) & np.isfinite(result))
+
+
 def fixed_units_open_backtest(
     targets, prior_closes, opens, closes, fee_rate, rebalance_every_session=False
 ):

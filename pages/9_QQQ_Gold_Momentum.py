@@ -21,7 +21,7 @@ from qqq_gld_sgov_momentum_v2 import strategy as momentum_strategy  # noqa: E402
 # Reload explicitly so page-only reruns always use the latest allocation rules.
 momentum_strategy = importlib.reload(momentum_strategy)
 ASSETS = momentum_strategy.ASSETS
-backtest = momentum_strategy.backtest
+backtest = momentum_strategy.backtest_next_open_whole_shares
 make_sgov_bil_proxy = momentum_strategy.make_sgov_bil_proxy
 
 
@@ -30,6 +30,9 @@ MARKETS = {
         "tickers": ("QQQ", "GLD", "BIL", "SGOV"),
         "names": ("QQQ", "GLD", "SGOV"),
         "cash_name": "SGOV",
+        "execution_assets": {
+            "QQQ": "QQQ", "GLD": "GLD", "CASH_BEFORE": "BIL", "CASH_AFTER": "SGOV",
+        },
         "min_date": date(2007, 5, 30),
         "default_start": date(2015, 1, 1),
         "cash_note": "SGOV 상장 전에는 BIL을 사용하고, SGOV 수익률이 제공되기 시작하면 SGOV로 자동 전환합니다.",
@@ -42,6 +45,9 @@ MARKETS = {
             "TIGER 미국초단기(3개월이하)국채 (0046A0)",
         ),
         "cash_name": "0046A0",
+        "execution_assets": {
+            "QQQ": "133690.KS", "GLD": "411060.KS", "CASH_BEFORE": None, "CASH_AFTER": "0046A0.KS",
+        },
         "min_date": date(2021, 12, 15),
         "default_start": date(2021, 12, 15),
         "cash_note": (
@@ -52,13 +58,20 @@ MARKETS = {
 }
 
 
+def _empty_execution_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=["open", "close", "adjclose", "split_ratio", "dividend"], dtype=float)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_prices(market_label: str, start_date: date, end_date: date) -> pd.DataFrame:
+def fetch_market_data(
+    market_label: str, start_date: date, end_date: date
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     config = MARKETS[market_label]
     start_ts = int(pd.Timestamp(start_date, tz="UTC").timestamp())
     # Yahoo's period2 is exclusive, so include the selected end date.
     end_ts = int((pd.Timestamp(end_date, tz="UTC") + pd.Timedelta(days=1)).timestamp())
     series = []
+    execution_frames: dict[str, pd.DataFrame] = {}
     for ticker in config["tickers"]:
         url = (
             f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -74,20 +87,42 @@ def fetch_prices(market_label: str, start_date: date, end_date: date) -> pd.Data
             )
             if is_optional_cash:
                 series.append(pd.Series(dtype=float, name=ticker))
+                execution_frames[ticker] = _empty_execution_frame()
                 continue
             raise ValueError(f"{ticker} 데이터를 받지 못했습니다: {chart.get('error')}")
         payload = chart["result"][0]
         if not payload.get("timestamp"):
             if market_label.startswith("한국:") and ticker == config["tickers"][-1]:
                 series.append(pd.Series(dtype=float, name=ticker))
+                execution_frames[ticker] = _empty_execution_frame()
                 continue
             raise ValueError(f"{ticker} 가격 데이터가 선택 기간에 없습니다.")
         index = pd.to_datetime(payload["timestamp"], unit="s", utc=True).tz_convert(None).normalize()
-        values = payload["indicators"]["adjclose"][0]["adjclose"]
-        series.append(pd.Series(values, index=index, name=ticker).dropna())
+        quote = payload["indicators"]["quote"][0]
+        adjclose = payload["indicators"]["adjclose"][0]["adjclose"]
+        frame = pd.DataFrame(
+            {"open": quote["open"], "close": quote["close"], "adjclose": adjclose},
+            index=index,
+        ).sort_index()
+        frame["split_ratio"] = 1.0
+        frame["dividend"] = 0.0
+        events = payload.get("events", {})
+        for event in events.get("splits", {}).values():
+            event_date = pd.to_datetime(event["date"], unit="s", utc=True).tz_convert(None).normalize()
+            numerator = float(event.get("numerator", 0.0))
+            denominator = float(event.get("denominator", 0.0))
+            if event_date in frame.index and numerator > 0 and denominator > 0:
+                frame.loc[event_date, "split_ratio"] *= numerator / denominator
+        for event in events.get("dividends", {}).values():
+            event_date = pd.to_datetime(event["date"], unit="s", utc=True).tz_convert(None).normalize()
+            amount = float(event.get("amount", 0.0))
+            if event_date in frame.index and amount >= 0:
+                frame.loc[event_date, "dividend"] += amount
+        execution_frames[ticker] = frame
+        series.append(frame["adjclose"].rename(ticker).dropna())
     raw_prices = pd.concat(series, axis=1)
     if market_label.startswith("미국:"):
-        return make_sgov_bil_proxy(raw_prices)
+        return make_sgov_bil_proxy(raw_prices), execution_frames
 
     risky_tickers = list(config["tickers"][:2])
     cash_ticker = config["tickers"][-1]
@@ -105,7 +140,7 @@ def fetch_prices(market_label: str, start_date: date, end_date: date) -> pd.Data
         cash_prices = cash_prices.ffill().fillna(1.0)
     korea_prices[cash_ticker] = cash_prices
     korea_prices.columns = list(ASSETS)
-    return korea_prices
+    return korea_prices, execution_frames
 
 
 def annual_monthly_table(result: pd.DataFrame) -> pd.DataFrame:
@@ -125,8 +160,12 @@ def annual_monthly_table(result: pd.DataFrame) -> pd.DataFrame:
 
 
 st.set_page_config(page_title="Nasdaq · Gold · Cash Momentum", layout="wide")
-st.title("9. 나스닥 · 금 · 현금 모멘텀 전략")
-st.caption("12개월 모멘텀 순위로 현금 비중을 정하고, 나머지를 나스닥과 금의 상대 모멘텀 전략에 배분합니다.")
+title_col, action_col = st.columns([5, 1], vertical_alignment="top")
+with title_col:
+    st.title("9. 나스닥 · 금 · 현금 모멘텀 전략")
+    st.caption("12개월 모멘텀 순위로 현금 비중을 정하고, 나머지를 나스닥과 금의 상대 모멘텀 전략에 배분합니다.")
+with action_col:
+    run = st.button("백테스트 실행", type="primary", use_container_width=True)
 
 with st.sidebar:
     st.header("전략 설정")
@@ -147,6 +186,14 @@ with st.sidebar:
         help=f"{cash_name}가 12개월 모멘텀 1위일 때 적용할 목표 비중입니다.",
     )
     cost_bps = st.number_input("거래비용 (편도, bp)", min_value=0.0, value=10.0, step=1.0)
+    initial_capital = st.number_input(
+        "백테스트 초기자본",
+        min_value=1_000.0,
+        value=100_000.0 if market_label.startswith("미국:") else 100_000_000.0,
+        step=10_000.0 if market_label.startswith("미국:") else 10_000_000.0,
+        key=f"v2_capital_{cash_name}",
+        help="정수 수량과 잔여 현금을 반영하기 위한 기준 자본입니다.",
+    )
     today = date.today()
     start_date = st.date_input(
         "데이터 시작일", value=market["default_start"], min_value=market["min_date"],
@@ -156,7 +203,6 @@ with st.sidebar:
         "데이터 종료일", value=today, min_value=market["min_date"], max_value=today,
         key=f"v2_end_{cash_name}",
     )
-    run = st.button("백테스트 실행", type="primary", use_container_width=True)
 
 cash_rank1_weight = cash_rank1_pct / 100.0
 
@@ -195,6 +241,7 @@ rule_table = pd.DataFrame(
 )
 st.dataframe(rule_table, use_container_width=True, hide_index=True)
 st.caption("모멘텀이 정확히 같으면 현금, 금, 나스닥 순으로 우선합니다. 신호는 전월 말 확정 후 다음 달부터 적용합니다.")
+st.caption("백테스트는 전월 말 종가로 목표 수량을 정하고 다음 거래일 시가에 정수 수량으로 체결합니다.")
 st.caption(market["cash_note"])
 
 if not run:
@@ -207,9 +254,17 @@ if start_date > end_date:
 
 with st.spinner(f"{market_label} 데이터를 내려받아 전략을 계산 중입니다..."):
     try:
-        prices = fetch_prices(market_label, start_date, end_date)
+        prices, execution_frames = fetch_market_data(market_label, start_date, end_date)
+        cash_after_ticker = market["execution_assets"].get("CASH_AFTER")
+        if cash_after_ticker and execution_frames[cash_after_ticker].empty:
+            st.warning(
+                f"{display_names[2]}의 실행가격을 받지 못해 해당 목표비중은 무수익 현금으로 계산했습니다."
+            )
         result, metrics = backtest(
             prices,
+            execution_frames=execution_frames,
+            execution_assets=market["execution_assets"],
+            initial_capital=initial_capital,
             rebalance_months=rebalance_months,
             momentum_months=12,
             cost_bps=cost_bps,
@@ -237,6 +292,10 @@ c2.metric("MDD", f"{metrics['MDD']:.2%}")
 c3.metric("최종 배수", f"{metrics['최종 배수']:.2f}x")
 c4.metric("연 변동성", f"{metrics['연 변동성']:.2%}")
 c5.metric(f"평균 {cash_name} 비중", f"{metrics['평균 SGOV 비중']:.2%}")
+st.caption(
+    f"초기자본 {metrics['초기자본']:,.0f} · 최종 잔여현금 {metrics['최종잔여현금']:,.0f} · "
+    "분할은 보유수량에, 배당은 현금에 반영했습니다."
+)
 
 overview_tab, history_tab, returns_tab = st.tabs(["전략 결과", "리밸런싱 이력", "월별·연도별 수익률"])
 

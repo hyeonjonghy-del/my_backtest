@@ -14,6 +14,11 @@ from chart_utils import static_area_chart as mpl_static_area_chart
 from chart_utils import static_line_chart as mpl_static_line_chart
 from chart_utils import position_action_label
 from chart_utils import static_yearly_returns_chart
+from core.us_execution import (
+    rebalance_due_after_close,
+    split_unadjusted_price,
+    whole_share_open_backtest,
+)
 
 SPY = "SPY"
 UPRO = "UPRO"
@@ -55,7 +60,7 @@ def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.Da
     period2 = int(datetime.combine((end_dt + timedelta(days=1)).date(), datetime.min.time(), tzinfo=timezone.utc).timestamp())
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        f"?period1={period1}&period2={period2}&interval=1d&events=history&includeAdjustedClose=true"
+        f"?period1={period1}&period2={period2}&interval=1d&events=div%2Csplits&includeAdjustedClose=true"
     )
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20) as response:
@@ -76,6 +81,20 @@ def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.Da
         },
         index=index,
     )
+    df["split_ratio"] = 1.0
+    df["dividend"] = 0.0
+    events = result.get("events", {})
+    for event in events.get("splits", {}).values():
+        event_date = pd.to_datetime(event["date"], unit="s").normalize()
+        numerator = float(event.get("numerator", 0.0))
+        denominator = float(event.get("denominator", 0.0))
+        if event_date in df.index and numerator > 0 and denominator > 0:
+            df.loc[event_date, "split_ratio"] *= numerator / denominator
+    for event in events.get("dividends", {}).values():
+        event_date = pd.to_datetime(event["date"], unit="s").normalize()
+        amount = float(event.get("amount", 0.0))
+        if event_date in df.index and amount >= 0:
+            df.loc[event_date, "dividend"] += amount
     return normalize_index(df).dropna(subset=["adjclose"])
 
 
@@ -256,7 +275,19 @@ def build_strategy_weights(
 
     weights = pd.DataFrame(rows, index=price.index)
     numeric = rebalance_weights(weights[["SPY", "UPRO"]].clip(0, 1), rebalance)
-    numeric["Regime"] = weights["Regime"]
+    if rebalance == "Daily":
+        numeric["Regime"] = weights["Regime"]
+    else:
+        held_regime = pd.Series(index=weights.index, dtype=object)
+        current_regime = "Bear"
+        last_key = None
+        for date, state in weights["Regime"].items():
+            key = date.isocalendar()[:2] if rebalance == "Weekly" else (date.year, date.month)
+            if key != last_key:
+                current_regime = state
+                last_key = key
+            held_regime.loc[date] = current_regime
+        numeric["Regime"] = held_regime
     return numeric
 
 
@@ -277,33 +308,39 @@ def calc_target_weight(
 
 def backtest(
     weights: pd.DataFrame,
-    open_prices: pd.DataFrame,
-    close_prices: pd.DataFrame,
+    spy_frame: pd.DataFrame,
+    upro_frame: pd.DataFrame,
     cost_rate: float,
-) -> pd.Series:
-    """Execute close-based targets at the next open and mark the portfolio at each close."""
-    assets = ["SPY", "UPRO"]
-    units = pd.Series(0.0, index=assets)
-    cash = 1.0
-    previous_close_nav = 1.0
-    daily_returns: list[float] = []
-
-    for date in weights.index:
-        open_px = open_prices.loc[date, assets].astype(float)
-        close_px = close_prices.loc[date, assets].astype(float)
-        nav_at_open = cash + float((units * open_px).sum())
-        current_weights = units * open_px / nav_at_open if nav_at_open > 0 else units * 0.0
-        target_weights = weights.loc[date, assets].astype(float).clip(0.0, 1.0)
-        turnover = float((target_weights - current_weights).abs().sum())
-        investable_nav = nav_at_open * (1.0 - min(max(turnover * cost_rate, 0.0), 0.99))
-        target_values = investable_nav * target_weights
-        units = target_values / open_px
-        cash = investable_nav - float(target_values.sum())
-        close_nav = cash + float((units * close_px).sum())
-        daily_returns.append(close_nav / previous_close_nav - 1.0)
-        previous_close_nav = close_nav
-
-    return pd.Series(daily_returns, index=weights.index, name="Strategy").replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    initial_capital: float,
+) -> tuple[pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+    """Size from the prior close, execute whole shares next open, then mark at close."""
+    dates = weights.index
+    frames = {"SPY": spy_frame.sort_index(), "UPRO": upro_frame.sort_index()}
+    prior_closes = pd.DataFrame(index=dates, columns=["SPY", "UPRO"], dtype=float)
+    opens = pd.DataFrame(index=dates, columns=["SPY", "UPRO"], dtype=float)
+    closes = pd.DataFrame(index=dates, columns=["SPY", "UPRO"], dtype=float)
+    splits = pd.DataFrame(1.0, index=dates, columns=["SPY", "UPRO"])
+    dividends = pd.DataFrame(0.0, index=dates, columns=["SPY", "UPRO"])
+    for symbol, frame in frames.items():
+        raw_open = split_unadjusted_price(frame, "open")
+        raw_close = split_unadjusted_price(frame, "close")
+        prior_closes[symbol] = raw_close.shift(1).reindex(dates)
+        opens[symbol] = raw_open.reindex(dates)
+        closes[symbol] = raw_close.reindex(dates)
+        splits[symbol] = frame["split_ratio"].reindex(dates).fillna(1.0)
+        dividends[symbol] = frame["dividend"].reindex(dates).fillna(0.0)
+    if prior_closes.isna().any().any() or opens.isna().any().any() or closes.isna().any().any():
+        raise ValueError("Missing executable prior-close/open/close prices in the selected period")
+    return whole_share_open_backtest(
+        weights[["SPY", "UPRO"]],
+        prior_closes,
+        opens,
+        closes,
+        splits,
+        dividends,
+        cost_rate,
+        initial_capital,
+    )
 
 
 def calc_metrics(daily_ret: pd.Series) -> dict[str, object]:
@@ -312,14 +349,18 @@ def calc_metrics(daily_ret: pd.Series) -> dict[str, object]:
     years = len(nav) / TRADING_DAYS
     total = nav.iloc[-1] - 1
     cagr = nav.iloc[-1] ** (1 / years) - 1 if years > 0 and nav.iloc[-1] > 0 else -1.0
-    dd = nav / nav.cummax() - 1
+    peak_nav = nav.cummax().clip(lower=1.0)
+    dd = nav / peak_nav - 1
     mdd = dd.min()
     mdd_date = dd.idxmin()
-    peak_nav = nav.cummax()
     peak_date = nav.loc[:mdd_date].idxmax()
     sharpe = daily_ret.mean() / daily_ret.std() * np.sqrt(TRADING_DAYS) if daily_ret.std() > 0 else 0.0
     calmar = cagr / abs(mdd) if mdd < 0 else 0.0
-    win_m = (nav.resample("ME").last().pct_change().dropna() > 0).mean()
+    monthly_nav = nav.resample("ME").last()
+    monthly_return = monthly_nav.pct_change(fill_method=None)
+    if len(monthly_return):
+        monthly_return.iloc[0] = monthly_nav.iloc[0] - 1.0
+    win_m = (monthly_return.dropna() > 0).mean()
     return {
         "nav": nav,
         "dd": dd,
@@ -358,13 +399,26 @@ def build_execution_plan(
     account_value: float,
     current_shares: pd.Series,
     current_cash: float,
+    cost_rate: float,
+    execute_change: bool,
 ) -> tuple[pd.DataFrame, float]:
     current_values = current_shares * prices
     effective_value = account_value if account_value > 0 else current_values.sum() + current_cash
+    net_value = float(effective_value)
+    if execute_change:
+        for _ in range(80):
+            candidates = np.floor(net_value * target_weights / prices).replace([np.inf, -np.inf], 0).fillna(0)
+            turnover_value = float(((candidates - current_shares).abs() * prices).sum())
+            revised = max(float(effective_value) - cost_rate * turnover_value, 0.0)
+            if abs(revised - net_value) < 0.01:
+                net_value = revised
+                break
+            net_value = revised
     rows = []
     for symbol in [SPY, UPRO]:
-        target_value = effective_value * target_weights[symbol]
-        target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
+        target_value = net_value * target_weights[symbol]
+        calculated_target = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
+        target_shares = calculated_target if execute_change else current_shares[symbol]
         order_shares = target_shares - current_shares[symbol]
         rows.append(
             {
@@ -379,7 +433,12 @@ def build_execution_plan(
                 "Estimated Order Value": abs(order_shares) * prices[symbol],
             }
         )
-    target_cash = effective_value * max(0.0, 1 - target_weights.sum())
+    if execute_change:
+        invested = sum(float(row["Target Shares"] * row["Latest Price"]) for row in rows)
+        traded = sum(float(row["Estimated Order Value"]) for row in rows)
+        target_cash = max(float(effective_value) - invested - traded * cost_rate, 0.0)
+    else:
+        target_cash = float(current_cash)
     return pd.DataFrame(rows), target_cash
 
 
@@ -410,12 +469,20 @@ with st.sidebar:
     bear_spy = st.slider("Bear-regime SPY weight (%)", 0, 100, defaults["bear_spy"], 5) / 100
     rebalance = st.radio("Rebalance", ["Daily", "Weekly", "Monthly"], index=defaults["rebalance_index"], horizontal=True)
     cost_rate = st.number_input("Trading cost per turnover (%)", min_value=0.0, value=0.25, step=0.05) / 100
+    initial_capital = st.number_input(
+        "Backtest initial capital ($)", min_value=1_000.0, value=100_000.0, step=10_000.0
+    )
 
     st.subheader("Execution Plan")
     account_value = st.number_input("Account value ($)", min_value=0.0, value=0.0, step=1000.0)
     current_spy_shares = st.number_input("Current SPY shares", min_value=0.0, value=0.0, step=1.0)
     current_upro_shares = st.number_input("Current UPRO shares", min_value=0.0, value=0.0, step=1.0)
     current_cash = st.number_input("Current cash ($)", min_value=0.0, value=0.0, step=1000.0)
+    recover_execution = st.checkbox(
+        "Recover missed/partial prior execution",
+        value=False,
+        help="Use only for a new account or when a prior scheduled order was missed or partially filled.",
+    )
 
 with st.expander("Strategy Rules", expanded=False):
     st.markdown(
@@ -428,6 +495,8 @@ with st.expander("Strategy Rules", expanded=False):
 | UPRO cap | {upro_cap:.0%} |
 | Bear allocation | SPY {bear_spy:.0%}, Cash {1 - bear_spy:.0%} |
 | Execution / valuation | Prior-close signal, next-open execution, daily close valuation |
+| Holdings | Whole shares, residual cash, splits and dividends |
+| Rebalance | {rebalance}; trade only when the scheduled target changes |
 """
     )
 
@@ -476,29 +545,19 @@ weights_full = build_strategy_weights(
 )
 
 weights = weights_full.reindex(common_idx).ffill().fillna({"SPY": 0.0, "UPRO": 0.0, "Regime": "Bear"})
-ret_spy = spy["adjclose"].pct_change().reindex(common_idx).fillna(0.0)
-ret_upro = upro["adjclose"].pct_change().reindex(common_idx).fillna(0.0)
-spy_adjustment = (spy["adjclose"] / spy["close"]).replace([np.inf, -np.inf], np.nan)
-upro_adjustment = (upro["adjclose"] / upro["close"]).replace([np.inf, -np.inf], np.nan)
-open_prices = pd.DataFrame(
-    {
-        "SPY": (spy["open"] * spy_adjustment).reindex(common_idx),
-        "UPRO": (upro["open"] * upro_adjustment).reindex(common_idx),
-    },
-    index=common_idx,
-).ffill()
-close_prices = pd.DataFrame(
-    {
-        "SPY": spy["adjclose"].reindex(common_idx),
-        "UPRO": upro["adjclose"].reindex(common_idx),
-    },
-    index=common_idx,
-).ffill()
-strategy_ret = backtest(weights, open_prices, close_prices, cost_rate)
-bench_spy = ret_spy
-bench_upro = ret_upro
-fixed_80_20 = 0.8 * ret_spy + 0.2 * ret_upro - 0.0
-fixed_70_30 = 0.7 * ret_spy + 0.3 * ret_upro - 0.0
+strategy_ret, actual_weights, turnover, share_history, backtest_cash = backtest(
+    weights, spy, upro, cost_rate, initial_capital
+)
+
+
+def constant_target(spy_weight: float, upro_weight: float) -> pd.DataFrame:
+    return pd.DataFrame({"SPY": spy_weight, "UPRO": upro_weight}, index=common_idx)
+
+
+bench_spy, _, _, _, _ = backtest(constant_target(1.0, 0.0), spy, upro, cost_rate, initial_capital)
+bench_upro, _, _, _, _ = backtest(constant_target(0.0, 1.0), spy, upro, cost_rate, initial_capital)
+fixed_80_20, _, _, _, _ = backtest(constant_target(0.8, 0.2), spy, upro, cost_rate, initial_capital)
+fixed_70_30, _, _, _, _ = backtest(constant_target(0.7, 0.3), spy, upro, cost_rate, initial_capital)
 
 progress.progress(100, text="Done")
 progress.empty()
@@ -509,11 +568,13 @@ latest = weights.iloc[-1]
 latest_date = weights.index[-1].date()
 latest_regime = str(regime_full.reindex(weights.index).ffill().iloc[-1])
 latest_vol = vol.reindex(weights.index).ffill().iloc[-1]
-next_target = calc_target_weight(latest_regime, latest_vol, target_vol, upro_cap, max_beta, bear_spy)
+calculated_next_target = calc_target_weight(latest_regime, latest_vol, target_vol, upro_cap, max_beta, bear_spy)
+rebalance_due = rebalance_due_after_close(latest_date, rebalance)
+next_target = calculated_next_target if rebalance_due else latest[[SPY, UPRO]].astype(float)
 latest_prices = pd.Series(
     {
-        SPY: spy["adjclose"].reindex(weights.index).ffill().iloc[-1],
-        UPRO: upro["adjclose"].reindex(weights.index).ffill().iloc[-1],
+        SPY: spy["close"].reindex(weights.index).ffill().iloc[-1],
+        UPRO: upro["close"].reindex(weights.index).ffill().iloc[-1],
     }
 )
 execution_plan, target_cash = build_execution_plan(
@@ -522,13 +583,15 @@ execution_plan, target_cash = build_execution_plan(
     account_value,
     pd.Series({SPY: current_spy_shares, UPRO: current_upro_shares}),
     current_cash,
+    cost_rate,
+    rebalance_due or recover_execution,
 )
 action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 
 st.success(
     f"{action_label} | Next target from close signal ({latest_date}): {latest_regime} | "
     f"SPY {next_target[SPY]:.1%}, UPRO {next_target[UPRO]:.1%}, Cash {1 - next_target.sum():.1%} | "
-    f"SPY {vol_window}D volatility {latest_vol:.1%}"
+    f"SPY {vol_window}D volatility {latest_vol:.1%} | Scheduled rebalance: {'Yes' if rebalance_due else 'No'}"
 )
 
 cols = st.columns(6)
@@ -591,7 +654,7 @@ with tab_perf:
         ),
         clear_figure=True,
     )
-    performance_weight_df = weights[["SPY", "UPRO"]].copy()
+    performance_weight_df = actual_weights[["SPY", "UPRO"]].copy()
     performance_weight_df["Cash"] = (1 - performance_weight_df.sum(axis=1)).clip(0, 1)
     st.pyplot(static_area_chart(performance_weight_df, "Portfolio Weights", height=320), clear_figure=True)
 
@@ -616,16 +679,18 @@ with tab_signal:
     )
 
 with tab_weights:
-    weight_df = weights[["SPY", "UPRO"]].copy()
+    weight_df = actual_weights[["SPY", "UPRO"]].copy()
     weight_df["Cash"] = (1 - weight_df.sum(axis=1)).clip(0, 1)
     st.pyplot(static_area_chart(weight_df, "Portfolio Weights", height=320), clear_figure=True)
     exposure_df = pd.DataFrame(
         {
-            "SPY-equivalent exposure": weights["SPY"] + weights["UPRO"] * 3,
+            "SPY-equivalent exposure": actual_weights["SPY"] + actual_weights["UPRO"] * 3,
             "SPY Vol": vol.reindex(common_idx),
             "Target Vol": target_vol,
-            "SPY Weight": weights["SPY"],
-            "UPRO Weight": weights["UPRO"],
+            "Actual SPY Weight": actual_weights["SPY"],
+            "Actual UPRO Weight": actual_weights["UPRO"],
+            "Target SPY Weight": weights["SPY"],
+            "Target UPRO Weight": weights["UPRO"],
         }
     )
     st.pyplot(static_line_chart(exposure_df, "Exposure and Volatility", height=340), clear_figure=True)
@@ -654,7 +719,7 @@ with tab_execution:
 with tab_table:
     comparison = pd.DataFrame(
         [
-            metric_row("Strategy", strategy_ret, weights),
+            metric_row("Strategy", strategy_ret, actual_weights),
             metric_row("SPY 100%", bench_spy),
             metric_row("UPRO 100%", bench_upro),
             metric_row("SPY 80% + UPRO 20%", fixed_80_20),
@@ -696,7 +761,16 @@ with tab_table:
     )
     st.download_button(
         "Weights CSV",
-        weights[["SPY", "UPRO", "Regime"]].to_csv(index=True).encode("utf-8-sig"),
+        pd.concat(
+            [
+                weights[["SPY", "UPRO", "Regime"]].rename(columns={"SPY": "Target SPY", "UPRO": "Target UPRO"}),
+                actual_weights.rename(columns={"SPY": "Actual SPY", "UPRO": "Actual UPRO"}),
+                share_history.rename(columns={"SPY": "SPY Shares", "UPRO": "UPRO Shares"}),
+                backtest_cash.rename("Cash"),
+                turnover.rename("Turnover"),
+            ],
+            axis=1,
+        ).to_csv(index=True).encode("utf-8-sig"),
         "spy_upro_vol_target_weights.csv",
         "text/csv",
     )

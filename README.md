@@ -21,6 +21,7 @@ streamlit run main.py
 | Execute | SOXX / SOXL Vol Target | Semiconductor strategy |
 | Reference | SOXX Vol Target | Unleveraged semiconductor comparison |
 | Execute | QQQ / TQQQ Holdings | Nasdaq growth strategy |
+| Review | QQQ / QLD / TQQQ Leverage Glidepath | Dynamic Nasdaq exposure with an SGOV defensive sleeve |
 | Keep | QQQ / Gold / SGOV Momentum | Multi-asset allocation |
 | Review | US Integrated Strategy | Retained for further evaluation |
 

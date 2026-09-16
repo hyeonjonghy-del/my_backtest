@@ -66,6 +66,13 @@ STRATEGIES = [
         "note": "Sole active QQQ/TQQQ implementation.",
     },
     {
+        "page": "10_QQQ_Leverage_Glidepath.py",
+        "name": "QQQ / QLD / TQQQ Leverage Glidepath",
+        "role": "US growth review",
+        "decision": "Review",
+        "note": "Next-open staged leverage strategy with an SGOV defensive sleeve.",
+    },
+    {
         "page": "9_QQQ_Gold_Momentum.py",
         "name": "QQQ / Gold / SGOV Momentum",
         "role": "US asset allocation",

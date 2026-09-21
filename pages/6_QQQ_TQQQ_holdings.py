@@ -595,6 +595,7 @@ with st.sidebar:
     current_tqqq_shares = float(account_state["shares"][TQQQ])
     current_cash = float(account_state["cash"])
     account_value = float(account_state["account_value"])
+    external_cash_flow = float(account_state.get("external_cash_flow", 0.0))
 
 
 with st.expander("Default Strategy", expanded=False):
@@ -868,7 +869,7 @@ execution_plan, target_cash = build_execution_plan(
     current_cash,
     previous_target_weights=latest,
     cost_rate=cost_rate,
-    force_sync=recover_execution,
+    force_sync=recover_execution or bool(external_cash_flow),
 )
 action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 

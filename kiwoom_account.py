@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
+from core.account_cash_flow import detect_external_cash_flow
+
 
 KIWOOM_DEFAULT_BASE_URL = "https://api.kiwoom.com"
 KIWOOM_ACCOUNT_PATH = "/api/us/acnt"
@@ -306,6 +308,7 @@ def render_account_controls(
     current_cash = 0.0
     account_value = 0.0
     display_label = "USD cash"
+    external_cash_flow = 0.0
 
     if source == KIWOOM_SOURCE:
         profiles = read_kiwoom_profiles()
@@ -330,6 +333,7 @@ def render_account_controls(
             "KRW assets are excluded and orders are never submitted."
         )
         snapshot_key = f"{widget_key}_snapshot_{profile_name or 'missing'}"
+        cash_flow_key = f"{snapshot_key}_external_cash_flow"
         snapshot = st.session_state.get(snapshot_key)
         if st.button("Load Kiwoom real account", use_container_width=True, key=f"{widget_key}_load"):
             try:
@@ -338,11 +342,22 @@ def render_account_controls(
                         "Add [kiwoom] or [kiwoom.accounts.NAME] credentials to .streamlit/secrets.toml."
                     )
                 with st.spinner("Loading Kiwoom holdings and cash..."):
-                    snapshot = load_kiwoom_account(profiles[profile_name], symbols)
+                    loaded_snapshot = load_kiwoom_account(profiles[profile_name], symbols)
+                external_cash_flow = detect_external_cash_flow(snapshot, loaded_snapshot, symbols)
+                snapshot = loaded_snapshot
                 st.session_state[snapshot_key] = snapshot
+                st.session_state[cash_flow_key] = external_cash_flow
                 st.success("Account snapshot loaded.")
             except RuntimeError as exc:
                 st.error(str(exc))
+
+        external_cash_flow = float(st.session_state.get(cash_flow_key, 0.0))
+        if external_cash_flow:
+            direction = "deposit" if external_cash_flow > 0 else "withdrawal"
+            st.info(
+                f"Detected an external USD {direction} of ${abs(external_cash_flow):,.2f} "
+                "with unchanged holdings. The order plan will resync to the current target."
+            )
 
         if snapshot:
             snapshot_shares = snapshot.get("shares", {})
@@ -421,6 +436,7 @@ def render_account_controls(
         "cash": float(current_cash),
         "account_value": float(account_value),
         "cash_label": display_label,
+        "external_cash_flow": external_cash_flow,
     }
 
 

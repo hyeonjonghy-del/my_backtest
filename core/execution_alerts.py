@@ -576,13 +576,25 @@ def whole_share_plan(
             net_value = revised
             break
         net_value = revised
+    current_units = {
+        symbol: int(float(shares.get(symbol, 0))) for symbol in prices
+    }
+    # A cash contribution increases all required positions (or leaves them
+    # unchanged). Execute that buy-only gap even when strategy weights did not
+    # change, while continuing to suppress price-drift rebalances needing sales.
+    cash_deposit_detected = (
+        not target_changed
+        and any(candidates[s] > current_units[s] for s in prices)
+        and all(candidates[s] >= current_units[s] for s in prices)
+    )
+    execution_required = target_changed or cash_deposit_detected
     orders: dict[str, dict[str, float | int | str]] = {}
     recovery_orders: dict[str, dict[str, float | int | str]] = {}
     invested = 0.0
     for symbol, price in prices.items():
-        current_shares = int(float(shares.get(symbol, 0)))
+        current_shares = current_units[symbol]
         calculated_target = math.floor(net_value * weights.get(symbol, 0.0) / price)
-        target_shares = calculated_target if target_changed else current_shares
+        target_shares = calculated_target if execution_required else current_shares
         delta = target_shares - current_shares
         invested += target_shares * price
         orders[symbol] = {
@@ -601,9 +613,11 @@ def whole_share_plan(
     ) * fee_rate
     return {
         "account_value": account_value,
-        "target_cash": max(account_value - invested - estimated_fees, 0.0) if target_changed else float(cash),
-        "estimated_fees": estimated_fees if target_changed else 0.0,
+        "target_cash": max(account_value - invested - estimated_fees, 0.0) if execution_required else float(cash),
+        "estimated_fees": estimated_fees if execution_required else 0.0,
         "target_changed": target_changed,
+        "cash_deposit_detected": cash_deposit_detected,
+        "execution_required": execution_required,
         "orders": orders,
         "recovery_orders": recovery_orders,
     }

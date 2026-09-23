@@ -488,20 +488,25 @@ def build_execution_plan(
         atol=1e-12,
     )
     net_value = effective_value
-    if target_changed:
-        for _ in range(80):
-            candidate = np.floor(net_value * target_weights / prices).replace(
-                [np.inf, -np.inf], 0
-            ).fillna(0)
-            turnover = float(((candidate - current_shares).abs() * prices).sum())
-            revised = max(float(effective_value) - cost_rate * turnover, 0.0)
-            if abs(revised - net_value) < 0.01:
-                net_value = revised
-                break
+    for _ in range(80):
+        candidate = np.floor(net_value * target_weights / prices).replace(
+            [np.inf, -np.inf], 0
+        ).fillna(0)
+        turnover = float(((candidate - current_shares).abs() * prices).sum())
+        revised = max(float(effective_value) - cost_rate * turnover, 0.0)
+        if abs(revised - net_value) < 0.01:
             net_value = revised
+            break
+        net_value = revised
+    cash_deposit_detected = (
+        not target_changed
+        and bool((candidate > current_shares).any())
+        and bool((candidate >= current_shares).all())
+    )
+    execution_required = target_changed or cash_deposit_detected
     rows = []
     for symbol in ["QQQ", "TQQQ"]:
-        if target_changed:
+        if execution_required:
             target_value = net_value * target_weights[symbol]
             target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
         else:
@@ -523,7 +528,7 @@ def build_execution_plan(
         )
     fees = sum(row["Estimated Order Value"] for row in rows) * cost_rate
     invested = sum(row["Target Shares"] * row["Latest Price"] for row in rows)
-    target_cash = max(effective_value - invested - fees, 0.0) if target_changed else current_cash
+    target_cash = max(effective_value - invested - fees, 0.0) if execution_required else current_cash
     return pd.DataFrame(rows), target_cash
 
 

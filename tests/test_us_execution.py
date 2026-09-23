@@ -108,6 +108,39 @@ class UsExecutionTests(unittest.TestCase):
         split_day.loc[dates[1], "split_ratio"] = 2.0
         self.assertTrue(pd.isna(repair_latest_yahoo_close(split_day, metadata, dates[1], now).loc[dates[1], "close"]))
 
+    def test_recovers_soxl_dividend_ex_date_without_losing_adjustment(self):
+        dates = pd.to_datetime(["2026-09-21", "2026-09-22"])
+        frame = pd.DataFrame(
+            {
+                "open": [132.07, 137.67],
+                "high": [144.00, 152.6394],
+                "low": [129.62, 137.46],
+                "close": [141.93, None],
+                "adjclose": [141.83699, None],
+                "volume": [62_514_300, 65_009_024],
+                "split_ratio": [1.0, 1.0],
+                "dividend": [0.0, 0.093],
+                "close_recovered": [False, False],
+            },
+            index=dates,
+        )
+        metadata = {
+            "regularMarketPrice": 151.95,
+            "regularMarketTime": int(pd.Timestamp("2026-09-22 20:00:00Z").timestamp()),
+        }
+        result = repair_latest_yahoo_close(frame, metadata, dates[1], pd.Timestamp("2026-09-23 10:00:00Z"))
+        self.assertEqual(result.loc[dates[1], "close"], 151.95)
+        self.assertEqual(result.loc[dates[1], "adjclose"], 151.95)
+        self.assertEqual(result.loc[dates[1], "dividend"], 0.093)
+        self.assertTrue(result.loc[dates[1], "close_recovered"])
+
+        invalid_dividend = frame.copy()
+        invalid_dividend.loc[dates[1], "dividend"] = 200.0
+        rejected = repair_latest_yahoo_close(
+            invalid_dividend, metadata, dates[1], pd.Timestamp("2026-09-23 10:00:00Z")
+        )
+        self.assertTrue(pd.isna(rejected.loc[dates[1], "close"]))
+
 
 if __name__ == "__main__":
     unittest.main()

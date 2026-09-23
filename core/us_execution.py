@@ -12,8 +12,9 @@ def repair_latest_yahoo_close(frame, meta, completed_session, as_of):
 
     Yahoo can publish a daily OHLCV row with null close/adjusted close while
     regularMarketPrice already contains that session's final closing price.
-    The latest session has no later dividend or split adjustment, so its
-    adjusted close equals its raw close when no split occurs on that day.
+    The latest session has no later dividend adjustment, so its adjusted close
+    equals its raw close even when that session is a dividend ex-date. A split
+    on that session remains ineligible for this fallback.
     """
     if frame.empty or not isinstance(meta, dict):
         return frame
@@ -26,7 +27,7 @@ def repair_latest_yahoo_close(frame, meta, completed_session, as_of):
         return frame
     if not (pd.isna(frame.at[date, "close"]) and pd.isna(frame.at[date, "adjclose"])):
         return frame
-    if frame.at[date, "split_ratio"] != 1.0 or frame.at[date, "dividend"] != 0.0:
+    if frame.at[date, "split_ratio"] != 1.0:
         return frame
 
     try:
@@ -40,6 +41,7 @@ def repair_latest_yahoo_close(frame, meta, completed_session, as_of):
         low = float(frame.at[date, "low"])
         open_price = float(frame.at[date, "open"])
         volume = float(frame.at[date, "volume"])
+        dividend = float(frame.at[date, "dividend"])
     except (KeyError, TypeError, ValueError, OverflowError):
         return frame
 
@@ -47,10 +49,11 @@ def repair_latest_yahoo_close(frame, meta, completed_session, as_of):
         market_time_et.date() == date.date()
         and market_time_et.hour >= 16
         and market_time <= now.tz_convert("UTC")
-        and np.isfinite([final_price, high, low, open_price, volume]).all()
+        and np.isfinite([final_price, high, low, open_price, volume, dividend]).all()
         and 0 < low <= open_price <= high
         and low <= final_price <= high
         and volume > 0
+        and 0 <= dividend < final_price
     ):
         return frame
 

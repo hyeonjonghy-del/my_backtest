@@ -661,6 +661,12 @@ try:
     if completed is not None:
         expected_latest = completed
         qqq, tqqq = qqq.loc[qqq.index <= completed], tqqq.loc[tqqq.index <= completed]
+        if completed not in qqq.index or completed not in tqqq.index:
+            load_yahoo_chart.clear()
+            qqq = load_yahoo_chart(QQQ, warmup_start, end_dt, completed)
+            tqqq = load_yahoo_chart(TQQQ, warmup_start, end_dt, completed)
+            qqq, tqqq = qqq.loc[qqq.index <= completed], tqqq.loc[tqqq.index <= completed]
+            st.info("최신 거래일이 캐시에서 누락되어 Yahoo 데이터를 다시 조회했습니다.")
 except Exception as exc:
     st.error(f"Could not load Yahoo Finance data: {exc}")
     st.stop()

@@ -640,6 +640,15 @@ try:
     if expected_latest is not None:
         soxx = soxx.loc[soxx.index <= expected_latest]
         soxl = soxl.loc[soxl.index <= expected_latest]
+        if expected_latest not in soxx.index or expected_latest not in soxl.index:
+            # A cached frame may predate a late Yahoo close or a recovery-rule
+            # change. Re-read both symbols once before checking date integrity.
+            load_yahoo_chart.clear()
+            soxx = load_yahoo_chart(SOXX, warmup_start, end_dt, expected_latest)
+            soxl = load_yahoo_chart(SOXL, warmup_start, end_dt, expected_latest)
+            soxx = soxx.loc[soxx.index <= expected_latest]
+            soxl = soxl.loc[soxl.index <= expected_latest]
+            st.info("최신 거래일이 캐시에서 누락되어 Yahoo 데이터를 다시 조회했습니다.")
 except Exception as exc:
     st.error(f"Could not load Yahoo Finance data: {exc}")
     st.stop()

@@ -660,16 +660,7 @@ except ValueError as exc:
 if len(common_idx) < 200:
     st.error("Not enough data for the selected backtest period.")
     st.stop()
-if expected_latest is not None and common_idx[-1] != expected_latest:
-    progress.empty()
-    st.error(
-        "⚠️ 최신 종가 데이터 미수신\n\n"
-        f"- 예상 최신 거래일: **{expected_latest.date()}**\n"
-        f"- 현재 데이터 마지막 거래일: **{common_idx[-1].date()}**\n\n"
-        "아래 주문 수량은 오래된 데이터가 될 수 있어 실행 계획을 중단했습니다. "
-        "잠시 후 다시 실행해 주세요."
-    )
-    st.stop()
+execution_data_fresh = expected_latest is None or common_idx[-1] == expected_latest
 
 full_idx = common_idx.union(qqq.index[qqq.index < common_idx[0]])
 qqq = qqq.reindex(full_idx).sort_index()
@@ -844,8 +835,13 @@ summary = pd.DataFrame(
 progress.progress(100, text="Done")
 progress.empty()
 
-if expected_latest is not None:
+if expected_latest is not None and execution_data_fresh:
     st.success(f"✅ 최신 데이터 확인 완료 · 종가 기준일 {expected_latest.date()}")
+elif expected_latest is not None:
+    st.warning(
+        f"📊 백테스트는 **{common_idx[-1].date()}** 종가까지 시뮬레이션했습니다. "
+        f"최신 완료 거래일 **{expected_latest.date()}** 데이터가 없어 주문 실행 화면은 차단됩니다."
+    )
 
 latest = weights.iloc[-1]
 latest_date = weights.index[-1].date()
@@ -892,12 +888,17 @@ execution_plan, target_cash = build_execution_plan(
 )
 action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 
-st.success(
-    f"{action_label} | Today's target for next open from close signal ({latest_date}): {latest_regime} | "
+status_message = (
+    f"{'주문 계산' if execution_data_fresh else '시뮬레이션'} | "
+    f"Close signal ({latest_date}): {latest_regime} | "
     f"QQQ {next_target['QQQ']:.1%}, TQQQ {next_target['TQQQ']:.1%}, Cash {1 - next_target.sum():.1%} | "
     f"QQQ {vol_window}D volatility {latest_vol:.1%} | "
     f"Next session rebalance: {'Yes' if rebalance_due else 'No'}"
 )
+if execution_data_fresh:
+    st.success(f"{action_label} | {status_message}")
+else:
+    st.info(status_message)
 st.info(
     f"${initial_capital:,.0f} whole-share holdings vs fractional same-timing calculation | "
     f"Total return difference {strategy_metrics['total'] - legacy_metrics['total']:+.1%}p | "
@@ -982,28 +983,35 @@ with tab_perf:
 with tab_execute:
     render_account_summary(account_state, account_value)
 
-    st.subheader("Next Trade Plan")
-    st.caption(
-        "Signal uses the latest close. Backtest returns assume rebalancing at the next regular-session open. "
-        "Share quantities are fixed from the latest raw close and are therefore estimates for the unknown next open. "
-        "Use the recovery option only for a new account or a missed/partial prior fill."
-    )
-    exec_shown = execution_plan.copy()
-    for col in ["Latest Price", "Target Value", "Estimated Order Value"]:
-        exec_shown[col] = exec_shown[col].map(lambda x: f"${x:,.2f}")
-    exec_shown["Target Weight"] = exec_shown["Target Weight"].map(lambda x: f"{x:.1%}")
-    for col in ["Target Shares", "Current Shares", "Order Shares"]:
-        exec_shown[col] = exec_shown[col].map(lambda x: f"{x:,.0f}")
-    st.dataframe(exec_shown, use_container_width=True, hide_index=True)
+    if not execution_data_fresh:
+        st.error(
+            "⚠️ 최신 종가 데이터가 아니므로 주문 실행 계획을 표시하지 않습니다.\n\n"
+            f"예상 최신 거래일: **{expected_latest.date()}** · "
+            f"현재 데이터 마지막 거래일: **{latest_date}**"
+        )
+    else:
+        st.subheader("Next Trade Plan")
+        st.caption(
+            "Signal uses the latest close. Backtest returns assume rebalancing at the next regular-session open. "
+            "Share quantities are fixed from the latest raw close and are therefore estimates for the unknown next open. "
+            "Use the recovery option only for a new account or a missed/partial prior fill."
+        )
+        exec_shown = execution_plan.copy()
+        for col in ["Latest Price", "Target Value", "Estimated Order Value"]:
+            exec_shown[col] = exec_shown[col].map(lambda x: f"${x:,.2f}")
+        exec_shown["Target Weight"] = exec_shown["Target Weight"].map(lambda x: f"{x:.1%}")
+        for col in ["Target Shares", "Current Shares", "Order Shares"]:
+            exec_shown[col] = exec_shown[col].map(lambda x: f"{x:,.0f}")
+        st.dataframe(exec_shown, use_container_width=True, hide_index=True)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Target Cash", f"${target_cash:,.2f}")
-    c2.metric("Signal Date", str(latest_date))
-    c3.metric("Target Invested", f"{next_target.sum():.1%}")
-    st.info(
-        "Practical rule: after the signal date closes, prepare these orders for the next regular-session open. "
-        "Buy positive Order Shares, sell negative Order Shares, and re-run after fills if the opening price differs a lot."
-    )
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Target Cash", f"${target_cash:,.2f}")
+        c2.metric("Signal Date", str(latest_date))
+        c3.metric("Target Invested", f"{next_target.sum():.1%}")
+        st.info(
+            "Practical rule: after the signal date closes, prepare these orders for the next regular-session open. "
+            "Buy positive Order Shares, sell negative Order Shares, and re-run after fills if the opening price differs a lot."
+        )
 
 with tab_signal:
     signal_df = pd.DataFrame(

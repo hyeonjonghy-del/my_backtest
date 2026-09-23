@@ -24,6 +24,7 @@ from core.us_execution import (
     adjusted_open,
     fixed_units_open_backtest,
     latest_completed_nyse_session,
+    repair_latest_yahoo_close,
     rebalance_due_after_close,
     split_unadjusted_price,
     validated_common_dates,
@@ -182,7 +183,9 @@ def normalize_index(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+def load_yahoo_chart(
+    symbol: str, start_dt: datetime, end_dt: datetime, completed_session: datetime | None = None
+) -> pd.DataFrame:
     period1 = int(datetime.combine(start_dt.date(), datetime.min.time(), tzinfo=timezone.utc).timestamp())
     period2 = int(datetime.combine((end_dt + timedelta(days=1)).date(), datetime.min.time(), tzinfo=timezone.utc).timestamp())
     url = (
@@ -210,6 +213,7 @@ def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.Da
     )
     df["split_ratio"] = 1.0
     df["dividend"] = 0.0
+    df["close_recovered"] = False
     events = result.get("events", {})
     for event in events.get("splits", {}).values():
         event_date = pd.to_datetime(event["date"], unit="s").normalize()
@@ -222,7 +226,12 @@ def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.Da
         amount = float(event.get("amount", 0.0))
         if event_date in df.index and amount >= 0:
             df.loc[event_date, "dividend"] += amount
-    return normalize_index(df).dropna(subset=["adjclose"])
+    df = normalize_index(df)
+    if completed_session is not None:
+        df = repair_latest_yahoo_close(
+            df, result.get("meta", {}), completed_session, datetime.now(timezone.utc)
+        )
+    return df.dropna(subset=["adjclose"])
 
 
 def calc_metrics(daily_ret: pd.Series) -> dict[str, object]:
@@ -637,10 +646,10 @@ progress = st.progress(0, text="Loading QQQ/TQQQ data...")
 try:
     warmup_start = datetime.combine(start_date, datetime.min.time()) - timedelta(days=max(slow_window, vol_window) * 3)
     end_dt = datetime.combine(end_date, datetime.min.time())
-    qqq = load_yahoo_chart(QQQ, warmup_start, end_dt)
-    tqqq = load_yahoo_chart(TQQQ, warmup_start, end_dt)
+    completed = latest_completed_nyse_session(datetime.now(timezone.utc))
+    qqq = load_yahoo_chart(QQQ, warmup_start, end_dt, completed)
+    tqqq = load_yahoo_chart(TQQQ, warmup_start, end_dt, completed)
     if end_date >= datetime.now().date():
-        completed = latest_completed_nyse_session(datetime.now(timezone.utc))
         qqq, tqqq = qqq.loc[qqq.index <= completed], tqqq.loc[tqqq.index <= completed]
 except Exception as exc:
     st.error(f"Could not load Yahoo Finance data: {exc}")
@@ -654,6 +663,17 @@ except ValueError as exc:
 if len(common_idx) < 200:
     st.error("Not enough data for the selected backtest period.")
     st.stop()
+
+recovered_dates = {
+    symbol: [str(date.date()) for date in frame.index[frame["close_recovered"]]]
+    for symbol, frame in ((QQQ, qqq), (TQQQ, tqqq))
+}
+if any(recovered_dates.values()):
+    st.warning(
+        "Yahoo 일봉 종가 누락을 정규장 확정가격으로 보완했습니다: "
+        + ", ".join(f"{symbol} {', '.join(dates)}" for symbol, dates in recovered_dates.items() if dates)
+        + ". 다음 실행 전에 가격을 확인하세요."
+    )
 
 full_idx = common_idx.union(qqq.index[qqq.index < common_idx[0]])
 qqq = qqq.reindex(full_idx).sort_index()

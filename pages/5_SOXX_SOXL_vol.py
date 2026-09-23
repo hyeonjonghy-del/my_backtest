@@ -14,6 +14,7 @@ from core.us_execution import (
     adjusted_open,
     fixed_units_open_backtest,
     latest_completed_nyse_session,
+    repair_latest_yahoo_close,
     rebalance_due_after_close,
     validated_common_dates,
 )
@@ -177,12 +178,14 @@ def normalize_index(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+def load_yahoo_chart(
+    symbol: str, start_dt: datetime, end_dt: datetime, completed_session: datetime | None = None
+) -> pd.DataFrame:
     period1 = int(datetime.combine(start_dt.date(), datetime.min.time(), tzinfo=timezone.utc).timestamp())
     period2 = int(datetime.combine((end_dt + timedelta(days=1)).date(), datetime.min.time(), tzinfo=timezone.utc).timestamp())
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        f"?period1={period1}&period2={period2}&interval=1d&events=history&includeAdjustedClose=true"
+        f"?period1={period1}&period2={period2}&interval=1d&events=div%2Csplits&includeAdjustedClose=true"
     )
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20) as response:
@@ -203,7 +206,27 @@ def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.Da
         },
         index=index,
     )
-    return normalize_index(df).dropna(subset=["adjclose"])
+    df["split_ratio"] = 1.0
+    df["dividend"] = 0.0
+    df["close_recovered"] = False
+    events = result.get("events", {})
+    for event in events.get("splits", {}).values():
+        event_date = pd.to_datetime(event["date"], unit="s").normalize()
+        numerator = float(event.get("numerator", 0.0))
+        denominator = float(event.get("denominator", 0.0))
+        if event_date in df.index and numerator > 0 and denominator > 0:
+            df.loc[event_date, "split_ratio"] *= numerator / denominator
+    for event in events.get("dividends", {}).values():
+        event_date = pd.to_datetime(event["date"], unit="s").normalize()
+        amount = float(event.get("amount", 0.0))
+        if event_date in df.index and amount >= 0:
+            df.loc[event_date, "dividend"] += amount
+    df = normalize_index(df)
+    if completed_session is not None:
+        df = repair_latest_yahoo_close(
+            df, result.get("meta", {}), completed_session, datetime.now(timezone.utc)
+        )
+    return df.dropna(subset=["adjclose"])
 
 
 def calc_metrics(daily_ret: pd.Series) -> dict[str, object]:
@@ -607,10 +630,14 @@ expected_latest = None
 try:
     warmup_start = datetime.combine(start_date, datetime.min.time()) - timedelta(days=max(slow_window, vol_window) * 3)
     end_dt = datetime.combine(end_date, datetime.min.time())
-    soxx = load_yahoo_chart(SOXX, warmup_start, end_dt)
-    soxl = load_yahoo_chart(SOXL, warmup_start, end_dt)
-    if end_date >= datetime.now().date():
-        expected_latest = latest_completed_nyse_session(datetime.now(timezone.utc))
+    expected_latest = (
+        latest_completed_nyse_session(datetime.now(timezone.utc))
+        if end_date >= datetime.now().date()
+        else None
+    )
+    soxx = load_yahoo_chart(SOXX, warmup_start, end_dt, expected_latest)
+    soxl = load_yahoo_chart(SOXL, warmup_start, end_dt, expected_latest)
+    if expected_latest is not None:
         soxx = soxx.loc[soxx.index <= expected_latest]
         soxl = soxl.loc[soxl.index <= expected_latest]
 except Exception as exc:
@@ -626,6 +653,17 @@ if len(common_idx) < 200:
     st.error("Not enough data for the selected backtest period.")
     st.stop()
 execution_data_fresh = expected_latest is None or common_idx[-1] == expected_latest
+
+recovered_dates = {
+    symbol: [str(date.date()) for date in frame.index[frame["close_recovered"]]]
+    for symbol, frame in ((SOXX, soxx), (SOXL, soxl))
+}
+if any(recovered_dates.values()):
+    st.warning(
+        "Yahoo 일봉 종가 누락을 정규장 확정가격으로 보완했습니다: "
+        + ", ".join(f"{symbol} {', '.join(dates)}" for symbol, dates in recovered_dates.items() if dates)
+        + ". 주문 전에 가격과 주문가능금액을 확인하세요."
+    )
 
 full_idx = common_idx.union(soxx.index[soxx.index < common_idx[0]])
 soxx = soxx.reindex(full_idx).sort_index()

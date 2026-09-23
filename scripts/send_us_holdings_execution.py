@@ -88,7 +88,11 @@ def build_messages(now: datetime) -> list[str]:
                 *([
                     "전략비중 변경: 있음"
                     if plan["target_changed"]
-                    else "전략비중 변경: 없음 (가격변동 리밸런싱 안 함)"
+                    else (
+                        "전략비중 변경: 없음 / 추가입금 자동투자"
+                        if plan["cash_deposit_detected"]
+                        else "전략비중 변경: 없음 (가격변동 리밸런싱 안 함)"
+                    )
                 ] if suppress_price_drift_rebalancing else []),
                 (
                     f"현재: {base} {plan['orders'][base]['current']}주, "
@@ -110,7 +114,7 @@ def build_messages(now: datetime) -> list[str]:
                         _order_line(base, plan["recovery_orders"][base]),
                         _order_line(leveraged, plan["recovery_orders"][leveraged]),
                     ]
-                    if not plan["target_changed"]
+                    if not plan["execution_required"]
                     else []
                 ),
                 "",

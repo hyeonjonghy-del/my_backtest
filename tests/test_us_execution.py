@@ -44,14 +44,33 @@ class UsExecutionTests(unittest.TestCase):
         self.assertFalse(rebalance_due_after_close("2026-09-10", "Weekly"))
         self.assertTrue(rebalance_due_after_close("2026-09-30", "Monthly"))
 
-    def test_whole_share_plan_reserves_fee_and_exposes_recovery(self):
+    def test_whole_share_plan_auto_invests_new_cash_without_weight_change(self):
         plan = whole_share_plan(
-            {"SOXX": 1.0}, {"SOXX": 100.0}, {"SOXX": 0}, 1_000.0,
-            previous_weights={"SOXX": 1.0}, fee_rate=0.01,
+            {"QQQ": 0.733, "TQQQ": 0.267},
+            {"QQQ": 721.45, "TQQQ": 72.64},
+            {"QQQ": 6, "TQQQ": 24},
+            2_537.77,
+            previous_weights={"QQQ": 0.733, "TQQQ": 0.267},
+            fee_rate=0.0025,
         )
         self.assertFalse(plan["target_changed"])
-        self.assertEqual(plan["orders"]["SOXX"]["order"], 0)
-        self.assertEqual(plan["recovery_orders"]["SOXX"]["target"], 9)
+        self.assertTrue(plan["cash_deposit_detected"])
+        self.assertTrue(plan["execution_required"])
+        self.assertGreater(plan["orders"]["QQQ"]["order"], 0)
+        self.assertGreater(plan["orders"]["TQQQ"]["order"], 0)
+
+    def test_whole_share_plan_does_not_rebalance_price_drift_that_needs_sale(self):
+        plan = whole_share_plan(
+            {"QQQ": 0.5, "TQQQ": 0.5},
+            {"QQQ": 100.0, "TQQQ": 100.0},
+            {"QQQ": 6, "TQQQ": 4},
+            0.0,
+            previous_weights={"QQQ": 0.5, "TQQQ": 0.5},
+        )
+        self.assertFalse(plan["cash_deposit_detected"])
+        self.assertFalse(plan["execution_required"])
+        self.assertEqual(plan["orders"]["QQQ"]["order"], 0)
+        self.assertEqual(plan["orders"]["TQQQ"]["order"], 0)
 
 
 if __name__ == "__main__":

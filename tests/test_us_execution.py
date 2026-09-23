@@ -5,6 +5,7 @@ import pandas as pd
 from core.execution_alerts import whole_share_plan
 from core.us_execution import (
     fixed_units_open_backtest,
+    repair_latest_yahoo_close,
     rebalance_due_after_close,
     validated_common_dates,
 )
@@ -71,6 +72,41 @@ class UsExecutionTests(unittest.TestCase):
         self.assertFalse(plan["execution_required"])
         self.assertEqual(plan["orders"]["QQQ"]["order"], 0)
         self.assertEqual(plan["orders"]["TQQQ"]["order"], 0)
+
+    def test_recovers_only_completed_missing_close_with_matching_final_metadata(self):
+        dates = pd.to_datetime(["2026-09-21", "2026-09-22", "2026-09-23"])
+        frame = pd.DataFrame(
+            {
+                "open": [727.89, 741.00, 748.00],
+                "high": [743.22, 748.35, 749.00],
+                "low": [727.81, 741.00, 747.00],
+                "close": [741.47, None, None],
+                "adjclose": [741.47, None, None],
+                "volume": [46_730_000, 39_451_977, 10_000],
+                "split_ratio": [1.0, 1.0, 1.0],
+                "dividend": [0.0, 0.0, 0.0],
+                "close_recovered": [False, False, False],
+            },
+            index=dates,
+        )
+        metadata = {
+            "regularMarketPrice": 747.46,
+            "regularMarketTime": int(pd.Timestamp("2026-09-22 20:00:00Z").timestamp()),
+        }
+        now = pd.Timestamp("2026-09-23 10:00:00Z")
+        result = repair_latest_yahoo_close(frame, metadata, dates[1], now)
+        self.assertEqual(result.loc[dates[1], "close"], 747.46)
+        self.assertEqual(result.loc[dates[1], "adjclose"], 747.46)
+        self.assertTrue(result.loc[dates[1], "close_recovered"])
+        self.assertTrue(pd.isna(result.loc[dates[2], "close"]))
+
+        stale = dict(metadata, regularMarketTime=int(pd.Timestamp("2026-09-21 20:00:00Z").timestamp()))
+        self.assertTrue(pd.isna(repair_latest_yahoo_close(frame, stale, dates[1], now).loc[dates[1], "close"]))
+        intraday = dict(metadata, regularMarketTime=int(pd.Timestamp("2026-09-22 19:00:00Z").timestamp()))
+        self.assertTrue(pd.isna(repair_latest_yahoo_close(frame, intraday, dates[1], now).loc[dates[1], "close"]))
+        split_day = frame.copy()
+        split_day.loc[dates[1], "split_ratio"] = 2.0
+        self.assertTrue(pd.isna(repair_latest_yahoo_close(split_day, metadata, dates[1], now).loc[dates[1], "close"]))
 
 
 if __name__ == "__main__":

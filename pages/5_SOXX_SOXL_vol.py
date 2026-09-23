@@ -603,14 +603,16 @@ if start_date >= end_date:
     st.stop()
 
 progress = st.progress(0, text="Loading SOXX/SOXL data...")
+expected_latest = None
 try:
     warmup_start = datetime.combine(start_date, datetime.min.time()) - timedelta(days=max(slow_window, vol_window) * 3)
     end_dt = datetime.combine(end_date, datetime.min.time())
     soxx = load_yahoo_chart(SOXX, warmup_start, end_dt)
     soxl = load_yahoo_chart(SOXL, warmup_start, end_dt)
     if end_date >= datetime.now().date():
-        completed = latest_completed_nyse_session(datetime.now(timezone.utc))
-        soxx, soxl = soxx.loc[soxx.index <= completed], soxl.loc[soxl.index <= completed]
+        expected_latest = latest_completed_nyse_session(datetime.now(timezone.utc))
+        soxx = soxx.loc[soxx.index <= expected_latest]
+        soxl = soxl.loc[soxl.index <= expected_latest]
 except Exception as exc:
     st.error(f"Could not load Yahoo Finance data: {exc}")
     st.stop()
@@ -622,6 +624,16 @@ except ValueError as exc:
     st.stop()
 if len(common_idx) < 200:
     st.error("Not enough data for the selected backtest period.")
+    st.stop()
+if expected_latest is not None and common_idx[-1] != expected_latest:
+    progress.empty()
+    st.error(
+        "⚠️ 최신 종가 데이터 미수신\n\n"
+        f"- 예상 최신 거래일: **{expected_latest.date()}**\n"
+        f"- 현재 데이터 마지막 거래일: **{common_idx[-1].date()}**\n\n"
+        "아래 주문 수량은 오래된 데이터가 될 수 있어 실행 계획을 중단했습니다. "
+        "잠시 후 다시 실행해 주세요."
+    )
     st.stop()
 
 full_idx = common_idx.union(soxx.index[soxx.index < common_idx[0]])
@@ -793,6 +805,9 @@ summary = pd.DataFrame(
 
 progress.progress(100, text="Done")
 progress.empty()
+
+if expected_latest is not None:
+    st.success(f"✅ 최신 데이터 확인 완료 · 종가 기준일 {expected_latest.date()}")
 
 latest = weights.iloc[-1]
 latest_date = weights.index[-1].date()

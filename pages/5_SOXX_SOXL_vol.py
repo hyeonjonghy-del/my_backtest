@@ -14,9 +14,12 @@ from core.us_execution import (
     adjusted_open,
     fixed_units_open_backtest,
     latest_completed_nyse_session,
+    optimize_whole_share_targets,
     repair_latest_yahoo_close,
     rebalance_due_after_close,
+    split_unadjusted_price,
     validated_common_dates,
+    whole_share_open_backtest,
 )
 from kiwoom_account import (
     KIWOOM_SOURCE,
@@ -492,15 +495,17 @@ def build_execution_plan(
         rtol=0.0,
         atol=1e-12,
     )
-    net_value = effective_value
-    for _ in range(80):
-        candidate = np.floor(net_value * target_weights / prices).replace([np.inf, -np.inf], 0).fillna(0)
-        turnover = float(((candidate - current_shares).abs() * prices).sum())
-        revised = max(float(effective_value) - cost_rate * turnover, 0.0)
-        if abs(revised - net_value) < 0.01:
-            net_value = revised
-            break
-        net_value = revised
+    candidate = pd.Series(
+        optimize_whole_share_targets(
+            target_weights.to_numpy(dtype=float),
+            prices.to_numpy(dtype=float),
+            current_shares.to_numpy(dtype=float),
+            current_cash,
+            cost_rate,
+        ),
+        index=target_weights.index,
+        dtype=float,
+    )
     cash_deposit_detected = (
         not target_changed
         and bool((candidate > current_shares).any())
@@ -510,8 +515,8 @@ def build_execution_plan(
     rows = []
     for symbol in ["SOXX", "SOXL"]:
         if execution_required:
-            target_value = net_value * target_weights[symbol]
-            target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
+            target_value = effective_value * target_weights[symbol]
+            target_shares = candidate[symbol]
         else:
             # Keep shares unchanged when only market prices moved. Rebalance only
             # after the strategy itself produces a different target allocation.
@@ -564,6 +569,16 @@ with st.sidebar:
     weak_soxx_risk_share = st.slider("Weak Bull SOXX risk share (%)", 40, 100, 80, 5) / 100
     weak_soxl_cap = st.slider("Weak Bull SOXL max weight (%)", 0, 40, 15, 5) / 100
 
+    st.subheader("Backtest Capital")
+    initial_capital = st.number_input(
+        "Initial capital ($)",
+        min_value=1000.0,
+        value=10000.0,
+        step=1000.0,
+        help="The backtest uses whole shares and keeps any residual cash.",
+    )
+    st.caption("Whole-share targets use the closest feasible allocation; residual cash is retained.")
+
     st.subheader("Turnaround Full-Bet")
     turnaround_dd_trigger = st.slider("Turnaround drawdown trigger (%)", 10, 50, 20, 5) / 100
     turnaround_soxl_weight = st.slider("Turnaround SOXL weight (%)", 0, 80, 50, 5) / 100
@@ -610,6 +625,7 @@ with st.expander("Default Strategy", expanded=False):
 | Turnaround exit | MA{turnaround_exit_fast} < MA{turnaround_exit_slow} for {turnaround_exit_confirm} day(s), then return to v3 logic |
 | Bear regime | Cash {1 - bear_soxx:.0%} + SOXX {bear_soxx:.0%} |
 | Execution | Trade only when target weights change; no price-only drift rebalancing |
+| Whole-share sizing | Closest feasible SOXX/SOXL/cash mix; not independent floor rounding |
 """
     )
 
@@ -798,41 +814,66 @@ close_target_weights = pd.DataFrame(
 )
 ret_soxx = ret_soxx_full.reindex(common_idx).fillna(0.0)
 ret_soxl = ret_soxl_full.reindex(common_idx).fillna(0.0)
-open_prices = pd.DataFrame({"SOXX": soxx_adjopen, "SOXL": soxl_adjopen}).reindex(common_idx)
-close_prices = pd.DataFrame(
+adjusted_open_prices = pd.DataFrame({"SOXX": soxx_adjopen, "SOXL": soxl_adjopen}).reindex(common_idx)
+adjusted_close_prices = pd.DataFrame(
     {"SOXX": soxx["adjclose"], "SOXL": soxl["adjclose"]}
 ).reindex(common_idx)
-strategy_ret, executed_turnover, close_nav = backtest_open_execution_close_valuation(
-    weights, open_prices, close_prices, cost_rate
+fractional_ret, _, _ = backtest_open_execution_close_valuation(
+    weights, adjusted_open_prices, adjusted_close_prices, cost_rate
 )
-early_defense_ret, _, early_defense_close_nav = backtest_open_execution_close_valuation(
-    early_defense_weights, open_prices, close_prices, cost_rate
+
+soxx_raw_open, soxl_raw_open = split_unadjusted_price(soxx, "open"), split_unadjusted_price(soxl, "open")
+soxx_raw_close, soxl_raw_close = split_unadjusted_price(soxx, "close"), split_unadjusted_price(soxl, "close")
+raw_open_prices = pd.DataFrame(
+    {"SOXX": soxx_raw_open.reindex(common_idx), "SOXL": soxl_raw_open.reindex(common_idx)}
+)
+raw_close_prices = pd.DataFrame(
+    {"SOXX": soxx_raw_close.reindex(common_idx), "SOXL": soxl_raw_close.reindex(common_idx)}
+)
+raw_prior_closes = pd.DataFrame(
+    {"SOXX": soxx_raw_close.shift(1).reindex(common_idx), "SOXL": soxl_raw_close.shift(1).reindex(common_idx)}
+)
+split_ratios = pd.DataFrame(
+    {"SOXX": soxx["split_ratio"].reindex(common_idx), "SOXL": soxl["split_ratio"].reindex(common_idx)}
+).fillna(1.0)
+dividends = pd.DataFrame(
+    {"SOXX": soxx["dividend"].reindex(common_idx), "SOXL": soxl["dividend"].reindex(common_idx)}
+).fillna(0.0)
+strategy_ret, actual_weights, executed_turnover, share_history, backtest_cash = whole_share_open_backtest(
+    weights, raw_prior_closes, raw_open_prices, raw_close_prices,
+    split_ratios, dividends, cost_rate, initial_capital,
+)
+early_defense_ret, early_actual_weights, _, _, _ = whole_share_open_backtest(
+    early_defense_weights, raw_prior_closes, raw_open_prices, raw_close_prices,
+    split_ratios, dividends, cost_rate, initial_capital,
 )
 
 bench_soxx = ret_soxx
 bench_soxl = ret_soxl
-comparison_prior_closes = close_prices.shift(1)
-comparison_prior_closes.iloc[0] = open_prices.iloc[0]
+comparison_prior_closes = adjusted_close_prices.shift(1)
+comparison_prior_closes.iloc[0] = adjusted_open_prices.iloc[0]
 fixed_20, _, _ = fixed_units_open_backtest(
     pd.DataFrame({"SOXX": 0.8, "SOXL": 0.2}, index=common_idx),
-    comparison_prior_closes, open_prices, close_prices, cost_rate,
+    comparison_prior_closes, adjusted_open_prices, adjusted_close_prices, cost_rate,
     rebalance_every_session=True,
 )
 fixed_30, _, _ = fixed_units_open_backtest(
     pd.DataFrame({"SOXX": 0.7, "SOXL": 0.3}, index=common_idx),
-    comparison_prior_closes, open_prices, close_prices, cost_rate,
+    comparison_prior_closes, adjusted_open_prices, adjusted_close_prices, cost_rate,
     rebalance_every_session=True,
 )
 
 strategy_metrics = calc_metrics(strategy_ret)
+legacy_metrics = calc_metrics(fractional_ret)
 summary = pd.DataFrame(
     [
-        metric_row("Original Strategy", strategy_ret, weights["SOXX"], weights["SOXL"]),
+        metric_row("Strategy (Holdings)", strategy_ret, actual_weights["SOXX"], actual_weights["SOXL"]),
+        metric_row("Fractional Same-Timing", fractional_ret, weights["SOXX"], weights["SOXL"]),
         metric_row(
             "Early Defense: Close < MA30 → Weak Bull",
             early_defense_ret,
-            early_defense_weights["SOXX"],
-            early_defense_weights["SOXL"],
+            early_actual_weights["SOXX"],
+            early_actual_weights["SOXL"],
         ),
         metric_row("SOXX 100%", bench_soxx),
         metric_row("SOXL 100%", bench_soxl),
@@ -905,6 +946,12 @@ if execution_data_fresh:
     st.success(f"{action_label} | {status_message}")
 else:
     st.info(status_message)
+st.info(
+    f"${initial_capital:,.0f} whole-share holdings vs fractional same-timing calculation | "
+    f"Total return difference {strategy_metrics['total'] - legacy_metrics['total']:+.1%}p | "
+    f"CAGR difference {strategy_metrics['cagr'] - legacy_metrics['cagr']:+.2%}p | "
+    f"MDD difference {strategy_metrics['mdd'] - legacy_metrics['mdd']:+.2%}p"
+)
 
 cols = st.columns(6)
 cols[0].metric("Total", f"{strategy_metrics['total']:.1%}")
@@ -974,7 +1021,7 @@ with tab_perf:
         ),
         clear_figure=True,
     )
-    performance_weight_df = weights.copy()
+    performance_weight_df = actual_weights.copy()
     performance_weight_df["Cash"] = (1 - performance_weight_df.sum(axis=1)).clip(0, 1)
     st.pyplot(static_area_chart(performance_weight_df, "Portfolio Weights", height=300), clear_figure=True)
 
@@ -1024,7 +1071,7 @@ with tab_signal:
         clear_figure=True,
     )
 
-    weight_df = weights.copy()
+    weight_df = actual_weights.copy()
     weight_df["Cash"] = (1 - weight_df.sum(axis=1)).clip(0, 1)
     st.pyplot(
         static_area_chart(weight_df, "Portfolio Weights", height=300),
@@ -1047,6 +1094,11 @@ with tab_signal:
             "Target Turnaround": close_turnaround,
             "Applied SOXX": weights["SOXX"],
             "Applied SOXL": weights["SOXL"],
+            "Actual SOXX": actual_weights["SOXX"],
+            "Actual SOXL": actual_weights["SOXL"],
+            "SOXX Shares": share_history["SOXX"],
+            "SOXL Shares": share_history["SOXL"],
+            "Actual Cash": backtest_cash,
             "Early Defense": early_defense_signal.reindex(common_idx).fillna(False),
             "Defense SOXX": early_defense_weights["SOXX"],
             "Defense SOXL": early_defense_weights["SOXL"],

@@ -5,6 +5,7 @@ import pandas as pd
 from core.execution_alerts import whole_share_plan
 from core.us_execution import (
     fixed_units_open_backtest,
+    optimize_whole_share_targets,
     repair_latest_yahoo_close,
     rebalance_due_after_close,
     validated_common_dates,
@@ -72,6 +73,26 @@ class UsExecutionTests(unittest.TestCase):
         self.assertFalse(plan["execution_required"])
         self.assertEqual(plan["orders"]["QQQ"]["order"], 0)
         self.assertEqual(plan["orders"]["TQQQ"]["order"], 0)
+
+    def test_nearest_feasible_mix_can_round_up_expensive_etf(self):
+        units = optimize_whole_share_targets(
+            [0.237, 0.316], [588.90, 163.71], [7, 38], 9_249.39, 0.0025
+        )
+        self.assertEqual(units.tolist(), [8, 38])
+
+    def test_live_plan_uses_same_nearest_whole_share_rule(self):
+        plan = whole_share_plan(
+            {"SOXX": 0.237, "SOXL": 0.316},
+            {"SOXX": 588.90, "SOXL": 163.71},
+            {"SOXX": 7, "SOXL": 38},
+            9_249.39,
+            previous_weights={"SOXX": 0.20, "SOXL": 0.30},
+            fee_rate=0.0025,
+        )
+        self.assertEqual(plan["orders"]["SOXX"]["target"], 8)
+        self.assertEqual(plan["orders"]["SOXX"]["order"], 1)
+        self.assertEqual(plan["orders"]["SOXL"]["target"], 38)
+        self.assertEqual(plan["orders"]["SOXL"]["order"], 0)
 
     def test_recovers_only_completed_missing_close_with_matching_final_metadata(self):
         dates = pd.to_datetime(["2026-09-21", "2026-09-22", "2026-09-23"])

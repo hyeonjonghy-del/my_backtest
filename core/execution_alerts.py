@@ -15,7 +15,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from core.us_execution import latest_completed_nyse_session, validated_common_dates
+from core.us_execution import (
+    latest_completed_nyse_session,
+    optimize_whole_share_targets,
+    validated_common_dates,
+)
 
 
 TRADING_DAYS = 252
@@ -564,21 +568,18 @@ def whole_share_plan(
     )
     if not 0 <= fee_rate < 1:
         raise ValueError("fee_rate must be in [0, 1)")
-    net_value = account_value
-    for _ in range(80):
-        candidates = {
-            symbol: math.floor(net_value * weights.get(symbol, 0.0) / price)
-            for symbol, price in prices.items()
-        }
-        turnover = sum(abs(candidates[s] - int(float(shares.get(s, 0)))) * prices[s] for s in prices)
-        revised = max(account_value - fee_rate * turnover, 0.0)
-        if abs(revised - net_value) < 0.01:
-            net_value = revised
-            break
-        net_value = revised
     current_units = {
         symbol: int(float(shares.get(symbol, 0))) for symbol in prices
     }
+    symbols = list(prices)
+    optimized = optimize_whole_share_targets(
+        [weights.get(symbol, 0.0) for symbol in symbols],
+        [prices[symbol] for symbol in symbols],
+        [current_units[symbol] for symbol in symbols],
+        cash,
+        fee_rate,
+    )
+    candidates = {symbol: int(optimized[number]) for number, symbol in enumerate(symbols)}
     # A cash contribution increases all required positions (or leaves them
     # unchanged). Execute that buy-only gap even when strategy weights did not
     # change, while continuing to suppress price-drift rebalances needing sales.
@@ -593,7 +594,7 @@ def whole_share_plan(
     invested = 0.0
     for symbol, price in prices.items():
         current_shares = current_units[symbol]
-        calculated_target = math.floor(net_value * weights.get(symbol, 0.0) / price)
+        calculated_target = candidates[symbol]
         target_shares = calculated_target if execution_required else current_shares
         delta = target_shares - current_shares
         invested += target_shares * price

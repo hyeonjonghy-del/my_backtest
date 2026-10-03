@@ -24,6 +24,7 @@ from core.us_execution import (
     adjusted_open,
     fixed_units_open_backtest,
     latest_completed_nyse_session,
+    optimize_whole_share_targets,
     repair_latest_yahoo_close,
     rebalance_due_after_close,
     split_unadjusted_price,
@@ -496,17 +497,17 @@ def build_execution_plan(
         rtol=0.0,
         atol=1e-12,
     )
-    net_value = effective_value
-    for _ in range(80):
-        candidate = np.floor(net_value * target_weights / prices).replace(
-            [np.inf, -np.inf], 0
-        ).fillna(0)
-        turnover = float(((candidate - current_shares).abs() * prices).sum())
-        revised = max(float(effective_value) - cost_rate * turnover, 0.0)
-        if abs(revised - net_value) < 0.01:
-            net_value = revised
-            break
-        net_value = revised
+    candidate = pd.Series(
+        optimize_whole_share_targets(
+            target_weights.to_numpy(dtype=float),
+            prices.to_numpy(dtype=float),
+            current_shares.to_numpy(dtype=float),
+            current_cash,
+            cost_rate,
+        ),
+        index=target_weights.index,
+        dtype=float,
+    )
     cash_deposit_detected = (
         not target_changed
         and bool((candidate > current_shares).any())
@@ -516,8 +517,8 @@ def build_execution_plan(
     rows = []
     for symbol in ["QQQ", "TQQQ"]:
         if execution_required:
-            target_value = net_value * target_weights[symbol]
-            target_shares = np.floor(target_value / prices[symbol]) if prices[symbol] > 0 else 0
+            target_value = effective_value * target_weights[symbol]
+            target_shares = candidate[symbol]
         else:
             target_value = current_values[symbol]
             target_shares = current_shares[symbol]
@@ -585,7 +586,9 @@ with st.sidebar:
         step=1000.0,
         help="The backtest starts with this cash balance, buys whole shares, and retains any residual cash.",
     )
-    st.caption("Whole-share purchases only; uninvested cash remains in the portfolio.")
+    st.caption(
+        "Whole-share targets use the closest feasible QQQ/TQQQ/cash allocation; residual cash is retained."
+    )
 
     st.subheader("Bear / Trading")
     bear_qqq = st.slider("Bear-regime QQQ weight (%)", 0, 100, 30, 5) / 100

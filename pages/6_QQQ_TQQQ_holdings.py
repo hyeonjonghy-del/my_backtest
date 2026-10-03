@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from core.whole_share_optimizer import optimize_whole_share_targets
 from kiwoom_account import (
     KIWOOM_SOURCE,
     render_account_controls,
@@ -24,7 +25,6 @@ from core.us_execution import (
     adjusted_open,
     fixed_units_open_backtest,
     latest_completed_nyse_session,
-    optimize_whole_share_targets,
     repair_latest_yahoo_close,
     rebalance_due_after_close,
     split_unadjusted_price,

@@ -15,9 +15,9 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from core.whole_share_optimizer import optimize_whole_share_targets
 from core.us_execution import (
     latest_completed_nyse_session,
-    optimize_whole_share_targets,
     validated_common_dates,
 )
 

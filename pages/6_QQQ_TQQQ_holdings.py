@@ -1018,16 +1018,15 @@ with tab_perf:
     st.pyplot(static_area_chart(performance_weight_df, "Portfolio Weights", height=300), clear_figure=True)
 
 with tab_execute:
+    render_account_summary(account_state, account_value)
+
     if not execution_data_fresh:
         st.error(
             "⚠️ 최신 종가 데이터가 아니므로 주문 실행 계획을 표시하지 않습니다.\n\n"
             f"예상 최신 거래일: **{expected_latest.date()}** · "
             f"현재 데이터 마지막 거래일: **{latest_date}**"
         )
-    elif not has_execution_orders:
-        st.success("변동 없음 (주문 없음)")
     else:
-        render_account_summary(account_state, account_value)
         st.subheader("Next Trade Plan")
         st.caption(
             "Signal uses the latest close. Backtest returns assume rebalancing at the next regular-session open. "

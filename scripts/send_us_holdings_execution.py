@@ -105,9 +105,6 @@ def format_execution_message(
         f"계좌: {profile_label}",
         f"종가 신호: {result['signal_date']} / {result['regime']}",
     ]
-    if not plan["execution_required"]:
-        return "\n".join([*header, "변동 없음 (주문 없음)"])
-
     sections = [
         *header,
         (
@@ -119,7 +116,11 @@ def format_execution_message(
             [
                 "전략비중 변경: 있음"
                 if plan["target_changed"]
-                else "전략비중 변경: 없음 / 추가입금 자동투자"
+                else (
+                    "전략비중 변경: 없음 / 추가입금 자동투자"
+                    if plan["cash_deposit_detected"]
+                    else "전략비중 변경: 없음 (주문 없음)"
+                )
             ]
             if suppress_price_drift_rebalancing
             else []

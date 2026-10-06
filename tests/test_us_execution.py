@@ -102,10 +102,12 @@ class UsExecutionTests(unittest.TestCase):
             suppress_price_drift_rebalancing=True,
         )
 
-        self.assertEqual(message.splitlines()[-1], "변동 없음 (주문 없음)")
+        self.assertIn("전략비중 변경: 없음 (주문 없음)", message)
+        self.assertIn("현재: QQQ 8주, TQQQ 30주", message)
+        self.assertIn("목표: QQQ 8주, TQQQ 30주", message)
+        self.assertIn("QQQ: 유지 (주문 없음)", message)
+        self.assertIn("TQQQ: 유지 (주문 없음)", message)
         self.assertNotIn("복구", message)
-        self.assertNotIn("매수", message)
-        self.assertNotIn("매도", message)
 
     def test_qqq_message_keeps_real_execution_orders(self):
         plan = whole_share_plan(

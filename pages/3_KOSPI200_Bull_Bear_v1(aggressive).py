@@ -560,7 +560,6 @@ latest_long_ma = float(result["long_ma"].reindex(common_idx).iloc[-1])
 latest_short_ma = float(result["short_ma"].reindex(common_idx).iloc[-1])
 latest_vol = float(result["realized_vol"].reindex(common_idx).iloc[-1])
 target_weights_for_plan = target_weights.iloc[-1]
-previous_target_weights_for_plan = target_weights.iloc[-2]
 execution_plan, execution_summary = build_holdings_trade_plan(
     target_weights_for_plan,
     {
@@ -574,20 +573,15 @@ execution_plan, execution_summary = build_holdings_trade_plan(
     current_cash,
     account_value,
     fee_rate,
-    previous_target_weights=previous_target_weights_for_plan,
 )
-allocation_changed = bool(execution_summary["allocation_changed"])
-action_label = "Rebalance" if allocation_changed else "변동 없음 (주문 없음)"
+action_label = "Hold" if execution_summary["total_order_value"] <= 0 else "Rebalance"
 
-if allocation_changed:
-    st.success(
-        f"{action_label} | Target for next open from close signal ({latest_date.date()}): {latest_regime} | "
-        f"KODEX 200 {target_weights_for_plan['KODEX 200']:.0%}, "
-        f"KODEX Leverage {target_weights_for_plan['KODEX Leverage']:.0%}, "
-        f"Cash {target_weights_for_plan['Cash']:.0%}"
-    )
-else:
-    st.success("변동 없음 (주문 없음)")
+st.success(
+    f"{action_label} | Target for next open from close signal ({latest_date.date()}): {latest_regime} | "
+    f"KODEX 200 {target_weights_for_plan['KODEX 200']:.0%}, "
+    f"KODEX Leverage {target_weights_for_plan['KODEX Leverage']:.0%}, "
+    f"Cash {target_weights_for_plan['Cash']:.0%}"
+)
 st.caption(
     f"KODEX 200 {latest_price:,.0f} / MA{long_ma_window} {latest_long_ma:,.0f} / "
     f"MA{short_ma_window} {latest_short_ma:,.0f} | {vol_source} RV{vol_window} {latest_vol:.1%} | "
@@ -684,44 +678,42 @@ with tab_perf:
     st.dataframe(diag, use_container_width=True, hide_index=True)
 
 with tab_execution:
-    if not allocation_changed:
-        st.success("변동 없음 (주문 없음)")
-    else:
-        render_domestic_account_summary(account_state, execution_summary["effective_value"])
-        st.subheader("Next Trade Plan")
-        st.caption(
-            "전일 대비 전략 목표비중이 변경된 경우에만 주문 수량을 표시합니다. "
-            "이 화면에서는 주문을 자동 제출하지 않습니다."
-        )
-        exec_cols = st.columns(4)
-        exec_cols[0].metric(
-            "LEV Target",
-            f"{float(target_weights_for_plan.get('KODEX Leverage', 0.0)):.0%}",
-        )
-        exec_cols[1].metric(
-            "KODEX200 Target",
-            f"{float(target_weights_for_plan.get('KODEX 200', 0.0)):.0%}",
-        )
-        exec_cols[2].metric("Target Cash", f"{execution_summary['target_cash']:,.0f} KRW")
-        exec_cols[3].metric("Order Value", f"{execution_summary['total_order_value']:,.0f} KRW")
-        st.dataframe(
-            execution_plan.style.format(
-                {
-                    "Latest Price": "₩{:,.0f}",
-                    "Target Weight": "{:.1%}",
-                    "Target Value": "₩{:,.0f}",
-                    "Target Shares": "{:,.0f}",
-                    "Current Shares": "{:,.0f}",
-                    "Order Shares": "{:+,.0f}",
-                    "Estimated Order Value": "₩{:,.0f}",
-                }
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.info(
-            "전략 비중 변경일에만 양수 주문수량은 매수, 음수 주문수량은 매도합니다."
-        )
+    render_domestic_account_summary(account_state, execution_summary["effective_value"])
+    st.subheader("Next Trade Plan")
+    st.caption(
+        "The latest close determines target weights for the next regular-session open. "
+        "Current Kiwoom holdings are compared with whole-share targets; this page never submits orders."
+    )
+    exec_cols = st.columns(4)
+    exec_cols[0].metric(
+        "LEV Target",
+        f"{float(target_weights_for_plan.get('KODEX Leverage', 0.0)):.0%}",
+    )
+    exec_cols[1].metric(
+        "KODEX200 Target",
+        f"{float(target_weights_for_plan.get('KODEX 200', 0.0)):.0%}",
+    )
+    exec_cols[2].metric("Target Cash", f"{execution_summary['target_cash']:,.0f} KRW")
+    exec_cols[3].metric("Order Value", f"{execution_summary['total_order_value']:,.0f} KRW")
+    st.dataframe(
+        execution_plan.style.format(
+            {
+                "Latest Price": "₩{:,.0f}",
+                "Target Weight": "{:.1%}",
+                "Target Value": "₩{:,.0f}",
+                "Target Shares": "{:,.0f}",
+                "Current Shares": "{:,.0f}",
+                "Order Shares": "{:+,.0f}",
+                "Estimated Order Value": "₩{:,.0f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.info(
+        "Operational rule: after the close signal is confirmed, execute positive Order Shares as buys "
+        "and negative Order Shares as sells at the next regular-session open."
+    )
 
     execution_comparison = pd.DataFrame(
         [

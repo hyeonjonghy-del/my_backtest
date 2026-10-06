@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 
 import pandas as pd
 
@@ -10,6 +11,7 @@ from core.us_execution import (
     rebalance_due_after_close,
     validated_common_dates,
 )
+from scripts.send_us_holdings_execution import format_execution_message
 
 
 class UsExecutionTests(unittest.TestCase):
@@ -73,6 +75,64 @@ class UsExecutionTests(unittest.TestCase):
         self.assertFalse(plan["execution_required"])
         self.assertEqual(plan["orders"]["QQQ"]["order"], 0)
         self.assertEqual(plan["orders"]["TQQQ"]["order"], 0)
+
+    def test_unchanged_qqq_message_hides_recovery_orders(self):
+        weights = {"QQQ": 0.733, "TQQQ": 0.267}
+        plan = whole_share_plan(
+            weights,
+            {"QQQ": 750.0, "TQQQ": 80.0},
+            {"QQQ": 8, "TQQQ": 30},
+            604.52,
+            previous_weights=weights.copy(),
+            fee_rate=0.0025,
+        )
+        self.assertFalse(plan["execution_required"])
+
+        message = format_execution_message(
+            strategy={"name": "QQQ / TQQQ Holdings", "symbols": ("QQQ", "TQQQ")},
+            result={
+                "signal_date": "2026-10-05",
+                "regime": "Strong Bull",
+                "weights": weights,
+            },
+            profile_label="default",
+            cash=604.52,
+            plan=plan,
+            now=datetime(2026, 10, 6, 6, 30),
+            suppress_price_drift_rebalancing=True,
+        )
+
+        self.assertEqual(message.splitlines()[-1], "변동 없음 (주문 없음)")
+        self.assertNotIn("복구", message)
+        self.assertNotIn("매수", message)
+        self.assertNotIn("매도", message)
+
+    def test_qqq_message_keeps_real_execution_orders(self):
+        plan = whole_share_plan(
+            {"QQQ": 1.0, "TQQQ": 0.0},
+            {"QQQ": 100.0, "TQQQ": 100.0},
+            {"QQQ": 5, "TQQQ": 5},
+            0.0,
+            previous_weights={"QQQ": 0.5, "TQQQ": 0.5},
+        )
+
+        message = format_execution_message(
+            strategy={"name": "QQQ / TQQQ Holdings", "symbols": ("QQQ", "TQQQ")},
+            result={
+                "signal_date": "2026-10-05",
+                "regime": "Strong Bull",
+                "weights": {"QQQ": 1.0, "TQQQ": 0.0},
+            },
+            profile_label="default",
+            cash=0.0,
+            plan=plan,
+            now=datetime(2026, 10, 6, 6, 30),
+            suppress_price_drift_rebalancing=True,
+        )
+
+        self.assertIn("전략비중 변경: 있음", message)
+        self.assertIn("EXECUTION:", message)
+        self.assertIn("TQQQ: 매도 5주", message)
 
     def test_nearest_feasible_mix_can_round_up_expensive_etf(self):
         units = optimize_whole_share_targets(

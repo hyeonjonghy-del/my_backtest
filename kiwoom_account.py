@@ -724,7 +724,6 @@ def build_holdings_trade_plan(
     current_cash: float,
     account_value: float,
     fee_rate: float = 0.0,
-    previous_target_weights: Mapping[str, float] | None = None,
 ) -> tuple[object, dict[str, float]]:
     import pandas as pd
     current_values = {
@@ -738,48 +737,6 @@ def build_holdings_trade_plan(
     )
     if not 0 <= float(fee_rate) < 1:
         raise ValueError("fee_rate must be between 0 and 1")
-    allocation_changed = True
-    if previous_target_weights is not None:
-        allocation_names = list(latest_prices) + ["Cash"]
-        allocation_changed = any(
-            not math.isclose(
-                float(target_weights.get(asset, 0.0)),
-                float(previous_target_weights.get(asset, 0.0)),
-                rel_tol=0.0,
-                abs_tol=1e-12,
-            )
-            for asset in allocation_names
-        )
-
-    if not allocation_changed:
-        rows = []
-        current_invested = 0.0
-        for asset, raw_price in latest_prices.items():
-            price = float(raw_price)
-            held_qty = float(current_shares.get(asset, 0.0))
-            held_value = held_qty * price
-            current_invested += held_value
-            rows.append({
-                "Symbol": asset,
-                "Latest Price": price,
-                "Target Weight": float(target_weights.get(asset, 0.0)),
-                "Target Value": held_value,
-                "Target Shares": held_qty,
-                "Current Shares": held_qty,
-                "Order": "Hold",
-                "Order Shares": 0.0,
-                "Estimated Order Value": 0.0,
-            })
-        return pd.DataFrame(rows), {
-            "effective_value": effective_value,
-            "estimated_fees": 0.0,
-            "target_cash": float(current_cash),
-            "target_invested": current_invested,
-            "target_invested_weight": current_invested / effective_value if effective_value > 0 else 0.0,
-            "total_order_value": 0.0,
-            "allocation_changed": False,
-        }
-
     rows: list[dict[str, object]] = []
     invested = 0.0
     total_order_value = 0.0
@@ -830,5 +787,4 @@ def build_holdings_trade_plan(
         "target_invested": invested,
         "target_invested_weight": invested / effective_value if effective_value > 0 else 0.0,
         "total_order_value": total_order_value,
-        "allocation_changed": True,
     }

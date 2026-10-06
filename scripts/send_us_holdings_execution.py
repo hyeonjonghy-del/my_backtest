@@ -73,56 +73,74 @@ def build_messages(now: datetime) -> list[str]:
             ),
             fee_rate=float(strategy.get("cost_rate", 0.0)),
         )
-        base, leveraged = symbols
-
-        sections = [
-                f"[{strategy['name']} EXECUTION]",
-                f"조회시각: {now:%Y-%m-%d %H:%M} KST",
-                f"계좌: {profile['label']}",
-                f"종가 신호: {result['signal_date']} / {result['regime']}",
-                (
-                    f"목표비중: {base} {result['weights'][base]:.1%}, "
-                    f"{leveraged} {result['weights'][leveraged]:.1%}, "
-                    f"현금 {1 - sum(result['weights'].values()):.1%}"
-                ),
-                *([
-                    "전략비중 변경: 있음"
-                    if plan["target_changed"]
-                    else (
-                        "전략비중 변경: 없음 / 추가입금 자동투자"
-                        if plan["cash_deposit_detected"]
-                        else "전략비중 변경: 없음 (가격변동 리밸런싱 안 함)"
-                    )
-                ] if suppress_price_drift_rebalancing else []),
-                (
-                    f"현재: {base} {plan['orders'][base]['current']}주, "
-                    f"{leveraged} {plan['orders'][leveraged]['current']}주, "
-                    f"USD 예수금 ${cash:,.2f}"
-                ),
-                (
-                    f"목표: {base} {plan['orders'][base]['target']}주, "
-                    f"{leveraged} {plan['orders'][leveraged]['target']}주, "
-                    f"목표현금 약 ${plan['target_cash']:,.2f}"
-                ),
-                "EXECUTION:",
-                _order_line(base, plan["orders"][base]),
-                _order_line(leveraged, plan["orders"][leveraged]),
-                *(
-                    [
-                        "",
-                        "미체결/신규계좌 복구용 현재목표 동기화 (필요할 때만):",
-                        _order_line(base, plan["recovery_orders"][base]),
-                        _order_line(leveraged, plan["recovery_orders"][leveraged]),
-                    ]
-                    if not plan["execution_required"]
-                    else []
-                ),
-                "",
-                "※ 수량은 확정 종가로 정한 다음 미국 정규장 시가 주문 수량이며 주문은 자동 제출되지 않습니다.",
-            ]
-        messages.append("\n".join(sections))
+        messages.append(
+            format_execution_message(
+                strategy=strategy,
+                result=result,
+                profile_label=profile["label"],
+                cash=cash,
+                plan=plan,
+                now=now,
+                suppress_price_drift_rebalancing=suppress_price_drift_rebalancing,
+            )
+        )
 
     return messages
+
+
+def format_execution_message(
+    *,
+    strategy: dict[str, object],
+    result: dict[str, object],
+    profile_label: str,
+    cash: float,
+    plan: dict[str, object],
+    now: datetime,
+    suppress_price_drift_rebalancing: bool,
+) -> str:
+    base, leveraged = tuple(strategy["symbols"])
+    header = [
+        f"[{strategy['name']} EXECUTION]",
+        f"조회시각: {now:%Y-%m-%d %H:%M} KST",
+        f"계좌: {profile_label}",
+        f"종가 신호: {result['signal_date']} / {result['regime']}",
+    ]
+    if not plan["execution_required"]:
+        return "\n".join([*header, "변동 없음 (주문 없음)"])
+
+    sections = [
+        *header,
+        (
+            f"목표비중: {base} {result['weights'][base]:.1%}, "
+            f"{leveraged} {result['weights'][leveraged]:.1%}, "
+            f"현금 {1 - sum(result['weights'].values()):.1%}"
+        ),
+        *(
+            [
+                "전략비중 변경: 있음"
+                if plan["target_changed"]
+                else "전략비중 변경: 없음 / 추가입금 자동투자"
+            ]
+            if suppress_price_drift_rebalancing
+            else []
+        ),
+        (
+            f"현재: {base} {plan['orders'][base]['current']}주, "
+            f"{leveraged} {plan['orders'][leveraged]['current']}주, "
+            f"USD 예수금 ${cash:,.2f}"
+        ),
+        (
+            f"목표: {base} {plan['orders'][base]['target']}주, "
+            f"{leveraged} {plan['orders'][leveraged]['target']}주, "
+            f"목표현금 약 ${plan['target_cash']:,.2f}"
+        ),
+        "EXECUTION:",
+        _order_line(base, plan["orders"][base]),
+        _order_line(leveraged, plan["orders"][leveraged]),
+        "",
+        "※ 수량은 확정 종가로 정한 다음 미국 정규장 시가 주문 수량이며 주문은 자동 제출되지 않습니다.",
+    ]
+    return "\n".join(sections)
 
 
 def _order_line(symbol: str, order: dict[str, object]) -> str:

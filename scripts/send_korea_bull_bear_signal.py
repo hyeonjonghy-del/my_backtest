@@ -254,7 +254,7 @@ def send_telegram_with_retry(text: str, attempts: int = 3, delay_seconds: int = 
 def build_aggressive_target(
     kodex_close: pd.Series,
     lev_close: pd.Series,
-) -> tuple[pd.Series, pd.Series, str, list[str]]:
+) -> tuple[pd.Series, str, list[str]]:
     long_ma = kodex_close.rolling(100).mean()
     short_ma = kodex_close.rolling(20).mean()
     returns = finite_return(kodex_close.pct_change())
@@ -299,7 +299,7 @@ def build_aggressive_target(
         regime = "Bull / KODEX Leverage"
     if bool(early_reentry.iloc[-1]):
         regime = "Early Reentry"
-    return weights.iloc[-1], weights.iloc[-2], regime, [
+    return weights.iloc[-1], regime, [
         f"Regime: {regime}",
         f"KODEX 200: {kodex_close.iloc[-1]:,.0f} / MA100: {long_ma.iloc[-1]:,.0f} / MA20: {short_ma.iloc[-1]:,.0f}",
         f"KODEX 200 RV20: {realized_vol.iloc[-1]:.1%} / cap 50%",
@@ -313,30 +313,12 @@ def format_kodex_execution(
     now: datetime,
     latest_date: object,
     target_weights: pd.Series,
-    previous_target_weights: pd.Series,
     current: dict[str, int],
     cash: float,
     prices: dict[str, float],
     profile_label: str,
     signal_lines: list[str],
 ) -> str:
-    allocation_columns = ["KODEX Leverage", "KODEX 200", "Cash"]
-    allocation_changed = not np.allclose(
-        target_weights.reindex(allocation_columns).to_numpy(dtype=float),
-        previous_target_weights.reindex(allocation_columns).to_numpy(dtype=float),
-        rtol=0.0,
-        atol=1e-12,
-    )
-    if not allocation_changed:
-        return "\n".join(
-            [
-                f"[{title}]",
-                f"실행시각: {now:%Y-%m-%d %H:%M} KST",
-                f"기준일: {latest_date}",
-                "변동 없음 (주문 없음)",
-            ]
-        )
-
     account_value = cash + sum(current[code] * prices[code] for code in prices)
     net_value = account_value
     for _ in range(80):
@@ -391,7 +373,7 @@ def format_kodex_execution(
             f"[{title}]",
             f"실행시각: {now:%Y-%m-%d %H:%M} KST",
             f"기준일: {latest_date}",
-            "상태: 전략 비중 변경",
+            f"상태: {'비중 변경 필요' if any(delta.values()) else '비중 변경 없음'}",
             "",
             f"계좌: {profile_label}",
             f"목표비중: {fmt_allocation(target_weights)}",
@@ -516,7 +498,7 @@ def calculate_messages(now: datetime) -> list[str]:
         KODEX_200: int(float(snapshot["shares"].get(KODEX_200, 0.0))),
     }
     prices = {KODEX_LEVERAGE: latest_lev_close, KODEX_200: latest_close}
-    aggressive_target, previous_aggressive_target, aggressive_regime, aggressive_signals = build_aggressive_target(
+    aggressive_target, aggressive_regime, aggressive_signals = build_aggressive_target(
         kodex_close,
         lev_close,
     )
@@ -526,7 +508,6 @@ def calculate_messages(now: datetime) -> list[str]:
             now=now,
             latest_date=latest_date,
             target_weights=full_target,
-            previous_target_weights=target_weights.iloc[-2],
             current=current,
             cash=cash,
             prices=prices,
@@ -544,7 +525,6 @@ def calculate_messages(now: datetime) -> list[str]:
             now=now,
             latest_date=latest_date,
             target_weights=aggressive_target,
-            previous_target_weights=previous_aggressive_target,
             current=current,
             cash=cash,
             prices=prices,

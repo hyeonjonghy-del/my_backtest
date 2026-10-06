@@ -920,6 +920,7 @@ execution_plan, target_cash = build_execution_plan(
     force_sync=recover_execution,
 )
 action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
+has_execution_orders = bool(execution_plan["Order Shares"].abs().sum() > 0.5)
 
 status_message = (
     f"{'주문 계산' if execution_data_fresh else '시뮬레이션'} | "
@@ -929,7 +930,10 @@ status_message = (
     f"Next session rebalance: {'Yes' if rebalance_due else 'No'}"
 )
 if execution_data_fresh:
-    st.success(f"{action_label} | {status_message}")
+    if has_execution_orders:
+        st.success(f"{action_label} | {status_message}")
+    else:
+        st.success("변동 없음 (주문 없음)")
 else:
     st.info(status_message)
 st.info(
@@ -1014,15 +1018,16 @@ with tab_perf:
     st.pyplot(static_area_chart(performance_weight_df, "Portfolio Weights", height=300), clear_figure=True)
 
 with tab_execute:
-    render_account_summary(account_state, account_value)
-
     if not execution_data_fresh:
         st.error(
             "⚠️ 최신 종가 데이터가 아니므로 주문 실행 계획을 표시하지 않습니다.\n\n"
             f"예상 최신 거래일: **{expected_latest.date()}** · "
             f"현재 데이터 마지막 거래일: **{latest_date}**"
         )
+    elif not has_execution_orders:
+        st.success("변동 없음 (주문 없음)")
     else:
+        render_account_summary(account_state, account_value)
         st.subheader("Next Trade Plan")
         st.caption(
             "Signal uses the latest close. Backtest returns assume rebalancing at the next regular-session open. "

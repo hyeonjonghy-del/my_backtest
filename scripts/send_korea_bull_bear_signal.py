@@ -254,7 +254,7 @@ def send_telegram_with_retry(text: str, attempts: int = 3, delay_seconds: int = 
 def build_aggressive_target(
     kodex_close: pd.Series,
     lev_close: pd.Series,
-) -> tuple[pd.Series, str, list[str]]:
+) -> tuple[pd.Series, pd.Series, str, list[str]]:
     long_ma = kodex_close.rolling(100).mean()
     short_ma = kodex_close.rolling(20).mean()
     returns = finite_return(kodex_close.pct_change())
@@ -299,7 +299,7 @@ def build_aggressive_target(
         regime = "Bull / KODEX Leverage"
     if bool(early_reentry.iloc[-1]):
         regime = "Early Reentry"
-    return weights.iloc[-1], regime, [
+    return weights.iloc[-1], weights.iloc[-2], regime, [
         f"Regime: {regime}",
         f"KODEX 200: {kodex_close.iloc[-1]:,.0f} / MA100: {long_ma.iloc[-1]:,.0f} / MA20: {short_ma.iloc[-1]:,.0f}",
         f"KODEX 200 RV20: {realized_vol.iloc[-1]:.1%} / cap 50%",
@@ -313,12 +313,30 @@ def format_kodex_execution(
     now: datetime,
     latest_date: object,
     target_weights: pd.Series,
+    previous_target_weights: pd.Series,
     current: dict[str, int],
     cash: float,
     prices: dict[str, float],
     profile_label: str,
     signal_lines: list[str],
 ) -> str:
+    allocation_columns = ["KODEX Leverage", "KODEX 200", "Cash"]
+    allocation_changed = not np.allclose(
+        target_weights.reindex(allocation_columns).to_numpy(dtype=float),
+        previous_target_weights.reindex(allocation_columns).to_numpy(dtype=float),
+        rtol=0.0,
+        atol=1e-12,
+    )
+    if not allocation_changed:
+        return "\n".join(
+            [
+                f"[{title}]",
+                f"실행시각: {now:%Y-%m-%d %H:%M} KST",
+                f"기준일: {latest_date}",
+                "변동 없음 (주문 없음)",
+            ]
+        )
+
     account_value = cash + sum(current[code] * prices[code] for code in prices)
     net_value = account_value
     for _ in range(80):
@@ -341,13 +359,14 @@ def format_kodex_execution(
     estimated_fees = DEFAULTS["fee_rate"] * sum(
         abs(delta[code]) * prices[code] for code in delta
     )
-    after_close_available = clock_time(15, 40) <= now.time() < clock_time(16, 0)
-    after_close = (
-        {code: math.trunc(delta[code] * DEFAULTS["after_close_fill_rate"]) for code in delta}
-        if after_close_available
-        else {code: 0 for code in delta}
-    )
-    next_open = {code: delta[code] - after_close[code] for code in delta}
+    # Send the actionable plan at 15:35, five minutes before the 15:40
+    # after-hours fixed-price session opens, so the user has time to review it.
+    after_close_available = clock_time(15, 35) <= now.time() < clock_time(16, 0)
+    # Live operation: try to fill the entire required change in the after-hours
+    # fixed-price session. The backtest remains conservative at 70% close / 30%
+    # next open; only the live instruction uses a 100% first attempt.
+    after_close = delta.copy() if after_close_available else {code: 0 for code in delta}
+    next_open = delta.copy() if not after_close_available else {code: 0 for code in delta}
     target_cash = max(
         account_value - sum(target[code] * prices[code] for code in target) - estimated_fees,
         0.0,
@@ -360,12 +379,19 @@ def format_kodex_execution(
             return f"- {name}: 매도 {abs(quantity)}주"
         return f"- {name}: 유지 (주문 없음)"
 
+    def residual_text(name: str, quantity: int) -> str:
+        if quantity > 0:
+            return f"- {name}: 시간외 미체결 수량만 매수"
+        if quantity < 0:
+            return f"- {name}: 시간외 미체결 수량만 매도"
+        return f"- {name}: 유지 (주문 없음)"
+
     return "\n".join(
         [
             f"[{title}]",
             f"실행시각: {now:%Y-%m-%d %H:%M} KST",
             f"기준일: {latest_date}",
-            f"상태: {'비중 변경 필요' if any(delta.values()) else '비중 변경 없음'}",
+            "상태: 전략 비중 변경",
             "",
             f"계좌: {profile_label}",
             f"목표비중: {fmt_allocation(target_weights)}",
@@ -379,7 +405,7 @@ def format_kodex_execution(
             ),
             "",
             (
-                "EXECUTION 1 - 오늘 시간외 종가 (70%):"
+                "EXECUTION 1 - 오늘 시간외 종가 (목표수량 100% 체결 시도):"
                 if after_close_available
                 else "EXECUTION 1 - 시간외 종가 마감 (지금 실행하지 않음):"
             ),
@@ -387,16 +413,25 @@ def format_kodex_execution(
             order_text("KODEX 200", after_close[KODEX_200]),
             "",
             (
-                "EXECUTION 2 - 다음 정규장 시가 (잔여 30%):"
+                "EXECUTION 2 - 다음 정규장 시가 (시간외 미체결분만):"
                 if after_close_available
                 else "EXECUTION 2 - 다음 정규장 시가 (미체결분 전량):"
             ),
-            order_text("KODEX Leverage", next_open[KODEX_LEVERAGE]),
-            order_text("KODEX 200", next_open[KODEX_200]),
+            (
+                residual_text("KODEX Leverage", delta[KODEX_LEVERAGE])
+                if after_close_available
+                else order_text("KODEX Leverage", next_open[KODEX_LEVERAGE])
+            ),
+            (
+                residual_text("KODEX 200", delta[KODEX_200])
+                if after_close_available
+                else order_text("KODEX 200", next_open[KODEX_200])
+            ),
             "",
             "신호:",
             *signal_lines,
             "",
+            "※ 실전은 시간외 종가 100% 체결을 우선 시도합니다. 백테스트는 보수적으로 70%/30% 체결을 가정합니다.",
             "※ 읽기 전용입니다. 주문은 자동 제출되지 않습니다.",
         ]
     )
@@ -481,7 +516,7 @@ def calculate_messages(now: datetime) -> list[str]:
         KODEX_200: int(float(snapshot["shares"].get(KODEX_200, 0.0))),
     }
     prices = {KODEX_LEVERAGE: latest_lev_close, KODEX_200: latest_close}
-    aggressive_target, aggressive_regime, aggressive_signals = build_aggressive_target(
+    aggressive_target, previous_aggressive_target, aggressive_regime, aggressive_signals = build_aggressive_target(
         kodex_close,
         lev_close,
     )
@@ -491,6 +526,7 @@ def calculate_messages(now: datetime) -> list[str]:
             now=now,
             latest_date=latest_date,
             target_weights=full_target,
+            previous_target_weights=target_weights.iloc[-2],
             current=current,
             cash=cash,
             prices=prices,
@@ -508,6 +544,7 @@ def calculate_messages(now: datetime) -> list[str]:
             now=now,
             latest_date=latest_date,
             target_weights=aggressive_target,
+            previous_target_weights=previous_aggressive_target,
             current=current,
             cash=cash,
             prices=prices,
@@ -546,4 +583,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

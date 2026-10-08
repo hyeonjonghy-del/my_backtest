@@ -126,6 +126,26 @@ class CompTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             data.validate()
 
+    def test_end_date_reports_actual_coverage_without_extending_nav(self):
+        result = backtest(dataset(), CompConfig(end_date='2025-04-30'))
+        self.assertTrue(result['metrics']['end_limited_by_data'])
+        self.assertEqual(result['metrics']['requested_end'], '2025-04-30')
+        self.assertEqual(result['metrics']['end'], '2025-04-08')
+        self.assertEqual(result['equity'].index[-1], pd.Timestamp('2025-04-08'))
+
+    def test_selected_period_excludes_later_prices_and_signals(self):
+        data = dataset()
+        result = backtest(data, CompConfig(end_date='2025-04-07'))
+        self.assertFalse(result['metrics']['end_limited_by_data'])
+        self.assertEqual(len(result['equity']), 2)
+        self.assertEqual(result['signal_date'], pd.Timestamp('2025-04-04'))
+        with self.assertRaises(ValueError):
+            backtest(data, CompConfig(start_date='2025-04-08'))
+        with self.assertRaises(ValueError):
+            backtest(data, CompConfig(start_date='2025-03-01'))
+        with self.assertRaises(ValueError):
+            CompConfig(start_date='2025-04-10', end_date='2025-04-01')
+
     def test_bundle_schema_and_path_safety(self):
         data = dataset()
         out = io.BytesIO()

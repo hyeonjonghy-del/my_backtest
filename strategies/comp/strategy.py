@@ -27,6 +27,8 @@ class CompConfig:
     stop_loss: float = .20
     cost_bps: float = 10.
     initial_capital: float = 100_000_000.
+    start_date: str | None = None
+    end_date: str | None = None
 
     def __post_init__(self):
         if self.rebalance_weeks not in (4, 6) or self.top_n not in (10, 15):
@@ -45,6 +47,13 @@ class CompConfig:
             raise ValueError('Invalid stop or trading cost.')
         if not math.isfinite(self.initial_capital) or self.initial_capital <= 0:
             raise ValueError('Initial capital must be positive.')
+        for value in (self.start_date, self.end_date):
+            if value is not None:
+                parsed = pd.Timestamp(value)
+                if pd.isna(parsed) or parsed.tzinfo is not None or parsed != parsed.normalize():
+                    raise ValueError('Use daily dates without a timezone.')
+        if self.start_date and self.end_date and pd.Timestamp(self.start_date) > pd.Timestamp(self.end_date):
+            raise ValueError('Start date must not exceed end date.')
 
     @property
     def needs_sectors(self):
@@ -204,10 +213,20 @@ def backtest(dataset: CompDataset, config: CompConfig):
     dataset.validate()
     if config.needs_sectors and dataset.sectors is None:
         raise ValueError('Sector options require historical sector classifications.')
-    start, end = pd.Timestamp(dataset.metadata['start']), pd.Timestamp(dataset.metadata['end'])
+    available_start, available_end = pd.Timestamp(dataset.metadata['start']), pd.Timestamp(dataset.metadata['end'])
+    start = pd.Timestamp(config.start_date) if config.start_date else available_start
+    requested_end = pd.Timestamp(config.end_date) if config.end_date else available_end
+    if start < available_start:
+        raise ValueError('Requested start precedes available data.')
+    end = min(requested_end, available_end)
     calendar = pd.DatetimeIndex(dataset.benchmarks.sort_values('date').date)
     calendar = calendar[(calendar >= start) & (calendar <= end)]
+    if calendar.empty:
+        raise ValueError('No available trading days in the selected period.')
     signal_dates = pd.DatetimeIndex(dataset.metadata['signal_dates'])
+    signal_dates = signal_dates[(signal_dates >= calendar[0]) & (signal_dates <= calendar[-1])]
+    if signal_dates.empty:
+        raise ValueError('No completed weekly signals in the selected period.')
     scheduled = set(signal_dates[::config.rebalance_weeks])
     scores, targets = {}, {}
     groups = {date: group for date, group in dataset.features.groupby('date', sort=False)}
@@ -263,6 +282,9 @@ def backtest(dataset: CompDataset, config: CompConfig):
         curve[symbol] = config.initial_capital * benchmark[symbol] / benchmark[symbol].iloc[0]
     daily = curve.nav.pct_change().fillna(0)
     metrics = {'return': float(curve.nav.iloc[-1] / curve.nav.iloc[0] - 1),
+               'start': str(calendar[0].date()), 'end': str(calendar[-1].date()),
+               'requested_start': str(start.date()), 'requested_end': str(requested_end.date()),
+               'available_end': str(available_end.date()), 'end_limited_by_data': requested_end > available_end,
                'mdd': float((curve.nav / curve.nav.cummax() - 1).min()),
                'average_cash': float(curve.cash_ratio.mean()), 'trades': len(trades),
                'stale_position_days': stale_days, 'failed_buys': failed_buys,

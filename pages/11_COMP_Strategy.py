@@ -19,7 +19,9 @@ st.title('COMP')
 with st.sidebar:
     upload = st.file_uploader('COMP 데이터', type=['zip'])
     # Server-owned path only; never accept arbitrary filesystem paths from visitors.
-    local = Path(os.environ.get('COMP_DATA_BUNDLE', str(Path(__file__).resolve().parents[1] / 'data/comp/research.zip')))
+    data_dir = Path(__file__).resolve().parents[1] / 'data/comp'
+    default_bundle = data_dir / 'latest.zip' if (data_dir / 'latest.zip').is_file() else data_dir / 'research.zip'
+    local = Path(os.environ.get('COMP_DATA_BUNDLE', str(default_bundle)))
     if upload is not None:
         content = upload.getvalue()
     elif local.is_file():
@@ -61,6 +63,11 @@ with st.sidebar:
         st.caption('과거 섹터 분류 미확보')
         st.session_state.comp_selected_only = False
         st.session_state.comp_limit_on = False
+    available_start = pd.Timestamp(dataset.metadata['start']).date()
+    available_end = pd.Timestamp(dataset.metadata['end']).date()
+    st.caption(f'검증 가능한 기간 · {available_start} ~ {available_end}')
+    start_date = st.date_input('시작일', value=available_start, min_value=available_start, max_value=available_end)
+    end_date = st.date_input('종료일', value=available_end, min_value=available_start, max_value=available_end)
     interval = st.radio('리밸런싱', [4, 6], index=1, horizontal=True, format_func=lambda n: f'{n}주')
     top_n = st.selectbox('보유 종목 수', [10, 15])
     per_mode = st.radio('밸류에이션', ['trailing', 'none'], horizontal=True,
@@ -77,26 +84,30 @@ with st.sidebar:
     cost = st.number_input('편도 비용 (bp)', min_value=0., max_value=100., value=10., step=1.)
     run = st.button('검증 실행', type='primary', use_container_width=True)
 
-if run or 'comp_result' not in st.session_state:
+if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 3:
     try:
         config = CompConfig(rebalance_weeks=interval, top_n=top_n, per_mode=per_mode, growth_policy=growth,
                             sector_mode='selected' if selected_only else 'all', allowed_sectors=tuple(sectors),
                             max_per_sector=int(limit) if limit_on else None,
-                            cost_bps=float(cost), initial_capital=float(capital))
+                            cost_bps=float(cost), initial_capital=float(capital),
+                            start_date=start_date.isoformat(), end_date=end_date.isoformat())
         with st.spinner('계산 중'):
             st.session_state.comp_result = backtest(dataset, config)
+            st.session_state.comp_result_version = 3
     except (ValueError, KeyError) as error:
         st.error(str(error))
         st.stop()
 
 result = st.session_state.comp_result
 metrics, curve = result['metrics'], result['equity']
-st.caption(f"{dataset.metadata['start']} ~ {dataset.metadata['end']} · 연구용 수정 COMP")
+st.caption(f"실제 검증 · {metrics['start']} ~ {metrics['end']} · 연구용 수정 COMP")
+if metrics['end_limited_by_data']:
+    st.warning(f"요청 종료일 {metrics['requested_end']} · 확보 데이터 종료일 {metrics['available_end']}. 오늘까지 검증된 결과가 아닙니다.")
 active = metrics['config']
 st.caption(f"적용 설정 · {active['rebalance_weeks']}주 · {active['top_n']}종목 · {active['per_mode']} · {active['growth_policy']}")
 st.caption(f"섹터 · {active['sector_mode']} · 섹터별 상한 {active['max_per_sector'] if active['max_per_sector'] else '없음'}")
 st.warning('섹터 옵션은 미검증 확장입니다. 선행 PER 대체 및 자료 누락의 한계가 있으며 자동 주문은 실행하지 않습니다.')
-if (pd.Timestamp.today().normalize() - result['signal_date']).days > 14:
+if (pd.Timestamp.now(tz='Asia/Seoul').tz_localize(None).normalize() - result['signal_date']).days > 14:
     st.info('과거 연구 데이터입니다. 오늘의 매매 신호가 아닙니다.')
 columns = st.columns(4)
 for column, label, value in zip(columns, ['수익률', '최대 낙폭', '코스피', '코스닥'],

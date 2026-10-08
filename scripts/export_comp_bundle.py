@@ -29,7 +29,7 @@ def export(source: Path, output: Path):
                 if opening > 0 and closing > 0:
                     rows.append({'date': date, 'ticker': path.stem, 'open': opening, 'close': closing})
     benchmark = {}
-    cache = source.parent / 'cache'
+    cache = source / 'cache' if (source / 'cache/kospi.json').is_file() else source.parent / 'cache'
     for symbol in ('KOSPI', 'KOSDAQ'):
         raw = json.loads((cache / (symbol.lower() + '.json')).read_text(encoding='utf-8'))
         benchmark[symbol] = pd.Series({pd.Timestamp(row[0]): float(row[4]) for row in raw})

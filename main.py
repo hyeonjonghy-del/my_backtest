@@ -10,6 +10,13 @@ PAGES_DIR = ROOT / "pages"
 
 STRATEGIES = [
     {
+        "page": "11_COMP_Strategy.py",
+        "name": "COMP Korea Stock Selection",
+        "role": "Korea stock-selection research",
+        "decision": "Review",
+        "note": "4/6-week rebalance with optional historical sector selection and caps.",
+    },
+    {
         "page": "3_KOSPI200_Bull_Bear.py",
         "name": "KOSPI200 Bull/Bear",
         "role": "Korea core",

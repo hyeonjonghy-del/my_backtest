@@ -13,6 +13,7 @@ streamlit run main.py
 
 | Decision | Strategy | Role |
 | --- | --- | --- |
+| Review | [COMP Korea Stock Selection](strategies/comp/README.md) | 4/6-week rebalance; optional point-in-time sector filters/caps |
 | Execute | KOSPI200 Bull/Bear | Korea core |
 | Reference | KOSPI200 Bull/Bear v1 (Aggressive) | Korea comparison |
 | Monitor | Samsung Electronics Trend / Leverage | Wait for more live leveraged-ETF history |

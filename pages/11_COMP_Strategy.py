@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from strategies.comp import CompConfig, backtest, load_bundle
+from strategies.comp.reporting import monthly_performance
 
 
 st.set_page_config(page_title='COMP Strategy', layout='wide')
@@ -121,6 +122,13 @@ with overview:
         column.metric(f'{symbol} MDD', f'{metrics[key]:.2%}')
     if metrics['stale_position_days'] or metrics['failed_buys']:
         st.warning(f"가격 누락 보유일 {metrics['stale_position_days']} · 미체결 매수 {metrics['failed_buys']}")
+    st.subheader('월별·연간 수익률')
+    st.caption('첫 달은 검증 시작일부터, 마지막 달은 종료일까지 계산합니다. 연간은 해당 연도의 검증 구간 수익률이며, -는 검증 기간 밖입니다.')
+    monthly = monthly_performance(curve).rename(columns={**{n: f'{n}월' for n in range(1, 13)}, 'annual': '연간'})
+    monthly.index.names = ['연도', '자산']
+    display_monthly = monthly.apply(lambda column: column.map(lambda value: '-' if pd.isna(value) else f'{value:+.2%}'))
+    st.dataframe(display_monthly, use_container_width=True)
+    st.download_button('월별·연간 수익률 CSV', monthly.to_csv().encode('utf-8-sig'), 'comp_monthly_returns.csv', 'text/csv')
     st.download_button('자산 추이 CSV', curve.to_csv().encode('utf-8-sig'), 'comp_equity.csv', 'text/csv')
 with ranking:
     st.subheader(f"확정 신호 · {result['signal_date'].date()}")

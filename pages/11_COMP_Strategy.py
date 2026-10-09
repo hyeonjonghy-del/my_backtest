@@ -113,7 +113,7 @@ columns = st.columns(4)
 for column, label, value in zip(columns, ['수익률', '최대 낙폭', '코스피', '코스닥'],
                                 [metrics['return'], metrics['mdd'], metrics['kospi_return'], metrics['kosdaq_return']]):
     column.metric(label, f'{value:+.2%}')
-overview, ranking, executions = st.tabs(['성과', '종목', '거래내역'])
+overview, ranking, executions, methodology = st.tabs(['성과', '종목', '거래내역', '계산 방법'])
 with overview:
     st.line_chart(curve[['nav', 'KOSPI', 'KOSDAQ']].rename(columns={'nav': 'COMP'}), height=360)
     st.line_chart(result['drawdown'] * 100, y_label='낙폭 (%)', height=240)
@@ -136,3 +136,7 @@ with executions:
     st.json(metrics)
     st.download_button('설정 JSON', json.dumps(asdict(CompConfig(**metrics['config'])), ensure_ascii=False, indent=2),
                        'comp_config.json', 'application/json')
+with methodology:
+    st.caption(f"적용 기간 · {metrics['start']} ~ {metrics['end']} · 초기 자금 {active['initial_capital']:,.0f}원 · 편도 비용 {active['cost_bps']:g}bp")
+    document = Path(__file__).resolve().parents[1] / 'strategies/comp/methodology.md'
+    st.markdown(document.read_text(encoding='utf-8'))

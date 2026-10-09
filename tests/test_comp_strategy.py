@@ -114,6 +114,25 @@ class CompTests(unittest.TestCase):
         result = backtest(data, CompConfig())
         self.assertEqual(result['metrics']['stale_position_days'], 10)
 
+    def test_drawdowns_use_each_series_own_running_peak(self):
+        data = dataset()
+        data.benchmarks['KOSPI'] = [100., 120., 90.]
+        data.benchmarks['KOSDAQ'] = [100., 80., 100.]
+        result = backtest(data, CompConfig())
+        drawdown = result['drawdown']
+        self.assertEqual(list(drawdown.columns), ['COMP', 'KOSPI', 'KOSDAQ'])
+        self.assertTrue(drawdown.index.equals(result['equity'].index))
+        self.assertEqual(drawdown.KOSPI.tolist(), [0., 0., -.25])
+        self.assertAlmostEqual(drawdown.KOSDAQ.iloc[1], -.20)
+        self.assertEqual(drawdown.KOSDAQ.iloc[-1], 0.)
+        self.assertEqual(result['metrics']['kospi_mdd'], -.25)
+        self.assertAlmostEqual(result['metrics']['kosdaq_mdd'], -.20)
+        pd.testing.assert_series_equal(drawdown.COMP,
+                                      (result['equity'].nav / result['equity'].nav.cummax() - 1).rename('COMP'))
+        clipped = backtest(data, CompConfig(end_date='2025-04-07'))
+        self.assertEqual(clipped['metrics']['kospi_mdd'], 0.)
+        self.assertAlmostEqual(clipped['metrics']['kosdaq_mdd'], -.20)
+
     def test_same_day_financials_rejected(self):
         data = dataset()
         data.features['filed'] = data.features.date

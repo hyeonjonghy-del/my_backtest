@@ -280,21 +280,25 @@ def backtest(dataset: CompDataset, config: CompConfig):
     benchmark = dataset.benchmarks.set_index('date').reindex(calendar)
     for symbol in ('KOSPI', 'KOSDAQ'):
         curve[symbol] = config.initial_capital * benchmark[symbol] / benchmark[symbol].iloc[0]
+    values = curve[['nav', 'KOSPI', 'KOSDAQ']].rename(columns={'nav': 'COMP'})
+    drawdown = values / values.cummax() - 1
     daily = curve.nav.pct_change().fillna(0)
     metrics = {'return': float(curve.nav.iloc[-1] / curve.nav.iloc[0] - 1),
                'start': str(calendar[0].date()), 'end': str(calendar[-1].date()),
                'requested_start': str(start.date()), 'requested_end': str(requested_end.date()),
                'available_end': str(available_end.date()), 'end_limited_by_data': requested_end > available_end,
-               'mdd': float((curve.nav / curve.nav.cummax() - 1).min()),
+               'mdd': float(drawdown.COMP.min()),
                'average_cash': float(curve.cash_ratio.mean()), 'trades': len(trades),
                'stale_position_days': stale_days, 'failed_buys': failed_buys,
                'annualized_volatility': float(daily.std() * np.sqrt(252)), 'config': asdict(config)}
     for symbol in ('KOSPI', 'KOSDAQ'):
         metrics[symbol.lower() + '_return'] = float(curve[symbol].iloc[-1] / curve[symbol].iloc[0] - 1)
+        metrics[symbol.lower() + '_mdd'] = float(drawdown[symbol].min())
     latest_date = signal_dates[-1]
     latest = scores[latest_date].copy()
     latest['selected'] = latest.index.isin(targets[latest_date])
     latest['target_weight'] = [1 / len(targets[latest_date]) if ticker in targets[latest_date] else 0 for ticker in latest.index]
-    return {'equity': curve, 'trades': pd.DataFrame(trades, columns=['date', 'ticker', 'side', 'value', 'reason']),
+    return {'equity': curve, 'drawdown': drawdown,
+            'trades': pd.DataFrame(trades, columns=['date', 'ticker', 'side', 'value', 'reason']),
             'metrics': metrics, 'latest': latest, 'signal_date': latest_date,
             'latest_scheduled': latest_date in scheduled, 'scores': scores}

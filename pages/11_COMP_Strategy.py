@@ -84,7 +84,7 @@ with st.sidebar:
     cost = st.number_input('편도 비용 (bp)', min_value=0., max_value=100., value=10., step=1.)
     run = st.button('검증 실행', type='primary', use_container_width=True)
 
-if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 3:
+if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 4:
     try:
         config = CompConfig(rebalance_weeks=interval, top_n=top_n, per_mode=per_mode, growth_policy=growth,
                             sector_mode='selected' if selected_only else 'all', allowed_sectors=tuple(sectors),
@@ -93,7 +93,7 @@ if run or 'comp_result' not in st.session_state or st.session_state.get('comp_re
                             start_date=start_date.isoformat(), end_date=end_date.isoformat())
         with st.spinner('계산 중'):
             st.session_state.comp_result = backtest(dataset, config)
-            st.session_state.comp_result_version = 3
+            st.session_state.comp_result_version = 4
     except (ValueError, KeyError) as error:
         st.error(str(error))
         st.stop()
@@ -116,7 +116,9 @@ for column, label, value in zip(columns, ['수익률', '최대 낙폭', '코스�
 overview, ranking, executions = st.tabs(['성과', '종목', '거래내역'])
 with overview:
     st.line_chart(curve[['nav', 'KOSPI', 'KOSDAQ']].rename(columns={'nav': 'COMP'}), height=360)
-    st.line_chart((curve.nav / curve.nav.cummax() - 1).rename('낙폭'), height=200)
+    st.line_chart(result['drawdown'] * 100, y_label='낙폭 (%)', height=240)
+    for column, symbol, key in zip(st.columns(3), ['COMP', 'KOSPI', 'KOSDAQ'], ['mdd', 'kospi_mdd', 'kosdaq_mdd']):
+        column.metric(f'{symbol} MDD', f'{metrics[key]:.2%}')
     if metrics['stale_position_days'] or metrics['failed_buys']:
         st.warning(f"가격 누락 보유일 {metrics['stale_position_days']} · 미체결 매수 {metrics['failed_buys']}")
     st.download_button('자산 추이 CSV', curve.to_csv().encode('utf-8-sig'), 'comp_equity.csv', 'text/csv')

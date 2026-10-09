@@ -31,8 +31,10 @@ class CompConfig:
     end_date: str | None = None
 
     def __post_init__(self):
-        if self.rebalance_weeks not in (4, 6) or self.top_n not in (10, 15):
-            raise ValueError('Use 4/6 weeks and Top 10/15.')
+        if self.rebalance_weeks not in (4, 6):
+            raise ValueError('Use 4/6 weeks.')
+        if isinstance(self.top_n, bool) or not isinstance(self.top_n, int) or self.top_n < 1:
+            raise ValueError('Holding count must be a positive integer.')
         if self.per_mode not in ('trailing', 'none'):
             raise ValueError('Historical forward PER is not available in this model.')
         if self.growth_policy not in ('positive_base', 'absolute_base'):

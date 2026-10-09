@@ -70,7 +70,7 @@ with st.sidebar:
     start_date = st.date_input('시작일', value=available_start, min_value=available_start, max_value=available_end)
     end_date = st.date_input('종료일', value=available_end, min_value=available_start, max_value=available_end)
     interval = st.radio('리밸런싱', [4, 6], index=1, horizontal=True, format_func=lambda n: f'{n}주')
-    top_n = st.selectbox('보유 종목 수', [10, 15])
+    top_n = st.number_input('목표 보유 종목 수', min_value=1, value=10, step=1)
     per_mode = st.radio('밸류에이션', ['trailing', 'none'], horizontal=True,
                         format_func=lambda value: '실적 PER' if value == 'trailing' else 'PER 제외')
     growth = st.selectbox('성장률 처리', ['positive_base', 'absolute_base'],
@@ -79,7 +79,7 @@ with st.sidebar:
     options = sorted(dataset.sectors.sector.unique().tolist()) if have_sectors else []
     sectors = st.multiselect('편입 섹터', options, disabled=not (have_sectors and selected_only))
     limit_on = st.checkbox('섹터별 보유 수 제한', disabled=not have_sectors, key='comp_limit_on')
-    limit = st.number_input('섹터별 최대 종목 수', min_value=1, max_value=top_n, value=3,
+    limit = st.number_input('섹터별 최대 종목 수', min_value=1, max_value=top_n, value=min(3, top_n),
                             disabled=not (have_sectors and limit_on))
     capital = st.number_input('초기 자금 (원)', min_value=1_000_000., value=100_000_000., step=10_000_000.)
     cost = st.number_input('편도 비용 (bp)', min_value=0., max_value=100., value=10., step=1.)
@@ -106,6 +106,8 @@ if metrics['end_limited_by_data']:
     st.warning(f"요청 종료일 {metrics['requested_end']} · 확보 데이터 종료일 {metrics['available_end']}. 오늘까지 검증된 결과가 아닙니다.")
 active = metrics['config']
 st.caption(f"적용 설정 · {active['rebalance_weeks']}주 · {active['top_n']}종목 · {active['per_mode']} · {active['growth_policy']}")
+unique_buys = result['trades'].loc[result['trades'].side.eq('buy'), 'ticker'].nunique()
+st.caption(f"실제 최대 동시 보유 · {int(curve.positions.max())}종목 · 기간 내 매수한 고유 종목 · {unique_buys}종목")
 st.caption(f"섹터 · {active['sector_mode']} · 섹터별 상한 {active['max_per_sector'] if active['max_per_sector'] else '없음'}")
 st.warning('섹터 옵션은 미검증 확장입니다. 선행 PER 대체 및 자료 누락의 한계가 있으며 자동 주문은 실행하지 않습니다.')
 if (pd.Timestamp.now(tz='Asia/Seoul').tz_localize(None).normalize() - result['signal_date']).days > 14:

@@ -30,7 +30,8 @@ def dataset():
 
 class CompTests(unittest.TestCase):
     def test_configuration_rejects_unsupported_options(self):
-        for change in [{'rebalance_weeks': 5}, {'top_n': 20}, {'per_mode': 'forward'},
+        for change in [{'rebalance_weeks': 5}, {'top_n': 0}, {'top_n': -1}, {'top_n': 2.5},
+                       {'top_n': True}, {'top_n': '10'}, {'per_mode': 'forward'},
                        {'sector_mode': 'selected'}, {'max_per_sector': 0}, {'cost_bps': float('nan')}]:
             with self.assertRaises(ValueError):
                 CompConfig(**change)
@@ -78,6 +79,18 @@ class CompTests(unittest.TestCase):
         self.assertEqual(len(buys), 10)
         self.assertLess(buys.value.max() - buys.value.min(), .01)
         self.assertEqual(result['equity'].positions.iloc[0], 0)
+
+    def test_custom_holding_counts_and_insufficient_candidates(self):
+        for count in (1, 5, 7, 20):
+            result = backtest(dataset(), CompConfig(top_n=count))
+            expected = min(count, 12)
+            buys = result['trades'].query("side == 'buy'")
+            self.assertEqual(len(buys), expected)
+            self.assertEqual(int(result['equity'].positions.max()), expected)
+            self.assertLess(buys.value.max() - buys.value.min(), .01)
+            self.assertEqual(int(result['latest'].selected.sum()), expected)
+            self.assertTrue(result['latest'].loc[result['latest'].selected, 'target_weight'].eq(1 / expected).all())
+            self.assertEqual(result['metrics']['config']['top_n'], count)
 
     def test_four_and_six_week_execution_calendars_differ(self):
         days = pd.bdate_range('2025-04-04', periods=42)

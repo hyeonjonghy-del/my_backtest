@@ -31,8 +31,11 @@ class CompConfig:
     end_date: str | None = None
     fscore_mode: str = 'off'
     fscore_threshold: float = 3.
+    market_mode: str = 'off'
 
     def __post_init__(self):
+        if self.market_mode not in ('off', 'half'):
+            raise ValueError('Invalid market exposure mode.')
         if self.fscore_mode not in ('off', 'complete_case', 'filter'):
             raise ValueError('Invalid F-SCORE mode.')
         if not math.isfinite(self.fscore_threshold) or not 0 <= self.fscore_threshold < 4:
@@ -255,6 +258,20 @@ def apply_fscore(ranked, scores, config):
     return filtered
 
 
+def market_exposure(dataset, signal_dates):
+    """Past-only 200-session KOSPI mean; confirm on two original weekly closes."""
+    index = dataset.benchmarks.sort_values('date').set_index('date').KOSPI
+    average = index.rolling(200, min_periods=200).mean()
+    original = pd.DatetimeIndex(dataset.metadata['signal_dates'])
+    weekly = pd.DataFrame({'KOSPI': index.reindex(original), 'ma200': average.reindex(original)})
+    below = weekly.KOSPI.lt(weekly.ma200)
+    weekly['exposure'] = np.where(below & below.shift(1, fill_value=False), .5, 1.)
+    selected = weekly.reindex(signal_dates)
+    if selected.ma200.isna().any():
+        raise ValueError('시장 비중 조절에는 시작일 이전 200거래일 지수가 필요합니다. 시장 비중 조절용 ZIP을 업로드하세요.')
+    return selected
+
+
 def backtest(dataset: CompDataset, config: CompConfig):
     dataset.validate()
     if config.needs_sectors and dataset.sectors is None:
@@ -276,6 +293,8 @@ def backtest(dataset: CompDataset, config: CompConfig):
     if signal_dates.empty:
         raise ValueError('No completed weekly signals in the selected period.')
     scheduled = set(signal_dates[::config.rebalance_weeks])
+    market = market_exposure(dataset, signal_dates) if config.market_mode == 'half' else None
+    exposure = 1.
     scores, targets = {}, {}
     groups = {date: group for date, group in dataset.features.groupby('date', sort=False)}
     fscore_groups = ({date: group for date, group in dataset.fscore_scores.groupby('date', sort=False)}
@@ -305,22 +324,27 @@ def backtest(dataset: CompDataset, config: CompConfig):
             quote = quotes.get((date, ticker))
             if quote is None:
                 continue
-            holding = holdings.pop(ticker)
-            gross = holding['shares'] * quote[0]
+            fraction, reason = pending_sell.pop(ticker)
+            holding = holdings[ticker]
+            sold = holding['shares'] * fraction
+            gross = sold * quote[0]
             cash += gross * (1 - fee)
-            trades.append({'date': date, 'ticker': ticker, 'side': 'sell', 'value': gross, 'reason': pending_sell.pop(ticker)})
+            holding['shares'] -= sold
+            if fraction == 1:
+                del holdings[ticker]
+            trades.append({'date': date, 'ticker': ticker, 'side': 'sell', 'value': gross, 'reason': reason})
         budget = cash / len(pending_buy) if pending_buy else 0.
         for ticker in pending_buy:
             quote = quotes.get((date, ticker))
             if quote is None or ticker in holdings or len(holdings) >= config.top_n:
                 failed_buys += 1
                 continue
-            spend = min(cash, budget)
+            spend = min(cash, budget * exposure)
             if spend <= 0:
                 continue
             shares = spend / (quote[0] * (1 + fee))
             cash -= spend
-            holdings[ticker] = {'shares': shares, 'entry': quote[0], 'last': quote[0]}
+            holdings[ticker] = {'shares': shares, 'entry': quote[0], 'last': quote[0], 'market_exposure': exposure}
             trades.append({'date': date, 'ticker': ticker, 'side': 'buy', 'value': shares * quote[0], 'reason': 'rebalance'})
         pending_buy = []
         for ticker, holding in holdings.items():
@@ -330,11 +354,20 @@ def backtest(dataset: CompDataset, config: CompConfig):
                 continue
             holding['last'] = quote[1]
             if quote[1] / holding['entry'] - 1 <= -config.stop_loss:
-                pending_sell[ticker] = 'close_stop_20pct' if config.stop_loss == .20 else 'close_stop'
+                pending_sell[ticker] = (1., 'close_stop_20pct' if config.stop_loss == .20 else 'close_stop')
         nav = cash + sum(h['shares'] * h['last'] for h in holdings.values())
         equity.append({'date': date, 'nav': nav, 'cash_ratio': cash / nav, 'positions': len(holdings)})
+        if market is not None and date in signal_dates:
+            exposure = float(market.loc[date, 'exposure'])
+            for ticker, holding in holdings.items():
+                if exposure < holding['market_exposure']:
+                    if ticker not in pending_sell:
+                        pending_sell[ticker] = (1 - exposure / holding['market_exposure'], 'market_exposure_half')
+                    holding['market_exposure'] = exposure
         if date in scheduled:
-            pending_sell.update({ticker: 'scheduled_rebalance' for ticker in holdings})
+            for ticker in holdings:
+                if config.market_mode == 'off' or ticker not in pending_sell or pending_sell[ticker][0] < 1:
+                    pending_sell[ticker] = (1., 'scheduled_rebalance')
             pending_buy = targets[date]
     curve = pd.DataFrame(equity).set_index('date')
     benchmark = dataset.benchmarks.set_index('date').reindex(calendar)
@@ -358,7 +391,9 @@ def backtest(dataset: CompDataset, config: CompConfig):
     latest = scores[latest_date].copy()
     latest['selected'] = latest.index.isin(targets[latest_date])
     latest['target_weight'] = [1 / len(targets[latest_date]) if ticker in targets[latest_date] else 0 for ticker in latest.index]
+    if market is not None:
+        latest['target_weight'] *= float(market.loc[latest_date, 'exposure'])
     return {'equity': curve, 'drawdown': drawdown,
             'trades': pd.DataFrame(trades, columns=['date', 'ticker', 'side', 'value', 'reason']),
             'metrics': metrics, 'latest': latest, 'signal_date': latest_date,
-            'latest_scheduled': latest_date in scheduled, 'scores': scores}
+            'latest_scheduled': latest_date in scheduled, 'scores': scores, 'market': market}

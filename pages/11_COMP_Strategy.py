@@ -89,6 +89,11 @@ with st.sidebar:
         st.caption('현재 장기 ZIP은 전체 기간·4/6주·10종목·기본 COMP 순위의 후보를 검증했습니다. 시작일이나 순위·보유 수를 바꾸면 추가 재무자료가 필요할 수 있습니다.')
     else:
         st.caption('F-SCORE 사용에는 F-SCORE가 포함된 ZIP이 필요합니다.')
+    market_labels = {'off': '사용 안 함', 'half': 'KOSPI 200일선 · 위험 구간 비중 절반'}
+    market_mode = st.selectbox('시장 비중 조절', list(market_labels), format_func=lambda value: market_labels[value])
+    if market_mode == 'half':
+        st.caption('KOSPI가 200일선 아래에 2주 연속 있으면 보유 수량과 정기 편입 예산을 절반으로 줄이고 현금으로 보유합니다. 회복 후 비중 복원은 다음 정기 교체일입니다.')
+        st.caption('시작일 이전 지수가 포함된 시장 비중 조절용 ZIP이 필요합니다. 기업 점수 악화에 따른 별도 축소·청산은 적용하지 않습니다.')
     selected_only = st.checkbox('선택 섹터만 편입', disabled=not have_sectors, key='comp_selected_only')
     options = sorted(dataset.sectors.sector.unique().tolist()) if have_sectors else []
     sectors = st.multiselect('편입 섹터', options, disabled=not (have_sectors and selected_only))
@@ -99,17 +104,17 @@ with st.sidebar:
     cost = st.number_input('편도 비용 (bp)', min_value=0., max_value=100., value=10., step=1.)
     run = st.button('검증 실행', type='primary', use_container_width=True)
 
-if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 5:
+if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 6:
     try:
         config = CompConfig(rebalance_weeks=interval, top_n=top_n, per_mode=per_mode, growth_policy=growth,
                             sector_mode='selected' if selected_only else 'all', allowed_sectors=tuple(sectors),
                             max_per_sector=int(limit) if limit_on else None,
                             cost_bps=float(cost), initial_capital=float(capital),
                             start_date=start_date.isoformat(), end_date=end_date.isoformat(),
-                            fscore_mode=fscore_mode, fscore_threshold=float(fscore_threshold))
+                            fscore_mode=fscore_mode, fscore_threshold=float(fscore_threshold), market_mode=market_mode)
         with st.spinner('계산 중'):
             st.session_state.comp_result = backtest(dataset, config)
-            st.session_state.comp_result_version = 5
+            st.session_state.comp_result_version = 6
     except (ValueError, KeyError) as error:
         st.error(str(error))
         st.stop()
@@ -123,6 +128,7 @@ active = metrics['config']
 st.caption(f"F-SCORE 적용 · {fscore_labels[active['fscore_mode']]}" +
            (f" · {active['fscore_threshold']:g}점 이하 제외" if active['fscore_mode'] == 'filter' else ''))
 st.caption(f"적용 설정 · {active['rebalance_weeks']}주 · {active['top_n']}종목 · {active['per_mode']} · {active['growth_policy']}")
+st.caption(f"시장 비중 조절 · {market_labels[active['market_mode']]} · 평균 현금 {metrics['average_cash']:.2%}")
 unique_buys = result['trades'].loc[result['trades'].side.eq('buy'), 'ticker'].nunique()
 st.caption(f"실제 최대 동시 보유 · {int(curve.positions.max())}종목 · 기간 내 매수한 고유 종목 · {unique_buys}종목")
 st.caption(f"섹터 · {active['sector_mode']} · 섹터별 상한 {active['max_per_sector'] if active['max_per_sector'] else '없음'}")

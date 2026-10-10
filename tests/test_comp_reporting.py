@@ -2,10 +2,31 @@ import unittest
 
 import pandas as pd
 
-from strategies.comp.reporting import monthly_performance
+from strategies.comp.reporting import monthly_performance, annual_performance, cagr
 
 
 class ReportingTests(unittest.TestCase):
+    def test_cagr_uses_elapsed_calendar_years_for_all_assets(self):
+        curve = pd.DataFrame({'nav': [100., 121.], 'KOSPI': [100., 81.], 'KOSDAQ': [100., 100.]},
+                             index=pd.to_datetime(['2024-01-01', '2026-01-01']))
+        years = 731 / 365.25
+        result = cagr(curve)
+        self.assertAlmostEqual(result.COMP, 1.21 ** (1 / years) - 1)
+        self.assertAlmostEqual(result.KOSPI, .81 ** (1 / years) - 1)
+        self.assertEqual(result.KOSDAQ, 0.)
+        self.assertTrue(cagr(curve.iloc[:1]).isna().all())
+
+    def test_annual_comparison_includes_prior_year_end_and_compounds_to_total(self):
+        curve = pd.DataFrame({'nav': [100., 80., 120., 132.], 'KOSPI': [100., 110., 99., 99.],
+                              'KOSDAQ': [100., 100., 100., 110.]},
+                             index=pd.to_datetime(['2024-08-01','2024-12-30','2025-12-30','2026-10-08']))
+        table = annual_performance(curve)
+        self.assertEqual(table.columns.tolist(), ['COMP','KOSPI','KOSDAQ'])
+        self.assertAlmostEqual(table.loc[2024,'COMP'], -.2)
+        self.assertAlmostEqual(table.loc[2025,'COMP'], .5)
+        self.assertAlmostEqual(table.loc[2026,'COMP'], .1)
+        for asset, column in [('COMP','nav'),('KOSPI','KOSPI'),('KOSDAQ','KOSDAQ')]:
+            self.assertAlmostEqual((1 + table[asset]).prod(),curve[column].iloc[-1]/curve[column].iloc[0])
     def test_months_compound_across_year_boundary_with_partial_periods(self):
         curve = pd.DataFrame({'nav': [100., 110., 88., 132., 145.2],
                               'KOSPI': [100., 100., 110., 110., 99.],

@@ -376,17 +376,21 @@ def backtest(dataset: CompDataset, config: CompConfig):
     values = curve[['nav', 'KOSPI', 'KOSDAQ']].rename(columns={'nav': 'COMP'})
     drawdown = values / values.cummax() - 1
     daily = curve.nav.pct_change().fillna(0)
+    from .reporting import cagr
+    annualized = cagr(curve)
     metrics = {'return': float(curve.nav.iloc[-1] / curve.nav.iloc[0] - 1),
                'start': str(calendar[0].date()), 'end': str(calendar[-1].date()),
                'requested_start': str(start.date()), 'requested_end': str(requested_end.date()),
                'available_end': str(available_end.date()), 'end_limited_by_data': requested_end > available_end,
                'mdd': float(drawdown.COMP.min()),
+               'cagr': float(annualized.COMP),
                'average_cash': float(curve.cash_ratio.mean()), 'trades': len(trades),
                'stale_position_days': stale_days, 'failed_buys': failed_buys,
                'annualized_volatility': float(daily.std() * np.sqrt(252)), 'config': asdict(config)}
     for symbol in ('KOSPI', 'KOSDAQ'):
         metrics[symbol.lower() + '_return'] = float(curve[symbol].iloc[-1] / curve[symbol].iloc[0] - 1)
         metrics[symbol.lower() + '_mdd'] = float(drawdown[symbol].min())
+        metrics[symbol.lower() + '_cagr'] = float(annualized[symbol])
     latest_date = signal_dates[-1] if config.fscore_mode == 'off' else max(scheduled)
     latest = scores[latest_date].copy()
     latest['selected'] = latest.index.isin(targets[latest_date])

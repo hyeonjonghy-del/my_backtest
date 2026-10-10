@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 
 from strategies.comp import strategy as comp_strategy
-from strategies.comp.reporting import monthly_performance
+from strategies.comp import reporting as comp_reporting
 
 # Streamlit can retain imported modules across a deployment. Bind controls to
 # the deployed engine, rather than the package's cached class/function exports.
@@ -20,6 +20,9 @@ comp_strategy = reload(comp_strategy)
 CompConfig = comp_strategy.CompConfig
 backtest = comp_strategy.backtest
 load_bundle = comp_strategy.load_bundle
+comp_reporting = reload(comp_reporting)
+monthly_performance = comp_reporting.monthly_performance
+annual_performance = comp_reporting.annual_performance
 
 
 st.set_page_config(page_title='COMP Strategy', layout='wide')
@@ -112,7 +115,7 @@ with st.sidebar:
     cost = st.number_input('편도 비용 (bp)', min_value=0., max_value=100., value=10., step=1.)
     run = st.button('검증 실행', type='primary', use_container_width=True)
 
-if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 7:
+if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 8:
     try:
         config = CompConfig(rebalance_weeks=interval, top_n=top_n, per_mode=per_mode, growth_policy=growth,
                             sector_mode='selected' if selected_only else 'all', allowed_sectors=tuple(sectors),
@@ -122,7 +125,7 @@ if run or 'comp_result' not in st.session_state or st.session_state.get('comp_re
                             fscore_mode=fscore_mode, fscore_threshold=float(fscore_threshold), market_mode=market_mode)
         with st.spinner('계산 중'):
             st.session_state.comp_result = backtest(dataset, config)
-            st.session_state.comp_result_version = 7
+            st.session_state.comp_result_version = 8
     except (ValueError, KeyError) as error:
         st.error(str(error))
         st.stop()
@@ -143,19 +146,31 @@ st.caption(f"섹터 · {active['sector_mode']} · 섹터별 상한 {active['max_
 st.warning('섹터 옵션은 미검증 확장입니다. 선행 PER 대체 및 자료 누락의 한계가 있으며 자동 주문은 실행하지 않습니다.')
 if (pd.Timestamp.now(tz='Asia/Seoul').tz_localize(None).normalize() - result['signal_date']).days > 14:
     st.info('과거 연구 데이터입니다. 오늘의 매매 신호가 아닙니다.')
-columns = st.columns(4)
-for column, label, value in zip(columns, ['수익률', '최대 낙폭', '코스피', '코스닥'],
-                                [metrics['return'], metrics['mdd'], metrics['kospi_return'], metrics['kosdaq_return']]):
-    column.metric(label, f'{value:+.2%}')
+columns = st.columns(5)
+for column, label, value in zip(columns, ['누적 수익률', 'CAGR', '최대 낙폭', '코스피 누적', '코스닥 누적'],
+                                [metrics['return'], metrics['cagr'], metrics['mdd'], metrics['kospi_return'], metrics['kosdaq_return']]):
+    column.metric(label, f'{value:+.2%}' if pd.notna(value) else '-')
 overview, ranking, executions, methodology = st.tabs(['성과', '종목', '거래내역', '계산 방법'])
 with overview:
     st.line_chart(curve[['nav', 'KOSPI', 'KOSDAQ']].rename(columns={'nav': 'COMP'}), height=360)
     st.line_chart(result['drawdown'] * 100, y_label='낙폭 (%)', height=240)
     for column, symbol, key in zip(st.columns(3), ['COMP', 'KOSPI', 'KOSDAQ'], ['mdd', 'kospi_mdd', 'kosdaq_mdd']):
         column.metric(f'{symbol} MDD', f'{metrics[key]:.2%}')
+        value = metrics['cagr' if symbol == 'COMP' else symbol.lower() + '_cagr']
+        column.metric(f'{symbol} CAGR', f'{value:+.2%}' if pd.notna(value) else '-')
+    st.caption('CAGR은 실제 검증 시작일과 종료일 사이의 경과일수÷365.25를 사용한 연복리 수익률입니다. 하루 자료만 있으면 계산하지 않습니다. 코스피·코스닥은 배당을 포함하지 않은 가격지수입니다.')
     if metrics['stale_position_days'] or metrics['failed_buys']:
         st.warning(f"가격 누락 보유일 {metrics['stale_position_days']} · 미체결 매수 {metrics['failed_buys']}")
-    st.subheader('월별·연간 수익률')
+    st.subheader('연간 수익률 비교')
+    st.caption(f"COMP·KOSPI·KOSDAQ을 같은 기간으로 비교합니다. 첫해는 {metrics['start']}부터, 마지막 해는 {metrics['end']}까지의 수익률이며 연율화하지 않습니다.")
+    annual = annual_performance(curve)
+    annual.index.name = '연도'
+    st.dataframe(annual.apply(lambda column: column.map(lambda value: f'{value:+.2%}')), use_container_width=True)
+    chart = annual.mul(100).copy()
+    chart.index = chart.index.astype(str)
+    st.bar_chart(chart, stack=False, y_label='연간 수익률 (%)', height=300)
+    st.download_button('연간 수익률 비교 CSV', annual.to_csv().encode('utf-8-sig'), 'comp_annual_returns.csv', 'text/csv')
+    st.subheader('월별·연간 수익률 상세')
     st.caption('첫 달은 검증 시작일부터, 마지막 달은 종료일까지 계산합니다. 연간은 해당 연도의 검증 구간 수익률이며, -는 검증 기간 밖입니다.')
     monthly = monthly_performance(curve).rename(columns={**{n: f'{n}월' for n in range(1, 13)}, 'annual': '연간'})
     monthly.index.names = ['연도', '자산']

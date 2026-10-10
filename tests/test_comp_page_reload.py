@@ -39,5 +39,7 @@ def test_page_reloads_stale_engine_and_ignores_cached_package_exports(tmp_path, 
     app.session_state['comp_result'] = {'obsolete': True}
     app.run(timeout=30)
     assert not app.exception and not app.error
-    assert app.session_state['comp_result_version'] == 7
+    assert app.session_state['comp_result_version'] == 8
+    assert any(x.label == 'CAGR' for x in app.metric)
+    assert any(x.value == '연간 수익률 비교' for x in app.subheader)
     assert not old_calls

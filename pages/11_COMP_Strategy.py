@@ -5,13 +5,21 @@ import hashlib
 import io
 import json
 import os
+from importlib import reload
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from strategies.comp import CompConfig, backtest, load_bundle
+from strategies.comp import strategy as comp_strategy
 from strategies.comp.reporting import monthly_performance
+
+# Streamlit can retain imported modules across a deployment. Bind controls to
+# the deployed engine, rather than the package's cached class/function exports.
+comp_strategy = reload(comp_strategy)
+CompConfig = comp_strategy.CompConfig
+backtest = comp_strategy.backtest
+load_bundle = comp_strategy.load_bundle
 
 
 st.set_page_config(page_title='COMP Strategy', layout='wide')
@@ -104,7 +112,7 @@ with st.sidebar:
     cost = st.number_input('편도 비용 (bp)', min_value=0., max_value=100., value=10., step=1.)
     run = st.button('검증 실행', type='primary', use_container_width=True)
 
-if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 6:
+if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 7:
     try:
         config = CompConfig(rebalance_weeks=interval, top_n=top_n, per_mode=per_mode, growth_policy=growth,
                             sector_mode='selected' if selected_only else 'all', allowed_sectors=tuple(sectors),
@@ -114,7 +122,7 @@ if run or 'comp_result' not in st.session_state or st.session_state.get('comp_re
                             fscore_mode=fscore_mode, fscore_threshold=float(fscore_threshold), market_mode=market_mode)
         with st.spinner('계산 중'):
             st.session_state.comp_result = backtest(dataset, config)
-            st.session_state.comp_result_version = 6
+            st.session_state.comp_result_version = 7
     except (ValueError, KeyError) as error:
         st.error(str(error))
         st.stop()

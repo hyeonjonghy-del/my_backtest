@@ -29,8 +29,14 @@ class CompConfig:
     initial_capital: float = 100_000_000.
     start_date: str | None = None
     end_date: str | None = None
+    fscore_mode: str = 'off'
+    fscore_threshold: float = 3.
 
     def __post_init__(self):
+        if self.fscore_mode not in ('off', 'complete_case', 'filter'):
+            raise ValueError('Invalid F-SCORE mode.')
+        if not math.isfinite(self.fscore_threshold) or not 0 <= self.fscore_threshold < 4:
+            raise ValueError('F-SCORE threshold must be in [0, 4).')
         if self.rebalance_weeks not in (4, 6):
             raise ValueError('Use 4/6 weeks.')
         if isinstance(self.top_n, bool) or not isinstance(self.top_n, int) or self.top_n < 1:
@@ -69,6 +75,7 @@ class CompDataset:
     benchmarks: pd.DataFrame
     metadata: dict
     sectors: pd.DataFrame | None = None
+    fscore_scores: pd.DataFrame | None = None
 
     def validate(self):
         required = {'date', 'ticker', 'filed', *FACTORS}
@@ -129,6 +136,27 @@ class CompDataset:
                 raise ValueError('Missing sector names.')
             if self.sectors.duplicated(['ticker', 'effective_date', 'known_date']).any():
                 raise ValueError('Duplicate sector classification records.')
+        if self.fscore_scores is not None:
+            scores = self.fscore_scores
+            if not {'date', 'ticker', 'fscore', 'fscore_filed', 'missing_reason'}.issubset(scores.columns):
+                raise ValueError('Incomplete F-SCORE schema.')
+            scores['date'] = pd.to_datetime(scores.date, errors='raise')
+            scores['fscore_filed'] = pd.to_datetime(scores.fscore_filed, errors='raise')
+            if scores.date.dt.tz is not None or scores.fscore_filed.dt.tz is not None:
+                raise ValueError('F-SCORE dates must not contain a timezone.')
+            scores['ticker'] = scores.ticker.astype(str)
+            scores['fscore'] = pd.to_numeric(scores.fscore, errors='raise')
+            if scores.duplicated(['date', 'ticker']).any() or not scores.ticker.str.fullmatch(r'\d{6}').all():
+                raise ValueError('Invalid or duplicate F-SCORE stock/date records.')
+            if not scores.date.isin(signals).all():
+                raise ValueError('F-SCORE dates must be declared weekly signals.')
+            valid = scores.fscore.notna()
+            if not scores.loc[valid, 'fscore'].between(0, 4).all():
+                raise ValueError('F-SCORE must be finite and in [0, 4].')
+            if not (scores.loc[valid, 'fscore_filed'] < scores.loc[valid, 'date']).all():
+                raise ValueError('F-SCORE disclosure must precede the signal day.')
+            if scores.loc[~valid, 'missing_reason'].fillna('').eq('').any():
+                raise ValueError('Unavailable F-SCORE requires an explicit missing reason.')
         return self
 
 
@@ -141,10 +169,10 @@ def load_bundle(content: bytes) -> CompDataset:
         raise ValueError('Invalid ZIP bundle.') from error
     with archive:
         names = archive.namelist()
-        allowed = {'metadata.json', 'features.csv', 'prices.csv', 'benchmarks.csv', 'sectors.csv'}
+        allowed = {'metadata.json', 'features.csv', 'prices.csv', 'benchmarks.csv', 'sectors.csv', 'fscore.csv'}
         if len(names) != len(set(names)) or not set(names).issubset(allowed):
             raise ValueError('Unexpected or duplicate bundle entries.')
-        if not (allowed - {'sectors.csv'}).issubset(names):
+        if not (allowed - {'sectors.csv', 'fscore.csv'}).issubset(names):
             raise ValueError('Missing bundle entries.')
         if sum(item.file_size for item in archive.infolist()) > 500 * 1024**2:
             raise ValueError('Expanded bundle exceeds 500 MB.')
@@ -158,7 +186,8 @@ def load_bundle(content: bytes) -> CompDataset:
         def csv(name):
             return pd.read_csv(io.BytesIO(archive.read(name)), dtype={'ticker': str})
         return CompDataset(csv('features.csv'), csv('prices.csv'), csv('benchmarks.csv'), metadata,
-                           csv('sectors.csv') if 'sectors.csv' in names else None).validate()
+                           csv('sectors.csv') if 'sectors.csv' in names else None,
+                           csv('fscore.csv') if 'fscore.csv' in names else None).validate()
 
 
 def percent_rank(values: pd.Series, lower_is_better=False):
@@ -211,10 +240,27 @@ def select_targets(ranked: pd.DataFrame, config: CompConfig):
     return target
 
 
+def apply_fscore(ranked, scores, config):
+    """Filter after COMP scoring; unknown candidates cannot be silently excluded."""
+    from .fscore import filter_by_fscore, rank_with_fscore
+    scores = scores.drop(columns='date', errors='ignore').set_index('ticker')
+    filtered = (filter_by_fscore(ranked, scores, config.fscore_threshold)
+                if config.fscore_mode == 'filter' else rank_with_fscore(ranked, scores, reorder=False))
+    selected = select_targets(filtered, config)
+    required = ranked.index
+    if len(selected) >= config.top_n:
+        required = ranked.index[:ranked.index.get_loc(selected[-1])+1]
+    if not set(required).issubset(scores.index):
+        raise ValueError('현재 설정의 상위 후보 F-SCORE가 미확인입니다. 누락 후보를 제외해 계산하지 않습니다. 기간·보유 수·순위 설정을 확인하세요.')
+    return filtered
+
+
 def backtest(dataset: CompDataset, config: CompConfig):
     dataset.validate()
     if config.needs_sectors and dataset.sectors is None:
         raise ValueError('Sector options require historical sector classifications.')
+    if config.fscore_mode != 'off' and dataset.fscore_scores is None:
+        raise ValueError('F-SCORE가 포함된 데이터 ZIP을 업로드하세요.')
     available_start, available_end = pd.Timestamp(dataset.metadata['start']), pd.Timestamp(dataset.metadata['end'])
     start = pd.Timestamp(config.start_date) if config.start_date else available_start
     requested_end = pd.Timestamp(config.end_date) if config.end_date else available_end
@@ -232,12 +278,24 @@ def backtest(dataset: CompDataset, config: CompConfig):
     scheduled = set(signal_dates[::config.rebalance_weeks])
     scores, targets = {}, {}
     groups = {date: group for date, group in dataset.features.groupby('date', sort=False)}
+    fscore_groups = ({date: group for date, group in dataset.fscore_scores.groupby('date', sort=False)}
+                     if dataset.fscore_scores is not None else {})
     for date in signal_dates:
         frame = groups.get(date, dataset.features.iloc[:0])
         sectors = sectors_asof(dataset.sectors, date) if config.needs_sectors else None
         scores[date] = score_snapshot(frame, config, sectors)
+        if config.fscore_mode != 'off' and date in scheduled:
+            if date not in fscore_groups:
+                raise ValueError(f'{date.date()}의 F-SCORE 자료가 없습니다. 현재 데이터에서 검증 가능한 교체 시작일을 선택하세요.')
+            scores[date] = apply_fscore(scores[date], fscore_groups[date], config)
         targets[date] = select_targets(scores[date], config)
-    quotes = {(row.date, row.ticker): (row.open, row.close) for row in dataset.prices.itertuples()}
+    # Only scheduled targets can ever be held. Keep their entire in-window
+    # history, including stopped/missing-quote days and delayed exits.
+    traded_tickers = {ticker for date in scheduled for ticker in targets[date]}
+    trade_prices = dataset.prices.loc[dataset.prices.ticker.isin(traded_tickers) &
+                                     dataset.prices.date.between(calendar[0], calendar[-1]),
+                                     ['date', 'ticker', 'open', 'close']]
+    quotes = {(row.date, row.ticker): (row.open, row.close) for row in trade_prices.itertuples()}
     cash, holdings, pending_sell, pending_buy = config.initial_capital, {}, {}, []
     fee = config.cost_bps / 10000
     equity, trades = [], []
@@ -296,7 +354,7 @@ def backtest(dataset: CompDataset, config: CompConfig):
     for symbol in ('KOSPI', 'KOSDAQ'):
         metrics[symbol.lower() + '_return'] = float(curve[symbol].iloc[-1] / curve[symbol].iloc[0] - 1)
         metrics[symbol.lower() + '_mdd'] = float(drawdown[symbol].min())
-    latest_date = signal_dates[-1]
+    latest_date = signal_dates[-1] if config.fscore_mode == 'off' else max(scheduled)
     latest = scores[latest_date].copy()
     latest['selected'] = latest.index.isin(targets[latest_date])
     latest['target_weight'] = [1 / len(targets[latest_date]) if ticker in targets[latest_date] else 0 for ticker in latest.index]

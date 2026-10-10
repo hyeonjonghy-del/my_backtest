@@ -32,13 +32,14 @@ with st.sidebar:
         st.stop()
 
 fingerprint = hashlib.sha256(content).hexdigest()
-if st.session_state.get('comp_bundle_id') != fingerprint:
+if st.session_state.get('comp_bundle_id') != fingerprint or st.session_state.get('comp_dataset_version') != 2:
     try:
         st.session_state.comp_dataset = load_bundle(content)
     except (ValueError, KeyError, OSError, json.JSONDecodeError) as error:
         st.error(str(error))
         st.stop()
     st.session_state.comp_bundle_id = fingerprint
+    st.session_state.comp_dataset_version = 2
     st.session_state.pop('comp_result', None)
     st.session_state.pop('comp_sector_id', None)
 dataset = st.session_state.comp_dataset
@@ -75,6 +76,19 @@ with st.sidebar:
                         format_func=lambda value: '실적 PER' if value == 'trailing' else 'PER 제외')
     growth = st.selectbox('성장률 처리', ['positive_base', 'absolute_base'],
                           format_func=lambda value: '전기 흑자만' if value == 'positive_base' else '전기 손실 허용')
+    have_fscore = dataset.fscore_scores is not None
+    fscore_labels = {'off': '기본 COMP', 'complete_case': 'F-SCORE 평가 가능 종목만',
+                     'filter': 'COMP 순위 유지 + F-SCORE 기준 제외'}
+    fscore_mode = st.selectbox('F-SCORE 결합', list(fscore_labels),
+                              index=2 if have_fscore else 0, disabled=not have_fscore,
+                              format_func=lambda value: fscore_labels[value])
+    fscore_threshold = st.selectbox('F-SCORE 이 점수 이하 제외', [0, 1, 2, 3], index=3,
+                                   disabled=fscore_mode != 'filter')
+    if have_fscore:
+        st.caption('COMP 순위를 유지한 뒤 F-SCORE 조건을 적용합니다. 평가 불가는 제외하며, 아직 확인하지 않은 상위 후보가 있으면 계산을 중단합니다.')
+        st.caption('현재 장기 ZIP은 전체 기간·4/6주·10종목·기본 COMP 순위의 후보를 검증했습니다. 시작일이나 순위·보유 수를 바꾸면 추가 재무자료가 필요할 수 있습니다.')
+    else:
+        st.caption('F-SCORE 사용에는 F-SCORE가 포함된 ZIP이 필요합니다.')
     selected_only = st.checkbox('선택 섹터만 편입', disabled=not have_sectors, key='comp_selected_only')
     options = sorted(dataset.sectors.sector.unique().tolist()) if have_sectors else []
     sectors = st.multiselect('편입 섹터', options, disabled=not (have_sectors and selected_only))
@@ -85,16 +99,17 @@ with st.sidebar:
     cost = st.number_input('편도 비용 (bp)', min_value=0., max_value=100., value=10., step=1.)
     run = st.button('검증 실행', type='primary', use_container_width=True)
 
-if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 4:
+if run or 'comp_result' not in st.session_state or st.session_state.get('comp_result_version') != 5:
     try:
         config = CompConfig(rebalance_weeks=interval, top_n=top_n, per_mode=per_mode, growth_policy=growth,
                             sector_mode='selected' if selected_only else 'all', allowed_sectors=tuple(sectors),
                             max_per_sector=int(limit) if limit_on else None,
                             cost_bps=float(cost), initial_capital=float(capital),
-                            start_date=start_date.isoformat(), end_date=end_date.isoformat())
+                            start_date=start_date.isoformat(), end_date=end_date.isoformat(),
+                            fscore_mode=fscore_mode, fscore_threshold=float(fscore_threshold))
         with st.spinner('계산 중'):
             st.session_state.comp_result = backtest(dataset, config)
-            st.session_state.comp_result_version = 4
+            st.session_state.comp_result_version = 5
     except (ValueError, KeyError) as error:
         st.error(str(error))
         st.stop()
@@ -105,6 +120,8 @@ st.caption(f"실제 검증 · {metrics['start']} ~ {metrics['end']} · 연구용
 if metrics['end_limited_by_data']:
     st.warning(f"요청 종료일 {metrics['requested_end']} · 확보 데이터 종료일 {metrics['available_end']}. 오늘까지 검증된 결과가 아닙니다.")
 active = metrics['config']
+st.caption(f"F-SCORE 적용 · {fscore_labels[active['fscore_mode']]}" +
+           (f" · {active['fscore_threshold']:g}점 이하 제외" if active['fscore_mode'] == 'filter' else ''))
 st.caption(f"적용 설정 · {active['rebalance_weeks']}주 · {active['top_n']}종목 · {active['per_mode']} · {active['growth_policy']}")
 unique_buys = result['trades'].loc[result['trades'].side.eq('buy'), 'ticker'].nunique()
 st.caption(f"실제 최대 동시 보유 · {int(curve.positions.max())}종목 · 기간 내 매수한 고유 종목 · {unique_buys}종목")
@@ -137,7 +154,7 @@ with ranking:
     st.caption('리밸런싱 신호' if result['latest_scheduled'] else '주간 점검 신호 · 정기 교체일 아님')
     latest = result['latest']
     display = ['name', 'comp', 'rank_momentum', 'smart_money', 'price_momentum', 'valuation',
-               'sector', 'selected', 'target_weight']
+               'fscore', 'fscore_raw', 'fscore_filed', 'sector', 'selected', 'target_weight']
     st.dataframe(latest[[column for column in display if column in latest]].reset_index(),
                  hide_index=True, use_container_width=True)
 with executions:

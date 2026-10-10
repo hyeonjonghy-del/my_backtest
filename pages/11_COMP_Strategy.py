@@ -13,6 +13,7 @@ import streamlit as st
 
 from strategies.comp import strategy as comp_strategy
 from strategies.comp import reporting as comp_reporting
+from strategies.comp import browser_bundle as comp_browser
 
 # Streamlit can retain imported modules across a deployment. Bind controls to
 # the deployed engine, rather than the package's cached class/function exports.
@@ -23,23 +24,56 @@ load_bundle = comp_strategy.load_bundle
 comp_reporting = reload(comp_reporting)
 monthly_performance = comp_reporting.monthly_performance
 annual_performance = comp_reporting.annual_performance
+comp_browser = reload(comp_browser)
+browser_bundle = comp_browser.browser_bundle
+decode_bundle = comp_browser.decode_bundle
+receive_chunk = comp_browser.receive_chunk
 
 
 st.set_page_config(page_title='COMP Strategy', layout='wide')
 st.title('COMP')
 
 with st.sidebar:
-    upload = st.file_uploader('COMP 데이터', type=['zip'])
+    browser_value = browser_bundle(st.session_state.get('comp_browser_accepted'), st.session_state.get('comp_browser_rejected'),
+                                   st.session_state.get('comp_browser_transfer'))
+    if (isinstance(browser_value, dict) and browser_value.get('source') == 'picker'
+            and st.session_state.get('comp_browser_picker_event') != browser_value.get('event_id')):
+        st.session_state.comp_browser_picker_event = browser_value.get('event_id')
+        st.session_state.comp_temporary_generation = st.session_state.get('comp_temporary_generation', 0) + 1
+    with st.expander('일회용 업로드 · 브라우저 보관 안 함'):
+        upload = st.file_uploader('COMP 데이터', type=['zip'],
+                                  key=f"comp_temporary_zip_{st.session_state.get('comp_temporary_generation', 0)}")
+    if (isinstance(browser_value, dict) and browser_value.get('action') == 'clear'
+            and st.session_state.get('comp_browser_clear_id') != browser_value.get('id')):
+        st.session_state.comp_browser_clear_id = browser_value.get('id')
+        for name in ('comp_browser_accepted', 'comp_browser_rejected', 'comp_browser_transfer', 'comp_dataset', 'comp_bundle_id', 'comp_sector_id', 'comp_result'):
+            st.session_state.pop(name, None)
     # Server-owned path only; never accept arbitrary filesystem paths from visitors.
     data_dir = Path(__file__).resolve().parents[1] / 'data/comp'
     default_bundle = data_dir / 'latest.zip' if (data_dir / 'latest.zip').is_file() else data_dir / 'research.zip'
     local = Path(os.environ.get('COMP_DATA_BUNDLE', str(default_bundle)))
-    if upload is not None:
+    browser_selected = upload is None and isinstance(browser_value, dict) and browser_value.get('action') in ('bundle', 'chunk')
+    if browser_selected:
+        try:
+            if browser_value.get('action') == 'chunk':
+                content, received, changed = receive_chunk(browser_value, st.session_state.get('comp_browser_transfer'))
+                st.session_state.comp_browser_transfer = received
+                if content is None:
+                    if changed:
+                        st.rerun()
+                    st.info('보관 파일을 불러오고 있습니다.')
+                    st.stop()
+            else:
+                content = decode_bundle(browser_value)
+        except ValueError as error:
+            st.error(str(error))
+            st.stop()
+    elif upload is not None:
         content = upload.getvalue()
     elif local.is_file():
         content = local.read_bytes()
     else:
-        st.warning('데이터 미등록')
+        st.info('보관된 ZIP을 불러오는 중이거나 아직 등록된 파일이 없습니다. 위에서 COMP ZIP을 선택하세요.')
         st.stop()
 
 fingerprint = hashlib.sha256(content).hexdigest()
@@ -47,6 +81,9 @@ if st.session_state.get('comp_bundle_id') != fingerprint or st.session_state.get
     try:
         st.session_state.comp_dataset = load_bundle(content)
     except (ValueError, KeyError, OSError, json.JSONDecodeError) as error:
+        if browser_selected and st.session_state.get('comp_browser_rejected') != fingerprint:
+            st.session_state.comp_browser_rejected = fingerprint
+            st.rerun()
         st.error(str(error))
         st.stop()
     st.session_state.comp_bundle_id = fingerprint
@@ -54,6 +91,10 @@ if st.session_state.get('comp_bundle_id') != fingerprint or st.session_state.get
     st.session_state.pop('comp_result', None)
     st.session_state.pop('comp_sector_id', None)
 dataset = st.session_state.comp_dataset
+if browser_selected and st.session_state.get('comp_browser_accepted') != fingerprint:
+    st.session_state.comp_browser_accepted = fingerprint
+    st.session_state.pop('comp_browser_rejected', None)
+    st.rerun()
 
 with st.sidebar:
     sector_upload = st.file_uploader('과거 섹터 분류', type=['csv'])

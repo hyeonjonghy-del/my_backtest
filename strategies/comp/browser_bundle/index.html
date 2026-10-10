@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><style>
+body{font-family:system-ui,sans-serif;font-size:14px;margin:0;color:var(--text,#31333f)}
+label{display:block;font-weight:600;margin-bottom:8px}
+input{width:100%;font-size:13px}button{margin-top:8px;border:1px solid #aaa;border-radius:6px;padding:5px 9px;background:transparent;color:inherit;cursor:pointer}
+#status{font-size:12px;line-height:1.5;margin-top:8px;overflow-wrap:anywhere}button:disabled{opacity:.5;cursor:default}
+</style></head><body>
+<label for="file">COMP 데이터 · 이 브라우저에 보관</label>
+<input id="file" type="file" accept=".zip,application/zip" aria-label="보관할 COMP ZIP 선택">
+<div id="status" role="status">보관된 파일을 확인하고 있습니다.</div>
+<button id="clear" type="button">브라우저 보관 지우기</button>
+<script src="cache.js"></script>
+</body></html>

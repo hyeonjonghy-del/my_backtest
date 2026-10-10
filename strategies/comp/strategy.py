@@ -34,7 +34,7 @@ class CompConfig:
     market_mode: str = 'off'
 
     def __post_init__(self):
-        if self.market_mode not in ('off', 'half'):
+        if self.market_mode not in ('off', 'half', 'kosdaq100'):
             raise ValueError('Invalid market exposure mode.')
         if self.fscore_mode not in ('off', 'complete_case', 'filter'):
             raise ValueError('Invalid F-SCORE mode.')
@@ -272,6 +272,17 @@ def market_exposure(dataset, signal_dates):
     return selected
 
 
+def kosdaq_exposure(dataset, calendar):
+    """Daily close decision using the past-only 100-session KOSDAQ mean."""
+    index = dataset.benchmarks.sort_values('date').set_index('date').KOSDAQ
+    average = index.rolling(100, min_periods=100).mean()
+    daily = pd.DataFrame({'KOSDAQ': index, 'ma100': average}).reindex(calendar)
+    if daily.ma100.isna().any():
+        raise ValueError('KOSDAQ 100일선 방어에는 시작일까지 100거래일 지수가 필요합니다. 시장 비중 조절용 ZIP을 업로드하세요.')
+    daily['exposure'] = np.where(daily.KOSDAQ.lt(daily.ma100), 0., 1.)
+    return daily
+
+
 def backtest(dataset: CompDataset, config: CompConfig):
     dataset.validate()
     if config.needs_sectors and dataset.sectors is None:
@@ -294,6 +305,8 @@ def backtest(dataset: CompDataset, config: CompConfig):
         raise ValueError('No completed weekly signals in the selected period.')
     scheduled = set(signal_dates[::config.rebalance_weeks])
     market = market_exposure(dataset, signal_dates) if config.market_mode == 'half' else None
+    if config.market_mode == 'kosdaq100':
+        market = kosdaq_exposure(dataset, calendar)
     exposure = 1.
     scores, targets = {}, {}
     groups = {date: group for date, group in dataset.features.groupby('date', sort=False)}
@@ -319,6 +332,7 @@ def backtest(dataset: CompDataset, config: CompConfig):
     fee = config.cost_bps / 10000
     equity, trades = [], []
     stale_days, failed_buys = 0, 0
+    active_targets = []
     for date in calendar:
         for ticker in list(pending_sell):
             quote = quotes.get((date, ticker))
@@ -335,6 +349,8 @@ def backtest(dataset: CompDataset, config: CompConfig):
             trades.append({'date': date, 'ticker': ticker, 'side': 'sell', 'value': gross, 'reason': reason})
         budget = cash / len(pending_buy) if pending_buy else 0.
         for ticker in pending_buy:
+            if exposure == 0:
+                continue
             quote = quotes.get((date, ticker))
             if quote is None or ticker in holdings or len(holdings) >= config.top_n:
                 failed_buys += 1
@@ -357,18 +373,23 @@ def backtest(dataset: CompDataset, config: CompConfig):
                 pending_sell[ticker] = (1., 'close_stop_20pct' if config.stop_loss == .20 else 'close_stop')
         nav = cash + sum(h['shares'] * h['last'] for h in holdings.values())
         equity.append({'date': date, 'nav': nav, 'cash_ratio': cash / nav, 'positions': len(holdings)})
-        if market is not None and date in signal_dates:
+        previous_exposure = exposure
+        if market is not None and date in market.index:
             exposure = float(market.loc[date, 'exposure'])
             for ticker, holding in holdings.items():
                 if exposure < holding['market_exposure']:
                     if ticker not in pending_sell:
-                        pending_sell[ticker] = (1 - exposure / holding['market_exposure'], 'market_exposure_half')
+                        pending_sell[ticker] = (1 - exposure / holding['market_exposure'],
+                                                'market_cash' if exposure == 0 else 'market_exposure_half')
                     holding['market_exposure'] = exposure
-        if date in scheduled:
+        restart = config.market_mode == 'kosdaq100' and exposure > previous_exposure and bool(active_targets)
+        if date in scheduled or restart:
+            if date in scheduled:
+                active_targets = targets[date]
             for ticker in holdings:
                 if config.market_mode == 'off' or ticker not in pending_sell or pending_sell[ticker][0] < 1:
-                    pending_sell[ticker] = (1., 'scheduled_rebalance')
-            pending_buy = targets[date]
+                    pending_sell[ticker] = (1., 'scheduled_rebalance' if date in scheduled else 'market_reentry_rebalance')
+            pending_buy = active_targets.copy() if exposure > 0 else []
     curve = pd.DataFrame(equity).set_index('date')
     benchmark = dataset.benchmarks.set_index('date').reindex(calendar)
     for symbol in ('KOSPI', 'KOSDAQ'):
@@ -396,8 +417,10 @@ def backtest(dataset: CompDataset, config: CompConfig):
     latest['selected'] = latest.index.isin(targets[latest_date])
     latest['target_weight'] = [1 / len(targets[latest_date]) if ticker in targets[latest_date] else 0 for ticker in latest.index]
     if market is not None:
-        latest['target_weight'] *= float(market.loc[latest_date, 'exposure'])
+        market_date = calendar[-1] if config.market_mode == 'kosdaq100' else latest_date
+        latest['target_weight'] *= float(market.loc[market_date, 'exposure'])
     return {'equity': curve, 'drawdown': drawdown,
             'trades': pd.DataFrame(trades, columns=['date', 'ticker', 'side', 'value', 'reason']),
             'metrics': metrics, 'latest': latest, 'signal_date': latest_date,
-            'latest_scheduled': latest_date in scheduled, 'scores': scores, 'market': market}
+            'latest_scheduled': latest_date in scheduled, 'scores': scores, 'market': market,
+            'market_signal_date': calendar[-1] if config.market_mode == 'kosdaq100' else latest_date}

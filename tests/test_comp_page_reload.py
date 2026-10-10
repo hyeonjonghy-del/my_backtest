@@ -39,7 +39,13 @@ def test_page_reloads_stale_engine_and_ignores_cached_package_exports(tmp_path, 
     app.session_state['comp_result'] = {'obsolete': True}
     app.run(timeout=30)
     assert not app.exception and not app.error
-    assert app.session_state['comp_result_version'] == 8
+    assert app.session_state['comp_result_version'] == 9
     assert any(x.label == 'CAGR' for x in app.metric)
     assert any(x.value == '연간 수익률 비교' for x in app.subheader)
     assert not old_calls
+    next(x for x in app.selectbox if x.label == '시장 비중 조절').set_value('kosdaq100')
+    next(x for x in app.button if x.label == '검증 실행').click()
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    assert app.session_state['comp_result']['metrics']['config']['market_mode'] == 'kosdaq100'
+    assert any('100일선' in x.value and '시장 판단' in x.value for x in app.caption)

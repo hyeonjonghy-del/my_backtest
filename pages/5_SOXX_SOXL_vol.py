@@ -11,6 +11,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from core.whole_share_optimizer import optimize_whole_share_targets
+from core.soxx_momentum_overlay import apply_mom10_overlay, limit_target_risk
 from core.us_execution import (
     adjusted_open,
     fixed_units_open_backtest,
@@ -569,6 +570,15 @@ with st.sidebar:
     weak_soxx_risk_share = st.slider("Weak Bull SOXX risk share (%)", 40, 100, 80, 5) / 100
     weak_soxl_cap = st.slider("Weak Bull SOXL max weight (%)", 0, 40, 15, 5) / 100
 
+    st.subheader("선택형 위험 보정")
+    use_mom10_overlay = st.checkbox(
+        "SOXX 10일 수익률 음수 시 목표 위험 확대 금지",
+        value=False,
+        help="전일 종가 기준 SOXX 10거래일 수익률이 음수이면 목표 위험(SOXX + 3×SOXL)을 직전 보정 목표 이하로 제한합니다. "
+        "두 종목을 비례 축소하고 차액은 현금으로 유지합니다. Turnaround에도 적용합니다. "
+        "실제 SOXL 보유 비중 상한이나 모든 매수 금지 규칙은 아닙니다.",
+    )
+
     st.subheader("Backtest Capital")
     initial_capital = st.number_input(
         "Initial capital ($)",
@@ -625,6 +635,7 @@ with st.expander("Default Strategy", expanded=False):
 | Turnaround exit | MA{turnaround_exit_fast} < MA{turnaround_exit_slow} for {turnaround_exit_confirm} day(s), then return to v3 logic |
 | Bear regime | Cash {1 - bear_soxx:.0%} + SOXX {bear_soxx:.0%} |
 | Execution | Trade only when target weights change; no price-only drift rebalancing |
+| 10-day negative-return overlay | {'ON: no target-risk increase while SOXX 10-session return is negative' if use_mom10_overlay else 'OFF: original strategy'} |
 | Whole-share sizing | Closest feasible SOXX/SOXL/cash mix; not independent floor rounding |
 """
     )
@@ -769,6 +780,9 @@ weights_full = build_strategy_weights(
     rebalance,
 )
 
+unmodified_weights_full = weights_full.copy()
+if use_mom10_overlay:
+    weights_full = apply_mom10_overlay(weights_full, price)
 weights = weights_full.reindex(common_idx).fillna(0.0)
 early_defense_weights_full = build_strategy_weights(
     price,
@@ -812,6 +826,9 @@ close_target_weights = pd.DataFrame(
     ],
     index=common_idx,
 )
+if use_mom10_overlay:
+    # An execution-day target belongs to the preceding session's close.
+    close_target_weights = weights_full.shift(-1).reindex(common_idx)
 ret_soxx = ret_soxx_full.reindex(common_idx).fillna(0.0)
 ret_soxl = ret_soxl_full.reindex(common_idx).fillna(0.0)
 adjusted_open_prices = pd.DataFrame({"SOXX": soxx_adjopen, "SOXL": soxl_adjopen}).reindex(common_idx)
@@ -913,7 +930,16 @@ calculated_next_target = calc_target_weight(
     bear_soxx,
 )
 rebalance_due = rebalance_due_after_close(latest_date, rebalance)
-next_target = calculated_next_target if rebalance_due else latest.copy()
+next_target = calculated_next_target if rebalance_due else unmodified_weights_full.iloc[-1].copy()
+latest_return10 = price.pct_change(10, fill_method=None).reindex(weights.index).iloc[-1]
+if use_mom10_overlay:
+    next_target = limit_target_risk(next_target, latest, pd.notna(latest_return10) and latest_return10 < 0)
+    close_target_weights.loc[weights.index[-1]] = next_target
+    st.info(
+        f"10일 음수 보정 ON | SOXX 10거래일 수익률 {latest_return10:.2%} | "
+        f"다음 목표 위험 {next_target['SOXX'] + 3 * next_target['SOXL']:.3f}배 "
+        "(SOXX + 3×SOXL). 실제 보유 비중 상한은 아닙니다."
+    )
 latest_prices = pd.Series(
     {
         "SOXX": soxx["close"].reindex(weights.index).iloc[-1],
@@ -937,6 +963,7 @@ action_label = position_action_label(execution_plan["Order Shares"].abs().sum(),
 
 status_message = (
     f"{'주문 계산' if execution_data_fresh else '시뮬레이션'} | "
+    f"10일 음수 보정 {'ON' if use_mom10_overlay else 'OFF'} | "
     f"Close signal ({latest_date}): {latest_regime} | "
     f"SOXX {next_target['SOXX']:.1%}, SOXL {next_target['SOXL']:.1%}, Cash {1 - next_target.sum():.1%} | "
     f"SOXX {vol_window}D volatility {latest_vol:.1%} | "
@@ -968,7 +995,7 @@ tab_perf, tab_execute, tab_signal, tab_table, tab_monthly = st.tabs(
 with tab_perf:
     nav_df = pd.DataFrame(
         {
-            "Original Strategy": strategy_metrics["nav"],
+            "Strategy + Mom10" if use_mom10_overlay else "Original Strategy": strategy_metrics["nav"],
             "Early Defense": calc_metrics(early_defense_ret)["nav"],
             "SOXX": calc_metrics(bench_soxx)["nav"],
             "SOXL": calc_metrics(bench_soxl)["nav"],

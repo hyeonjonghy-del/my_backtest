@@ -12,6 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from core.whole_share_optimizer import optimize_whole_share_targets
+from core.qqq_momentum_overlay import apply_mom10_overlay, limit_target_risk
 from kiwoom_account import (
     KIWOOM_SOURCE,
     render_account_controls,
@@ -571,6 +572,15 @@ with st.sidebar:
     weak_tqqq_cap = st.slider("Weak Bull TQQQ max weight (%)", 0, 40, 15, 5) / 100
     weak_cash_sweep = st.slider("Weak Bull cash sweep to QQQ (%)", 0, 100, 20, 5) / 100
 
+    st.subheader("선택형 위험 보정")
+    use_mom10_overlay = st.checkbox(
+        "QQQ 10일 수익률 음수 시 목표 위험 확대 금지",
+        value=False,
+        help="전일 종가 기준 QQQ 10거래일 수익률이 음수이면 목표 위험(QQQ + 3×TQQQ)을 직전 보정 목표 이하로 제한합니다. "
+        "두 종목을 비례 축소하고 차액은 현금으로 유지합니다. Turnaround에도 적용합니다. "
+        "실제 TQQQ 보유 비중 상한이나 모든 매수 금지 규칙은 아닙니다.",
+    )
+
     st.subheader("Turnaround Full-Bet")
     turnaround_dd_trigger = st.slider("Turnaround drawdown trigger (%)", 10, 50, 10, 5) / 100
     turnaround_tqqq_weight = st.slider("Turnaround TQQQ weight (%)", 0, 80, 50, 5) / 100
@@ -634,6 +644,7 @@ with st.expander("Default Strategy", expanded=False):
 | Execution pricing | Prior raw close fixes whole-share orders; next raw open executes them |
 | Corporate actions | Historical splits change share counts; ex-date dividends enter cash after that day's trade |
 | Execution | Trade only when target weights change; no price-only drift rebalancing |
+| 10-day negative-return overlay | {'ON: no target-risk increase while QQQ 10-session return is negative' if use_mom10_overlay else 'OFF: original strategy'} |
 """
     )
 
@@ -766,6 +777,9 @@ weights_full = build_strategy_weights(
     rebalance,
 )
 
+unmodified_weights_full = weights_full.copy()
+if use_mom10_overlay:
+    weights_full = apply_mom10_overlay(weights_full, price)
 weights = weights_full.reindex(common_idx).fillna(0.0)
 turnaround = turnaround_signal.reindex(common_idx).fillna(False)
 display_regime_signal = regime_signal.reindex(common_idx).where(~turnaround, "Turnaround Bull")
@@ -793,6 +807,9 @@ close_target_weights = pd.DataFrame(
     ],
     index=common_idx,
 )
+if use_mom10_overlay:
+    # Execution-day weights are known at the preceding session's close.
+    close_target_weights = weights_full.shift(-1).reindex(common_idx)
 ret_qqq = ret_qqq_full.reindex(common_idx).fillna(0.0)
 ret_tqqq = ret_tqqq_full.reindex(common_idx).fillna(0.0)
 adjusted_open_prices = pd.DataFrame(
@@ -898,7 +915,16 @@ calculated_next_target = calc_target_weight(
     bear_qqq,
 )
 rebalance_due = rebalance_due_after_close(latest_date, rebalance)
-next_target = calculated_next_target if rebalance_due else latest.copy()
+next_target = calculated_next_target if rebalance_due else unmodified_weights_full.iloc[-1].copy()
+latest_return10 = price.pct_change(10, fill_method=None).reindex(weights.index).iloc[-1]
+if use_mom10_overlay:
+    next_target = limit_target_risk(next_target, latest, pd.notna(latest_return10) and latest_return10 < 0)
+    close_target_weights.loc[weights.index[-1]] = next_target
+    st.info(
+        f"10일 음수 보정 ON | QQQ 10거래일 수익률 {latest_return10:.2%} | "
+        f"다음 목표 위험 {next_target['QQQ'] + 3 * next_target['TQQQ']:.3f}배 "
+        "(QQQ + 3×TQQQ). 실제 보유 비중 상한은 아닙니다."
+    )
 latest_prices = pd.Series(
     {
         "QQQ": qqq_raw_close.reindex(weights.index).iloc[-1],
@@ -924,6 +950,7 @@ has_execution_orders = bool(execution_plan["Order Shares"].abs().sum() > 0.5)
 
 status_message = (
     f"{'주문 계산' if execution_data_fresh else '시뮬레이션'} | "
+    f"10일 음수 보정 {'ON' if use_mom10_overlay else 'OFF'} | "
     f"Close signal ({latest_date}): {latest_regime} | "
     f"QQQ {next_target['QQQ']:.1%}, TQQQ {next_target['TQQQ']:.1%}, Cash {1 - next_target.sum():.1%} | "
     f"QQQ {vol_window}D volatility {latest_vol:.1%} | "
@@ -958,7 +985,7 @@ tab_perf, tab_execute, tab_signal, tab_table, tab_monthly = st.tabs(
 with tab_perf:
     nav_df = pd.DataFrame(
         {
-            "Strategy": strategy_metrics["nav"],
+            "Strategy + Mom10" if use_mom10_overlay else "Strategy": strategy_metrics["nav"],
             "Fractional Same-Timing": legacy_metrics["nav"],
             "QQQ": calc_metrics(bench_qqq)["nav"],
             "TQQQ": calc_metrics(bench_tqqq)["nav"],
@@ -1115,5 +1142,4 @@ with tab_monthly:
     pivot.columns = [f"{month}M" for month in pivot.columns]
     pivot["Yearly"] = (1 + monthly).groupby(monthly.index.year).prod() - 1
     st.dataframe(pivot.applymap(lambda x: f"{x:.1%}" if pd.notna(x) else "-"), use_container_width=True)
-
-
+# End of page.

@@ -48,7 +48,7 @@ class UsExecutionTests(unittest.TestCase):
         self.assertFalse(rebalance_due_after_close("2026-09-10", "Weekly"))
         self.assertTrue(rebalance_due_after_close("2026-09-30", "Monthly"))
 
-    def test_whole_share_plan_auto_invests_new_cash_without_weight_change(self):
+    def test_whole_share_plan_invests_confirmed_cash_without_weight_change(self):
         plan = whole_share_plan(
             {"QQQ": 0.733, "TQQQ": 0.267},
             {"QQQ": 721.45, "TQQQ": 72.64},
@@ -56,6 +56,7 @@ class UsExecutionTests(unittest.TestCase):
             2_537.77,
             previous_weights={"QQQ": 0.733, "TQQQ": 0.267},
             fee_rate=0.0025,
+            cash_flow_confirmed=True,
         )
         self.assertFalse(plan["target_changed"])
         self.assertTrue(plan["cash_deposit_detected"])
@@ -138,7 +139,11 @@ class UsExecutionTests(unittest.TestCase):
 
     def test_nearest_feasible_mix_can_round_up_expensive_etf(self):
         units = optimize_whole_share_targets(
-            [0.237, 0.316], [588.90, 163.71], [7, 38], 9_249.39, 0.0025
+            [0.237, 0.316],
+            [588.90, 163.71],
+            [7, 38],
+            9_249.39,
+            0.0025,
         )
         self.assertEqual(units.tolist(), [8, 38])
 

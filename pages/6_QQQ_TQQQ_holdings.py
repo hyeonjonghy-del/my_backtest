@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from core.whole_share_optimizer import optimize_whole_share_targets
 from core.qqq_momentum_overlay import apply_mom10_overlay, limit_target_risk
+from core.us_cash_flow import render_cash_flow_confirmation
 from kiwoom_account import (
     KIWOOM_SOURCE,
     render_account_controls,
@@ -489,6 +490,7 @@ def build_execution_plan(
     previous_target_weights: pd.Series | None = None,
     cost_rate: float = 0.0,
     force_sync: bool = False,
+    cash_flow_confirmed: bool = False,
 ) -> tuple[pd.DataFrame, float]:
     current_values = current_shares * prices
     effective_value = account_value if account_value > 0 else current_values.sum() + current_cash
@@ -509,12 +511,7 @@ def build_execution_plan(
         index=target_weights.index,
         dtype=float,
     )
-    cash_deposit_detected = (
-        not target_changed
-        and bool((candidate > current_shares).any())
-        and bool((candidate >= current_shares).all())
-    )
-    execution_required = target_changed or cash_deposit_detected
+    execution_required = target_changed or cash_flow_confirmed
     rows = []
     for symbol in ["QQQ", "TQQQ"]:
         if execution_required:
@@ -622,6 +619,7 @@ with st.sidebar:
     current_tqqq_shares = float(account_state["shares"][TQQQ])
     current_cash = float(account_state["cash"])
     account_value = float(account_state["account_value"])
+    cash_flow_confirmed = render_cash_flow_confirmation(account_state, "qqq_tqqq")
 
 
 with st.expander("Default Strategy", expanded=False):
@@ -944,6 +942,7 @@ execution_plan, target_cash = build_execution_plan(
     previous_target_weights=latest,
     cost_rate=cost_rate,
     force_sync=recover_execution,
+    cash_flow_confirmed=cash_flow_confirmed,
 )
 action_label = position_action_label(execution_plan["Order Shares"].abs().sum(), tolerance=0.5)
 has_execution_orders = bool(execution_plan["Order Shares"].abs().sum() > 0.5)

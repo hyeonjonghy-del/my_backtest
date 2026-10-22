@@ -41,7 +41,7 @@ def write_log(message: str) -> None:
         pass
 
 
-def build_messages(now: datetime) -> list[str]:
+def build_messages(now: datetime, cash_flow_strategies: tuple[str, ...] = ()) -> list[str]:
     secrets = load_secrets(ROOT)
     messages: list[str] = []
 
@@ -72,6 +72,7 @@ def build_messages(now: datetime) -> list[str]:
                 else None
             ),
             fee_rate=float(strategy.get("cost_rate", 0.0)),
+            cash_flow_confirmed=(str(strategy["symbols"][0]).lower() in cash_flow_strategies),
         )
         messages.append(
             format_execution_message(
@@ -117,7 +118,7 @@ def format_execution_message(
                 "전략비중 변경: 있음"
                 if plan["target_changed"]
                 else (
-                    "전략비중 변경: 없음 / 추가입금 자동투자"
+                    "전략비중 변경: 없음 / 추가입금 확인: 전체 계좌 재계산"
                     if plan["cash_deposit_detected"]
                     else "전략비중 변경: 없음 (주문 없음)"
                 )
@@ -168,10 +169,14 @@ def send_with_retry(text: str, attempts: int = 3) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="계좌까지 조회하되 Telegram은 보내지 않음")
+    parser.add_argument(
+        "--cash-flow-rebalance", choices=("soxx", "qqq"), action="append", default=[],
+        help="입금이 확인된 전략만 전체 계좌 재계산 (soxx/qqq 각각 지정 가능; 자동 주문 제출 없음)",
+    )
     args = parser.parse_args()
     now = datetime.now(KST)
     try:
-        messages = build_messages(now)
+        messages = build_messages(now, tuple(args.cash_flow_rebalance))
         for message in messages:
             if not args.dry_run:
                 send_with_retry(message)
@@ -188,4 +193,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

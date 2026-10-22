@@ -555,6 +555,7 @@ def whole_share_plan(
     cash: float,
     previous_weights: dict[str, float] | None = None,
     fee_rate: float = 0.0,
+    cash_flow_confirmed: bool = False,
 ) -> dict[str, Any]:
     account_value = float(cash) + sum(float(shares.get(s, 0)) * prices[s] for s in prices)
     target_changed = previous_weights is None or any(
@@ -580,14 +581,9 @@ def whole_share_plan(
         fee_rate,
     )
     candidates = {symbol: int(optimized[number]) for number, symbol in enumerate(symbols)}
-    # A cash contribution increases all required positions (or leaves them
-    # unchanged). Execute that buy-only gap even when strategy weights did not
-    # change, while continuing to suppress price-drift rebalances needing sales.
-    cash_deposit_detected = (
-        not target_changed
-        and any(candidates[s] > current_units[s] for s in prices)
-        and all(candidates[s] >= current_units[s] for s in prices)
-    )
+    # Preserve the result key for callers, but require actual user confirmation
+    # rather than guessing a deposit from buy-only allocation differences.
+    cash_deposit_detected = bool(cash_flow_confirmed)
     execution_required = target_changed or cash_deposit_detected
     orders: dict[str, dict[str, float | int | str]] = {}
     recovery_orders: dict[str, dict[str, float | int | str]] = {}
@@ -622,4 +618,3 @@ def whole_share_plan(
         "orders": orders,
         "recovery_orders": recovery_orders,
     }
-

@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from strategies.samsung_electronics_trend_vol import strategy as samsung_strategy
+from strategies.samsung_electronics_trend_vol.reporting import calendar_return_table
 
 
 # Streamlit Cloud can keep an already imported strategy module alive across a
@@ -282,7 +283,7 @@ st.caption(
 )
 draw_performance(result)
 
-tab1, tab2, tab3, tab4 = st.tabs(["비중·신호", "연도별 수익률", "손익 감사", "실행 계산기"])
+tab1, tab2, tab3, tab4 = st.tabs(["비중·신호", "월별·연도별 수익률", "손익 감사", "실행 계산기"])
 with tab1:
     st.area_chart(
         result[["executed_samsung_weight", "executed_leverage_weight", "executed_cash_weight"]].rename(
@@ -301,6 +302,28 @@ with tab1:
     )
 
 with tab2:
+    st.subheader("월별·연간 수익률 현황")
+    st.caption(
+        f"조회 기간: {result.index[0]:%Y-%m-%d} ~ {result.index[-1]:%Y-%m-%d}. "
+        "일별 수익률을 복리로 계산합니다. 전략은 거래비용을 반영하며, "
+        "첫 달·마지막 달과 연간 수익률은 조회 기간에 포함된 거래일까지만 집계합니다. "
+        "데이터가 없는 달은 '-'로 표시합니다."
+    )
+    for label, column, filename in [
+        ("전략", "strategy_return", "strategy"),
+        ("삼성전자 보유", "buy_hold_return", "buy_hold"),
+    ]:
+        table = calendar_return_table(result[column])
+        st.markdown(f"**{label}**")
+        st.dataframe(table.style.format("{:.2%}", na_rep="-"), width="stretch", height="content")
+        st.download_button(
+            f"{label} 월별·연간 수익률 CSV 다운로드",
+            table.to_csv().encode("utf-8-sig"),
+            file_name=f"samsung_{filename}_monthly_yearly_{result.index[-1]:%Y%m%d}.csv",
+            mime="text/csv",
+            on_click="ignore",
+        )
+    st.subheader("연도별 수익률 비교")
     annual = pd.DataFrame(
         {
             "전략": (1 + result["strategy_return"]).groupby(result.index.year).prod() - 1,

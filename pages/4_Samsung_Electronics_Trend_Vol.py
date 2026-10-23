@@ -315,7 +315,8 @@ with tab2:
     ]:
         table = calendar_return_table(result[column])
         st.markdown(f"**{label}**")
-        st.dataframe(table.style.format("{:.2%}", na_rep="-"), width="stretch", height="content")
+        display_table = table.apply(lambda column: column.map(lambda value: "-" if pd.isna(value) else f"{value:.2%}"))
+        st.dataframe(display_table, width="stretch", height="content")
         st.download_button(
             f"{label} 월별·연간 수익률 CSV 다운로드",
             table.to_csv().encode("utf-8-sig"),

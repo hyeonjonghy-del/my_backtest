@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 import unittest
+import ast
+from pathlib import Path
 from core.soxx_momentum_overlay import apply_mom10_overlay, limit_target_risk
 
 
@@ -45,6 +47,20 @@ class MomentumOverlayTests(unittest.TestCase):
     test_scaling = staticmethod(test_negative_return_caps_risk_and_scales_both_assets)
     test_lag_and_recovery = staticmethod(test_lag_recovery_reduction_and_prefix_stability)
     test_live_history_parity = staticmethod(test_next_open_matches_history_and_turnaround_is_capped)
+
+    def test_soxx_option_defaults_on_but_qqq_remains_off(self):
+        root = Path(__file__).resolve().parents[1]
+        for filename, label, expected in [
+            ('5_SOXX_SOXL_vol.py', 'SOXX 10일 수익률 음수 시 목표 위험 확대 금지', True),
+            ('6_QQQ_TQQQ_holdings.py', 'QQQ 10일 수익률 음수 시 목표 위험 확대 금지', False),
+        ]:
+            tree = ast.parse((root/'pages'/filename).read_text(encoding='utf-8'))
+            calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                     and isinstance(n.func, ast.Attribute) and n.func.attr == 'checkbox'
+                     and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == label]
+            self.assertEqual(len(calls), 1)
+            default = next(k.value for k in calls[0].keywords if k.arg == 'value')
+            self.assertIs(default.value, expected)
 
 
 if __name__ == '__main__':

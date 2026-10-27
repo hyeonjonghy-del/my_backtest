@@ -572,7 +572,8 @@ with st.sidebar:
     st.subheader("선택형 위험 보정")
     use_mom10_overlay = st.checkbox(
         "SOXX 10일 수익률 음수 시 목표 위험 확대 금지",
-        value=False,
+        value=True,
+        key="soxx_mom10_default_on_v1",
         help="전일 종가 기준 SOXX 10거래일 수익률이 음수이면 목표 위험(SOXX + 3×SOXL)을 직전 보정 목표 이하로 제한합니다. "
         "두 종목을 비례 축소하고 차액은 현금으로 유지합니다. Turnaround에도 적용합니다. "
         "실제 SOXL 보유 비중 상한이나 모든 매수 금지 규칙은 아닙니다.",

@@ -84,7 +84,8 @@ def load_yahoo_chart(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.Da
         },
         index=index,
     )
-    return normalize_index(frame).dropna(subset=["adjclose"])
+    from core.us_corporate_actions import normalize_yahoo_split_data
+    return normalize_yahoo_split_data(normalize_index(frame),symbol).dropna(subset=["adjclose"])
 
 
 def calc_metrics(daily_ret: pd.Series) -> dict[str, object]:

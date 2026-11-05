@@ -231,7 +231,8 @@ def load_yahoo_chart(
         df = repair_latest_yahoo_close(
             df, result.get("meta", {}), completed_session, datetime.now(timezone.utc)
         )
-    return df.dropna(subset=["adjclose"])
+    from core.us_corporate_actions import normalize_yahoo_split_data
+    return normalize_yahoo_split_data(df,symbol).dropna(subset=["adjclose"])
 
 
 def calc_metrics(daily_ret: pd.Series) -> dict[str, object]:

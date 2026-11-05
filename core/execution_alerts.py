@@ -359,7 +359,8 @@ def load_yahoo_chart(symbol: str, start: datetime, end: datetime) -> pd.DataFram
         },
         index=pd.to_datetime(result["timestamp"], unit="s").normalize(),
     )
-    return normalize_index(frame).dropna(subset=["adjclose"])
+    from core.us_corporate_actions import normalize_yahoo_split_data
+    return normalize_yahoo_split_data(normalize_index(frame),symbol).dropna(subset=["adjclose"])
 
 
 def build_trend(price: pd.Series, fast: pd.Series, slow: pd.Series) -> pd.Series:
